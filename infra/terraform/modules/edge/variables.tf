@@ -35,7 +35,12 @@ variable "waf_rate_limit" {
 }
 
 variable "logs_bucket_name" {
-  description = "Reserved for edge logs bucket integration."
+  description = "Edge logs bucket name."
+  type        = string
+}
+
+variable "logs_bucket_domain_name" {
+  description = "Edge logs bucket domain name for CloudFront standard logs."
   type        = string
 }
 

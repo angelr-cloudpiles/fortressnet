@@ -8,9 +8,29 @@ output "database_endpoint" {
   value       = aws_db_instance.this.endpoint
 }
 
+output "database_address" {
+  description = "RDS hostname."
+  value       = aws_db_instance.this.address
+}
+
+output "database_port" {
+  description = "RDS port."
+  value       = aws_db_instance.this.port
+}
+
+output "database_security_group_id" {
+  description = "RDS security group ID."
+  value       = aws_security_group.database.id
+}
+
 output "database_secret_arn" {
   description = "Database secret ARN."
   value       = aws_secretsmanager_secret.database.arn
+}
+
+output "database_secret_version_id" {
+  description = "Database secret version ID."
+  value       = aws_secretsmanager_secret_version.database.version_id
 }
 
 output "platform_config_secret_arn" {
@@ -46,6 +66,11 @@ output "audit_logs_bucket_name" {
 output "edge_logs_bucket_name" {
   description = "Edge logs bucket name."
   value       = aws_s3_bucket.this["edge_logs"].bucket
+}
+
+output "edge_logs_bucket_domain_name" {
+  description = "Edge logs bucket domain name for CloudFront logging."
+  value       = aws_s3_bucket.this["edge_logs"].bucket_domain_name
 }
 
 output "reports_bucket_name" {

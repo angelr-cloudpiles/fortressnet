@@ -31,21 +31,28 @@ module "identity" {
 module "control_plane" {
   source = "../../modules/control_plane"
 
-  name                    = local.name
-  vpc_id                  = module.network.vpc_id
-  public_subnet_ids       = module.network.public_subnet_ids
-  private_subnet_ids      = module.network.private_subnet_ids
-  app_image               = var.app_image
-  container_port          = var.app_container_port
-  desired_count           = var.desired_count
-  database_secret_arn     = module.data_plane.database_secret_arn
-  platform_config_secret  = module.data_plane.platform_config_secret_arn
-  log_bucket_name         = module.data_plane.audit_logs_bucket_name
-  tenants_table_name      = module.data_plane.tenants_table_name
-  domains_table_name      = module.data_plane.domains_table_name
-  entitlements_table_name = module.data_plane.entitlements_table_name
-  cognito_user_pool_id    = module.identity.user_pool_id
-  cognito_app_client_id   = module.identity.app_client_id
+  name                       = local.name
+  vpc_id                     = module.network.vpc_id
+  public_subnet_ids          = module.network.public_subnet_ids
+  private_subnet_ids         = module.network.private_subnet_ids
+  app_image                  = var.app_image
+  container_port             = var.app_container_port
+  desired_count              = var.desired_count
+  database_secret_arn        = module.data_plane.database_secret_arn
+  database_secret_version    = module.data_plane.database_secret_version_id
+  database_host              = module.data_plane.database_address
+  database_port              = module.data_plane.database_port
+  database_security_group_id = module.data_plane.database_security_group_id
+  platform_config_secret     = module.data_plane.platform_config_secret_arn
+  platform_kms_key_arn       = module.data_plane.kms_key_arn
+  log_bucket_name            = module.data_plane.audit_logs_bucket_name
+  tenants_table_name         = module.data_plane.tenants_table_name
+  domains_table_name         = module.data_plane.domains_table_name
+  entitlements_table_name    = module.data_plane.entitlements_table_name
+  cognito_user_pool_id       = module.identity.user_pool_id
+  cognito_app_client_id      = module.identity.app_client_id
+
+  depends_on = [module.data_plane]
 }
 
 module "edge" {
@@ -56,14 +63,17 @@ module "edge" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  name             = local.name
-  app_fqdn         = local.app_fqdn
-  hosted_zone_name = var.hosted_zone_name
-  origin_domain    = module.control_plane.alb_dns_name
-  origin_protocol  = "http-only"
-  waf_rate_limit   = var.waf_rate_limit
-  logs_bucket_name = module.data_plane.edge_logs_bucket_name
-  price_class      = "PriceClass_100"
+  name                    = local.name
+  app_fqdn                = local.app_fqdn
+  hosted_zone_name        = var.hosted_zone_name
+  origin_domain           = module.control_plane.alb_dns_name
+  origin_protocol         = "http-only"
+  waf_rate_limit          = var.waf_rate_limit
+  logs_bucket_name        = module.data_plane.edge_logs_bucket_name
+  logs_bucket_domain_name = module.data_plane.edge_logs_bucket_domain_name
+  price_class             = "PriceClass_100"
+
+  depends_on = [module.data_plane]
 }
 
 module "observability" {

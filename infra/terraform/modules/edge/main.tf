@@ -143,6 +143,12 @@ resource "aws_cloudfront_distribution" "this" {
   http_version        = "http2and3"
   is_ipv6_enabled     = true
 
+  logging_config {
+    bucket          = var.logs_bucket_domain_name
+    include_cookies = false
+    prefix          = "cloudfront/"
+  }
+
   origin {
     domain_name = var.origin_domain
     origin_id   = local.origin_id

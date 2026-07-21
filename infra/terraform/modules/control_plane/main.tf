@@ -1,7 +1,13 @@
 data "aws_region" "current" {}
 
+data "aws_caller_identity" "current" {}
+
 data "aws_ec2_managed_prefix_list" "cloudfront" {
   name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+locals {
+  secretsmanager_service = "secretsmanager.${data.aws_region.current.region}.amazonaws.com"
 }
 
 resource "aws_cloudwatch_log_group" "service" {
@@ -59,12 +65,26 @@ resource "aws_vpc_security_group_egress_rule" "service" {
   ip_protocol       = "-1"
 }
 
+resource "aws_vpc_security_group_ingress_rule" "database_from_service" {
+  security_group_id            = var.database_security_group_id
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+}
+
 resource "aws_lb" "this" {
   name               = substr(replace("${var.name}-alb", "_", "-"), 0, 32)
   load_balancer_type = "application"
   internal           = false
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
+
+  access_logs {
+    bucket  = var.log_bucket_name
+    prefix  = "alb"
+    enabled = true
+  }
 }
 
 resource "aws_lb_target_group" "service" {
@@ -138,13 +158,22 @@ resource "aws_iam_role_policy" "execution_secrets" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue",
-          "kms:Decrypt"
+          "secretsmanager:GetSecretValue"
         ]
         Resource = [
           var.database_secret_arn,
           var.platform_config_secret
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "kms:Decrypt"
+        Resource = var.platform_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = local.secretsmanager_service
+          }
+        }
       }
     ]
   })
@@ -187,10 +216,10 @@ resource "aws_iam_role_policy" "task" {
           "dynamodb:UpdateItem"
         ]
         Resource = [
-          "arn:aws:dynamodb:${data.aws_region.current.region}:*:table/${var.tenants_table_name}",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:*:table/${var.domains_table_name}",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:*:table/${var.entitlements_table_name}",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:*:table/${var.domains_table_name}/index/*"
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.tenants_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.entitlements_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*"
         ]
       },
       {
@@ -214,6 +243,16 @@ resource "aws_iam_role_policy" "task" {
           var.database_secret_arn,
           var.platform_config_secret
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "kms:Decrypt"
+        Resource = var.platform_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = local.secretsmanager_service
+          }
+        }
       }
     ]
   })
@@ -268,6 +307,18 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "AUDIT_LOG_BUCKET"
           value = var.log_bucket_name
+        },
+        {
+          name  = "DATABASE_HOST"
+          value = var.database_host
+        },
+        {
+          name  = "DATABASE_PORT"
+          value = tostring(var.database_port)
+        },
+        {
+          name  = "DATABASE_SECRET_VERSION"
+          value = var.database_secret_version
         }
       ]
       secrets = [

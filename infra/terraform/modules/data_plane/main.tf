@@ -1,7 +1,83 @@
 data "aws_caller_identity" "current" {}
 
-data "aws_vpc" "this" {
-  id = var.vpc_id
+data "aws_iam_policy_document" "platform_key" {
+  statement {
+    sid = "EnableAccountAdministration"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "AllowCloudFrontLogDelivery"
+
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey*"
+    ]
+
+    resources = ["*"]
+  }
+}
+
+data "aws_iam_policy_document" "audit_logs_bucket" {
+  statement {
+    sid = "AllowAlbLogDeliveryWrite"
+
+    principals {
+      type        = "Service"
+      identifiers = ["logdelivery.elasticloadbalancing.amazonaws.com"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.this["audit_logs"].arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+    ]
+  }
+}
+
+data "aws_iam_policy_document" "edge_logs_bucket" {
+  statement {
+    sid = "AllowCloudFrontLogDeliveryAclCheck"
+
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.this["edge_logs"].arn]
+  }
+
+  statement {
+    sid = "AllowCloudFrontLogDeliveryWrite"
+
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.this["edge_logs"].arn}/cloudfront/*"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
+  }
 }
 
 locals {
@@ -14,13 +90,13 @@ locals {
     ai_events  = "${var.name}-ai-events-${local.bucket_suffix}"
   }
 
-  effective_allowed_cidrs = length(var.allowed_cidr_blocks) > 0 ? var.allowed_cidr_blocks : [data.aws_vpc.this.cidr_block]
 }
 
 resource "aws_kms_key" "platform" {
   description             = "FortressNet ${var.name} platform encryption key"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.platform_key.json
 }
 
 resource "aws_kms_alias" "platform" {
@@ -32,6 +108,14 @@ resource "random_password" "database" {
   length           = 32
   special          = true
   override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+resource "random_id" "final_snapshot" {
+  byte_length = 4
+
+  keepers = {
+    db_identifier = "${var.name}-postgres"
+  }
 }
 
 resource "aws_secretsmanager_secret" "database" {
@@ -47,8 +131,6 @@ resource "aws_secretsmanager_secret_version" "database" {
     username = var.database_username
     password = random_password.database.result
     database = var.database_name
-    host     = aws_db_instance.this.address
-    port     = aws_db_instance.this.port
   })
 }
 
@@ -75,7 +157,7 @@ resource "aws_security_group" "database" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "database_from_cidr" {
-  for_each = toset(local.effective_allowed_cidrs)
+  for_each = toset(var.allowed_cidr_blocks)
 
   security_group_id = aws_security_group.database.id
   cidr_ipv4         = each.value
@@ -120,8 +202,9 @@ resource "aws_db_instance" "this" {
   storage_encrypted       = true
   kms_key_id              = aws_kms_key.platform.arn
   publicly_accessible     = false
-  skip_final_snapshot     = true
-  deletion_protection     = false
+  skip_final_snapshot     = var.database_skip_final_snapshot
+  final_snapshot_identifier = var.database_skip_final_snapshot ? null : "${var.name}-postgres-final-${random_id.final_snapshot.hex}"
+  deletion_protection     = var.database_deletion_protection
   backup_retention_period = 7
 }
 
@@ -244,8 +327,29 @@ resource "aws_s3_bucket_public_access_block" "this" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  for_each = aws_s3_bucket.this
+resource "aws_s3_bucket_ownership_controls" "edge_logs" {
+  bucket = aws_s3_bucket.this["edge_logs"].id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_acl" "edge_logs" {
+  bucket = aws_s3_bucket.this["edge_logs"].id
+  acl    = "private"
+
+  depends_on = [
+    aws_s3_bucket_ownership_controls.edge_logs,
+    aws_s3_bucket_public_access_block.this
+  ]
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "kms" {
+  for_each = {
+    for key, bucket in aws_s3_bucket.this : key => bucket
+    if key != "audit_logs"
+  }
 
   bucket = each.value.id
 
@@ -253,6 +357,16 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
     apply_server_side_encryption_by_default {
       kms_master_key_id = aws_kms_key.platform.arn
       sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "audit_logs" {
+  bucket = aws_s3_bucket.this["audit_logs"].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
     }
   }
 }
@@ -265,6 +379,16 @@ resource "aws_s3_bucket_versioning" "this" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+resource "aws_s3_bucket_policy" "audit_logs" {
+  bucket = aws_s3_bucket.this["audit_logs"].id
+  policy = data.aws_iam_policy_document.audit_logs_bucket.json
+}
+
+resource "aws_s3_bucket_policy" "edge_logs" {
+  bucket = aws_s3_bucket.this["edge_logs"].id
+  policy = data.aws_iam_policy_document.edge_logs_bucket.json
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "logs" {

@@ -38,8 +38,33 @@ variable "database_secret_arn" {
   type        = string
 }
 
+variable "database_secret_version" {
+  description = "Database secret version ID. Used to force task definition ordering after secret material exists."
+  type        = string
+}
+
+variable "database_host" {
+  description = "Database hostname."
+  type        = string
+}
+
+variable "database_port" {
+  description = "Database port."
+  type        = number
+}
+
+variable "database_security_group_id" {
+  description = "Database security group ID."
+  type        = string
+}
+
 variable "platform_config_secret" {
   description = "Platform config secret ARN."
+  type        = string
+}
+
+variable "platform_kms_key_arn" {
+  description = "Platform KMS key ARN."
   type        = string
 }
 

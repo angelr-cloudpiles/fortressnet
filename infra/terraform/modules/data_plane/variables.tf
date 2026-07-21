@@ -18,6 +18,18 @@ variable "database_instance_class" {
   type        = string
 }
 
+variable "database_deletion_protection" {
+  description = "Whether to enable deletion protection on the RDS instance."
+  type        = bool
+  default     = true
+}
+
+variable "database_skip_final_snapshot" {
+  description = "Whether to skip the final RDS snapshot on deletion."
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID."
   type        = string
