@@ -1,0 +1,19 @@
+aws_region       = "us-east-1"
+domain_name      = "fortressnet.app"
+hosted_zone_name = "fortressnet.app"
+app_subdomain    = "app"
+
+# Replace this placeholder with the real control-plane image.
+app_image = "public.ecr.aws/nginx/nginx:stable-alpine"
+
+desired_count           = 2
+enable_nat_gateway      = true
+database_instance_class = "db.t4g.micro"
+waf_rate_limit          = 2000
+
+# Optional. Terraform creates the topic without a subscription when empty.
+alarm_email = ""
+
+tags = {
+  Owner = "angelr-cloudpiles"
+}

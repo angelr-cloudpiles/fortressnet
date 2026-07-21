@@ -1,0 +1,9 @@
+terraform {
+  backend "s3" {
+    bucket         = "fortressnet-terraform-state-dev"
+    key            = "fortressnet/dev/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "fortressnet-terraform-locks-dev"
+    encrypt        = true
+  }
+}
