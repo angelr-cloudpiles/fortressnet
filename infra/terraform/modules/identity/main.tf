@@ -1,7 +1,7 @@
 data "aws_region" "current" {}
 
 resource "aws_cognito_user_pool" "this" {
-  name = "${var.name}-users"
+  name = "FortressNet"
 
   deletion_protection = "ACTIVE"
   mfa_configuration   = "OPTIONAL"
