@@ -1,5 +1,10 @@
+data "aws_region" "current" {}
+
 resource "aws_cognito_user_pool" "this" {
   name = "${var.name}-users"
+
+  deletion_protection = "ACTIVE"
+  mfa_configuration   = "OPTIONAL"
 
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
@@ -61,6 +66,19 @@ resource "aws_cognito_user_pool" "this" {
   verification_message_template {
     default_email_option = "CONFIRM_WITH_CODE"
   }
+
+  software_token_mfa_configuration {
+    enabled = true
+  }
+}
+
+resource "random_id" "hosted_ui_domain" {
+  byte_length = 4
+}
+
+resource "aws_cognito_user_pool_domain" "this" {
+  domain       = "${var.name}-${random_id.hosted_ui_domain.hex}"
+  user_pool_id = aws_cognito_user_pool.this.id
 }
 
 resource "aws_cognito_user_pool_client" "web" {
@@ -95,7 +113,7 @@ resource "aws_cognito_user_pool_client" "web" {
 }
 
 resource "aws_cognito_user_group" "platform_admins" {
-  name         = "platform_admins"
+  name         = "platform_owners"
   user_pool_id = aws_cognito_user_pool.this.id
   description  = "FortressNet platform administrators"
   precedence   = 10
@@ -108,9 +126,30 @@ resource "aws_cognito_user_group" "tenant_admins" {
   precedence   = 20
 }
 
+resource "aws_cognito_user_group" "security_admins" {
+  name         = "security_admins"
+  user_pool_id = aws_cognito_user_pool.this.id
+  description  = "Tenant security administrators"
+  precedence   = 30
+}
+
 resource "aws_cognito_user_group" "security_analysts" {
   name         = "security_analysts"
   user_pool_id = aws_cognito_user_pool.this.id
   description  = "Tenant security analysts"
-  precedence   = 30
+  precedence   = 40
+}
+
+resource "aws_cognito_user_group" "billing_admins" {
+  name         = "billing_admins"
+  user_pool_id = aws_cognito_user_pool.this.id
+  description  = "Tenant billing administrators"
+  precedence   = 50
+}
+
+resource "aws_cognito_user_group" "read_only" {
+  name         = "read_only"
+  user_pool_id = aws_cognito_user_pool.this.id
+  description  = "Tenant read-only users"
+  precedence   = 60
 }

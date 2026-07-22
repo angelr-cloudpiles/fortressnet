@@ -46,6 +46,9 @@ output "tenant_tables" {
     waf_change_sets   = module.data_plane.waf_change_sets_table_name
     edge_deployments  = module.data_plane.edge_deployments_table_name
     approvals         = module.data_plane.approvals_table_name
+    dns_zones         = module.data_plane.dns_zones_table_name
+    dns_records       = module.data_plane.dns_records_table_name
+    ai_findings       = module.data_plane.ai_findings_table_name
   }
 }
 
@@ -54,6 +57,7 @@ output "identity" {
   value = {
     user_pool_id  = module.identity.user_pool_id
     app_client_id = module.identity.app_client_id
+    hosted_ui_url = module.identity.hosted_ui_url
   }
 }
 

@@ -8,10 +8,13 @@ import express from "express";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
 import { CloudFrontClient, CreateDistributionCommand, GetDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
+import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, UpdateUserPoolClientCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, GetDNSSECCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateWebACLCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
+import { CognitoJwtVerifier } from "aws-jwt-verify";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -25,6 +28,11 @@ const acm = new ACMClient({ region: "us-east-1" });
 const cloudfront = new CloudFrontClient({ region: "us-east-1" });
 const waf = new WAFV2Client({ region: "us-east-1" });
 const cloudwatchLogs = new CloudWatchLogsClient({ region: "us-east-1" });
+const cognito = new CognitoIdentityProviderClient({ region });
+const route53 = new Route53Client({ region });
+const cognitoVerifier = process.env.COGNITO_USER_POOL_ID && process.env.COGNITO_APP_CLIENT_ID
+  ? CognitoJwtVerifier.create({ userPoolId: process.env.COGNITO_USER_POOL_ID, tokenUse: "id", clientId: process.env.COGNITO_APP_CLIENT_ID })
+  : null;
 
 const tables = {
   tenants: process.env.TENANTS_TABLE,
@@ -40,14 +48,17 @@ const tables = {
   certificates: process.env.CERTIFICATES_TABLE,
   wafChangeSets: process.env.WAF_CHANGE_SETS_TABLE,
   edgeDeployments: process.env.EDGE_DEPLOYMENTS_TABLE,
-  approvals: process.env.APPROVALS_TABLE
+  approvals: process.env.APPROVALS_TABLE,
+  dnsZones: process.env.DNS_ZONES_TABLE,
+  dnsRecords: process.env.DNS_RECORDS_TABLE,
+  aiFindings: process.env.AI_FINDINGS_TABLE
 };
 
 const roleScopes = {
   platform_owner: ["*"],
-  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "billing:read", "profile:write"],
-  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "events:read", "reports:read", "profile:write"],
-  security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write"],
+  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "billing:read", "profile:write", "ai:read"],
+  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "events:read", "reports:read", "profile:write", "ai:read"],
+  security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write", "ai:read"],
   billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
   read_only: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
 };
@@ -56,6 +67,7 @@ const allowedScopes = Array.from(new Set(Object.values(roleScopes).flat())).filt
 
 const platformConfig = parseJson(process.env.PLATFORM_CONFIG_SECRET, {});
 const managementToken = platformConfig.management_bootstrap_token || process.env.MANAGEMENT_BOOTSTRAP_TOKEN;
+const cognitoHostedUiOrigin = safeHttpsOrigin(process.env.COGNITO_HOSTED_UI_URL);
 
 app.disable("x-powered-by");
 app.use(securityHeaders);
@@ -68,9 +80,10 @@ app.get("/healthz", (_req, res) => {
 app.get("/api/platform", (_req, res) => {
   res.json({
     environment: process.env.FORTRESSNET_ENV || "unknown",
-    auth_mode: "bootstrap_token_or_api_key",
+    auth_mode: "cognito_id_token_or_api_key_or_recovery_token",
     cognito_user_pool_id: process.env.COGNITO_USER_POOL_ID || null,
     cognito_app_client_id: process.env.COGNITO_APP_CLIENT_ID || null,
+    cognito_hosted_ui_url: process.env.COGNITO_HOSTED_UI_URL || null,
     management_ready: Boolean(managementToken),
     roles: Object.keys(roleScopes),
     scopes: allowedScopes,
@@ -78,11 +91,15 @@ app.get("/api/platform", (_req, res) => {
   });
 });
 
+app.get("/api/auth/session", requireManagementAccess, (req, res) => {
+  res.json({ actor: publicActor(req.actor) });
+});
+
 app.use("/api", requireManagementAccess);
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals] = await Promise.all([
+    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.domains),
       scanTable(tables.policies),
@@ -96,7 +113,10 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       scanTable(tables.certificates),
       scanTable(tables.wafChangeSets),
       scanTable(tables.edgeDeployments),
-      scanTable(tables.approvals)
+      scanTable(tables.approvals),
+      scanTable(tables.dnsZones),
+      scanTable(tables.dnsRecords),
+      scanTable(tables.aiFindings)
     ]);
 
     res.json({
@@ -113,7 +133,10 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       certificates: sortByDate(scopeItems(req.actor, certificates)),
       waf_change_sets: sortByDate(scopeItems(req.actor, wafChangeSets)),
       edge_deployments: sortByDate(scopeItems(req.actor, edgeDeployments)),
-      approvals: sortByDate(scopeItems(req.actor, approvals))
+      approvals: sortByDate(scopeItems(req.actor, approvals)),
+      dns_zones: sortByDate(scopeItems(req.actor, dnsZones)),
+      dns_records: sortByDate(scopeItems(req.actor, dnsRecords)),
+      ai_findings: sortByDate(scopeItems(req.actor, aiFindings))
     });
   } catch (error) {
     next(error);
@@ -615,6 +638,149 @@ app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), asy
   }
 });
 
+app.get("/api/dns/zones", requireScope("domain:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const zones = tenantId ? await queryByTenant(tables.dnsZones, tenantId) : await scanTable(tables.dnsZones);
+    res.json({ dns_zones: sortByDate(zones) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/domains/:domainId/dns-zone", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, domain.tenant_id);
+    if (!["verified_pending_certificate", "certificate_validation", "certificate_issued_pending_edge", "edge_provisioning", "pending_traffic_dns", "active"].includes(domain.status)) {
+      return res.status(409).json({ error: "verified_domain_required_for_dns_management" });
+    }
+    const mode = clean(req.body?.mode) || "external_guided";
+    if (!["external_guided", "route53_delegated"].includes(mode)) return res.status(400).json({ error: "unsupported_dns_mode" });
+    const existing = (await queryByTenant(tables.dnsZones, domain.tenant_id)).find((zone) => zone.domain_id === domain.domain_id);
+    if (existing) return res.status(409).json({ error: "dns_zone_already_exists" });
+
+    const now = new Date().toISOString();
+    const zone = {
+      zone_id: `zone_${crypto.randomUUID()}`,
+      tenant_id: domain.tenant_id,
+      domain_id: domain.domain_id,
+      zone_name: domain.domain_name,
+      mode,
+      status: mode === "external_guided" ? "external_guidance_ready" : "creating",
+      created_by: req.actor?.subject || "unknown",
+      created_at: now,
+      updated_at: now
+    };
+    if (mode === "route53_delegated") {
+      const created = await route53.send(new CreateHostedZoneCommand({
+        Name: domain.domain_name,
+        CallerReference: `${zone.zone_id}-${now}`,
+        HostedZoneConfig: { Comment: `FortressNet tenant ${domain.tenant_id}`, PrivateZone: false }
+      }));
+      zone.route53_zone_id = clean(created.HostedZone?.Id).replace("/hostedzone/", "");
+      zone.name_servers = created.DelegationSet?.NameServers || [];
+      zone.status = "awaiting_ns_delegation";
+    }
+    await putUnique(tables.dnsZones, zone, "zone_id");
+    await audit("dns_zone.created", domain.tenant_id, zone, req.actor);
+    res.status(201).json({ dns_zone: zone });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/dns/zones/:zoneId/records", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    const type = clean(req.body?.type).toUpperCase();
+    const name = normalizeDnsRecordName(req.body?.name, zone.zone_name);
+    const values = normalizeDnsRecordValues(req.body?.values, type);
+    const ttl = Math.min(Math.max(Number(req.body?.ttl || 300), 60), 86400);
+    if (!name || !["A", "AAAA", "CAA", "CNAME", "MX", "SRV", "TXT"].includes(type) || !values.length) return res.status(400).json({ error: "valid_dns_record_required" });
+    const change = await route53.send(new ChangeResourceRecordSetsCommand({
+      HostedZoneId: zone.route53_zone_id,
+      ChangeBatch: {
+        Comment: `FortressNet managed record for ${zone.tenant_id}`,
+        Changes: [{
+          Action: "UPSERT",
+          ResourceRecordSet: { Name: name, Type: type, TTL: ttl, ResourceRecords: values.map((Value) => ({ Value })) }
+        }]
+      }
+    }));
+    const now = new Date().toISOString();
+    const record = {
+      record_id: `rec_${crypto.randomUUID()}`,
+      tenant_id: zone.tenant_id,
+      zone_id: zone.zone_id,
+      name,
+      type,
+      values,
+      ttl,
+      change_id: clean(change.ChangeInfo?.Id),
+      change_status: clean(change.ChangeInfo?.Status) || "PENDING",
+      created_at: now,
+      updated_at: now
+    };
+    await putUnique(tables.dnsRecords, record, "record_id");
+    await audit("dns_record.upserted", zone.tenant_id, record, req.actor);
+    res.status(201).json({ dns_record: record });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async (req, res, next) => {
+  try {
+    const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, domain.tenant_id);
+    const zone = (await queryByTenant(tables.dnsZones, domain.tenant_id)).find((item) => item.domain_id === domain.domain_id);
+    const origin = (await queryByIndex(tables.origins, "domain_id-index", "domain_id", domain.domain_id))[0];
+    res.json({ posture: await evaluateDnsPosture(domain, origin, zone) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai/findings", requireScope("ai:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const findings = tenantId ? await queryByTenant(tables.aiFindings, tenantId) : await scanTable(tables.aiFindings);
+    res.json({ findings: sortByDate(findings) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/analyze", requireScope("ai:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    const deployments = await queryByTenant(tables.edgeDeployments, tenantId);
+    const events = await collectSecurityEvents(deployments, 500);
+    const findings = buildAiFindings(tenantId, events);
+    const persisted = [];
+    for (const finding of findings) {
+      try {
+        await putUnique(tables.aiFindings, finding, "finding_id");
+        persisted.push(finding);
+      } catch (error) {
+        if (error?.name !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+    await audit("ai_analysis.completed", tenantId, { event_count: events.length, findings_created: persisted.length }, req.actor);
+    const currentFindings = await queryByTenant(tables.aiFindings, tenantId);
+    res.json({ mode: "read_only", analyzed_events: events.length, findings: sortByDate(currentFindings), findings_created: persisted.length });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope("edge:write"), async (req, res, next) => {
   try {
     const deploymentId = clean(req.params.deploymentId);
@@ -861,6 +1027,8 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
       return res.status(403).json({ error: "privilege_escalation_denied" });
     }
 
+    const existing = await queryByIndex(tables.users, "email-index", "email", email);
+    if (existing.some((item) => item.tenant_id === tenantId)) return res.status(409).json({ error: "user_already_exists" });
     const now = new Date().toISOString();
     const user = {
       user_id: `usr_${crypto.randomUUID()}`,
@@ -875,18 +1043,56 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
       created_at: now,
       updated_at: now
     };
-
-    await dynamo.send(new PutCommand({
-      TableName: tables.users,
-      Item: user,
-      ConditionExpression: "attribute_not_exists(user_id)"
-    }));
+    const cognitoGroups = roles.map(cognitoGroupForRole).filter(Boolean);
+    if (!cognitoGroups.length) return res.status(400).json({ error: "cognito_group_not_available_for_role" });
+    let cognitoCreated = false;
+    try {
+      await cognito.send(new AdminCreateUserCommand({
+        UserPoolId: process.env.COGNITO_USER_POOL_ID,
+        Username: email,
+        DesiredDeliveryMediums: ["EMAIL"],
+        UserAttributes: [
+          { Name: "email", Value: email },
+          { Name: "email_verified", Value: "true" },
+          { Name: "name", Value: displayName },
+          { Name: "custom:tenant_id", Value: tenantId },
+          { Name: "custom:role", Value: roles[0] }
+        ]
+      }));
+      cognitoCreated = true;
+      await Promise.all(cognitoGroups.map((groupName) => cognito.send(new AdminAddUserToGroupCommand({
+        UserPoolId: process.env.COGNITO_USER_POOL_ID,
+        Username: email,
+        GroupName: groupName
+      }))));
+      await dynamo.send(new PutCommand({
+        TableName: tables.users,
+        Item: user,
+        ConditionExpression: "attribute_not_exists(user_id)"
+      }));
+    } catch (error) {
+      if (cognitoCreated) {
+        await cognito.send(new AdminDeleteUserCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: email })).catch(() => {});
+      }
+      throw error;
+    }
     await audit("user.created", tenantId, redactUser(user), req.actor);
-    res.status(201).json({ user });
+    res.status(201).json({ user, invitation_status: "sent" });
   } catch (error) {
     next(error);
   }
 });
+
+function cognitoGroupForRole(role) {
+  return {
+    platform_owner: "platform_owners",
+    tenant_admin: "tenant_admins",
+    security_admin: "security_admins",
+    security_analyst: "security_analysts",
+    billing_admin: "billing_admins",
+    read_only: "read_only"
+  }[role] || "";
+}
 
 app.get("/api/api-keys", requireScope("identity:read"), async (req, res, next) => {
   try {
@@ -986,6 +1192,10 @@ app.post("/api/idp-connections", requireScope("identity:write"), async (req, res
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!name) return res.status(400).json({ error: "idp_name_required" });
     if (!["oidc", "saml"].includes(protocol)) return res.status(400).json({ error: "protocol_must_be_oidc_or_saml" });
+    if (protocol === "oidc" && (!isHttpsUrl(body.issuer_url) || !clean(body.client_id) || !clean(body.client_secret))) return res.status(400).json({ error: "oidc_issuer_client_id_and_secret_required" });
+    if (protocol === "saml" && !isHttpsUrl(body.metadata_url)) return res.status(400).json({ error: "saml_metadata_url_required" });
+    const existing = (await queryByTenant(tables.idpConnections, tenantId)).find((item) => item.name.toLowerCase() === name.toLowerCase());
+    if (existing) return res.status(409).json({ error: "idp_connection_name_already_exists" });
 
     const now = new Date().toISOString();
     const connection = {
@@ -998,29 +1208,69 @@ app.post("/api/idp-connections", requireScope("identity:write"), async (req, res
       metadata_url: clean(body.metadata_url),
       jwks_url: clean(body.jwks_url),
       client_id: clean(body.client_id),
-      secret_reference: clean(body.secret_reference),
+      secret_reference: "stored_in_cognito",
       attribute_mapping: parseJson(body.attribute_mapping, {
         email: "email",
         display_name: "name",
         groups: "groups"
       }),
-      status: "configured_pending_validation",
+      provider_name: `fn_${tenantId.replace(/[^a-zA-Z0-9]/g, "").slice(-20)}_${crypto.randomBytes(4).toString("hex")}`,
+      default_role: roleScopes[clean(body.default_role)] ? clean(body.default_role) : "read_only",
+      status: "creating",
       auto_provisioning: body.auto_provisioning !== false,
       created_at: now,
       updated_at: now
     };
-
-    await dynamo.send(new PutCommand({
-      TableName: tables.idpConnections,
-      Item: connection,
-      ConditionExpression: "attribute_not_exists(idp_id)"
+    await cognito.send(new CreateIdentityProviderCommand({
+      UserPoolId: process.env.COGNITO_USER_POOL_ID,
+      ProviderName: connection.provider_name,
+      ProviderType: protocol === "oidc" ? "OIDC" : "SAML",
+      ProviderDetails: protocol === "oidc"
+        ? {
+            client_id: connection.client_id,
+            client_secret: clean(body.client_secret),
+            attributes_request_method: "GET",
+            oidc_issuer: connection.issuer_url,
+            authorize_scopes: "openid profile email"
+          }
+        : { MetadataURL: connection.metadata_url },
+      AttributeMapping: { email: "email", name: "name" }
     }));
+    await enableCognitoIdentityProvider(connection.provider_name);
+    connection.status = "active";
+    await dynamo.send(new PutCommand({ TableName: tables.idpConnections, Item: connection, ConditionExpression: "attribute_not_exists(idp_id)" }));
     await audit("idp_connection.created", tenantId, connection, req.actor);
     res.status(201).json({ idp_connection: connection });
   } catch (error) {
     next(error);
   }
 });
+
+async function enableCognitoIdentityProvider(providerName) {
+  const current = await cognito.send(new DescribeUserPoolClientCommand({
+    UserPoolId: process.env.COGNITO_USER_POOL_ID,
+    ClientId: process.env.COGNITO_APP_CLIENT_ID
+  }));
+  const client = current.UserPoolClient;
+  if (!client) throw httpError(502, "cognito_client_not_available");
+  const supportedIdentityProviders = Array.from(new Set([...(client.SupportedIdentityProviders || ["COGNITO"]), providerName]));
+  await cognito.send(new UpdateUserPoolClientCommand({
+    UserPoolId: process.env.COGNITO_USER_POOL_ID,
+    ClientId: process.env.COGNITO_APP_CLIENT_ID,
+    SupportedIdentityProviders: supportedIdentityProviders,
+    AllowedOAuthFlowsUserPoolClient: client.AllowedOAuthFlowsUserPoolClient,
+    AllowedOAuthFlows: client.AllowedOAuthFlows,
+    AllowedOAuthScopes: client.AllowedOAuthScopes,
+    CallbackURLs: client.CallbackURLs,
+    LogoutURLs: client.LogoutURLs,
+    ExplicitAuthFlows: client.ExplicitAuthFlows,
+    PreventUserExistenceErrors: client.PreventUserExistenceErrors,
+    AccessTokenValidity: client.AccessTokenValidity,
+    IdTokenValidity: client.IdTokenValidity,
+    RefreshTokenValidity: client.RefreshTokenValidity,
+    TokenValidityUnits: client.TokenValidityUnits
+  }));
+}
 
 app.get("/api/profile", requireScope("profile:write"), async (req, res, next) => {
   try {
@@ -1090,7 +1340,7 @@ app.listen(port, "0.0.0.0", () => {
 });
 
 async function requireManagementAccess(req, res, next) {
-  if (!managementToken) return res.status(503).json({ error: "management_token_not_configured" });
+  if (!managementToken && !cognitoVerifier) return res.status(503).json({ error: "identity_not_configured" });
 
   try {
     const actor = await authenticateRequest(req);
@@ -1109,7 +1359,7 @@ async function authenticateRequest(req) {
   const apiKeyHeader = req.headers["x-fortressnet-api-key"] || "";
   const supplied = String(bearer || bootstrap || apiKeyHeader);
 
-  if (supplied && timingSafeEqual(supplied, managementToken)) {
+  if (managementToken && supplied && timingSafeEqual(supplied, managementToken)) {
     return {
       type: "bootstrap",
       subject: "bootstrap-admin",
@@ -1118,6 +1368,9 @@ async function authenticateRequest(req) {
       scopes: ["*"]
     };
   }
+
+  const cognitoActor = await authenticateCognitoToken(supplied);
+  if (cognitoActor) return cognitoActor;
 
   if (!supplied.startsWith("fnak_key_")) return null;
   const match = supplied.match(/^(fnak_key_[0-9a-f-]+)_/);
@@ -1146,6 +1399,99 @@ async function authenticateRequest(req) {
     roles: ["api_key"],
     scopes: record.scopes || []
   };
+}
+
+async function authenticateCognitoToken(token) {
+  if (!token || !cognitoVerifier) return null;
+  let claims;
+  try {
+    claims = await cognitoVerifier.verify(token);
+  } catch {
+    return null;
+  }
+
+  const email = normalizeEmail(claims.email);
+  const username = clean(claims["cognito:username"]);
+  const groups = normalizeList(claims["cognito:groups"]);
+  const groupRoles = rolesFromCognitoGroups(groups);
+  let user = email ? (await queryByIndex(tables.users, "email-index", "email", email))[0] : null;
+
+  if (!user) {
+    user = await provisionExternalIdpUser(claims, email, username, groups);
+  }
+  if (!user || !["invited", "active"].includes(user.status)) return null;
+
+  const externalProvider = externalIdentityProviderName(claims);
+  let permittedRoles = (user.roles || []).filter((role) => groupRoles.includes(role));
+  if (user.idp_connection_id) {
+    const connection = await getById(tables.idpConnections, { idp_id: user.idp_connection_id });
+    if (!connection || connection.status !== "active" || connection.provider_name !== externalProvider) return null;
+    permittedRoles = user.roles || [];
+  }
+  if (!permittedRoles.length) return null;
+  if (user.status === "invited") {
+    user = { ...user, status: "active", activated_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    await dynamo.send(new PutCommand({ TableName: tables.users, Item: user }));
+  }
+
+  return {
+    type: "cognito",
+    subject: clean(claims.sub),
+    username,
+    tenant_id: user.tenant_id,
+    roles: permittedRoles,
+    scopes: Array.from(new Set(permittedRoles.flatMap((role) => roleScopes[role] || []))),
+    email
+  };
+}
+
+function rolesFromCognitoGroups(groups) {
+  const mappings = {
+    platform_owners: "platform_owner",
+    tenant_admins: "tenant_admin",
+    security_admins: "security_admin",
+    security_analysts: "security_analyst",
+    billing_admins: "billing_admin",
+    read_only: "read_only"
+  };
+  return groups.map((group) => mappings[group]).filter(Boolean);
+}
+
+async function provisionExternalIdpUser(claims, email, username, groups) {
+  if (!email || !tables.idpConnections) return null;
+  const providerName = externalIdentityProviderName(claims);
+  if (!providerName) return null;
+  const connections = await scanTable(tables.idpConnections);
+  const connection = connections.find((item) => item.status === "active" && item.auto_provisioning && item.provider_name === providerName);
+  if (!connection) return null;
+  const role = roleScopes[connection.default_role] ? connection.default_role : "read_only";
+  const now = new Date().toISOString();
+  const user = {
+    user_id: `usr_${crypto.randomUUID()}`,
+    tenant_id: connection.tenant_id,
+    email,
+    display_name: clean(claims.name) || email,
+    status: "active",
+    roles: [role],
+    scopes: roleScopes[role],
+    idp_subject: username || clean(claims.sub),
+    idp_connection_id: connection.idp_id,
+    mfa_required: true,
+    created_at: now,
+    updated_at: now
+  };
+  try {
+    await putUnique(tables.users, user, "user_id");
+  } catch (error) {
+    if (error?.name !== "ConditionalCheckFailedException") throw error;
+  }
+  await audit("user.auto_provisioned", connection.tenant_id, redactUser(user), { type: "cognito", subject: clean(claims.sub) });
+  return user;
+}
+
+function externalIdentityProviderName(claims) {
+  const identities = Array.isArray(claims.identities) ? claims.identities : parseJson(claims.identities, []);
+  return Array.isArray(identities) ? clean(identities[0]?.providerName) : "";
 }
 
 function requireScope(scope) {
@@ -1216,10 +1562,19 @@ function securityHeaders(_req, res, next) {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    `connect-src 'self'${cognitoHostedUiOrigin ? ` ${cognitoHostedUiOrigin}` : ""}`,
     "upgrade-insecure-requests"
   ].join("; "));
   next();
+}
+
+function safeHttpsOrigin(value) {
+  try {
+    const url = new URL(clean(value));
+    return url.protocol === "https:" ? url.origin : "";
+  } catch {
+    return "";
+  }
 }
 
 function blockSensitivePaths(req, res, next) {
@@ -1666,6 +2021,99 @@ function requestHealthCheck(target, address, pathName, timeoutMs, hostHeader) {
 function normalizeHealthPath(value) {
   const pathName = clean(value) || "/";
   return pathName.startsWith("/") && !pathName.startsWith("//") ? pathName : "/";
+}
+
+function normalizeDnsRecordName(value, zoneName) {
+  const recordName = normalizeDomain(value);
+  const normalizedZone = normalizeDomain(zoneName);
+  if (!recordName || !normalizedZone || (recordName !== normalizedZone && !recordName.endsWith(`.${normalizedZone}`))) return "";
+  return `${recordName}.`;
+}
+
+function normalizeDnsRecordValues(value, type) {
+  const values = normalizeList(value).map((item) => clean(item)).filter((item) => item && item.length <= 1024 && !/[\r\n]/.test(item));
+  if (type === "TXT") return values.map((item) => item.startsWith('"') && item.endsWith('"') ? item : `"${item.replaceAll('"', '\\"')}"`);
+  return values;
+}
+
+function isHttpsUrl(value) {
+  try {
+    return new URL(clean(value)).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+async function evaluateDnsPosture(domain, origin, zone) {
+  const hostname = domain.domain_name;
+  const [ipv4, ipv6, caa, dmarc, spf] = await Promise.all([
+    dns.resolve4(hostname).catch(() => []),
+    dns.resolve6(hostname).catch(() => []),
+    (typeof dns.resolveCaa === "function" ? dns.resolveCaa(hostname).catch(() => []) : Promise.resolve([])),
+    dns.resolveTxt(`_dmarc.${hostname}`).catch(() => []),
+    dns.resolveTxt(hostname).catch(() => [])
+  ]);
+  const originAddresses = origin?.hostname ? await resolvePublicOriginAddresses(origin.hostname) : [];
+  const publicAddresses = [...ipv4, ...ipv6].filter((address) => !isBlockedIpAddress(address));
+  const originExposed = originAddresses.some((address) => publicAddresses.includes(address));
+  let dnssecStatus = "external_or_unknown";
+  if (zone?.route53_zone_id) {
+    dnssecStatus = clean((await route53.send(new GetDNSSECCommand({ HostedZoneId: zone.route53_zone_id }))).Status) || "unknown";
+  }
+  return {
+    domain_id: domain.domain_id,
+    generated_at: new Date().toISOString(),
+    mode: zone?.mode || "external_unmanaged",
+    dnssec_status: dnssecStatus,
+    caa_present: caa.length > 0,
+    dmarc_present: dmarc.length > 0,
+    spf_present: spf.some((parts) => parts.join("").toLowerCase().includes("v=spf1")),
+    origin_ip_exposed: originExposed,
+    public_addresses: publicAddresses,
+    findings: [
+      ...(caa.length ? [] : [{ code: "caa_missing", severity: "medium", recommendation: "Restrict certificate issuance with CAA records." }]),
+      ...(originExposed ? [{ code: "origin_ip_exposed", severity: "high", recommendation: "Restrict direct origin access to the FortressNet verification header and edge ranges." }] : []),
+      ...(dmarc.length ? [] : [{ code: "dmarc_missing", severity: "medium", recommendation: "Publish a DMARC policy before enabling email reporting." }])
+    ]
+  };
+}
+
+async function resolvePublicOriginAddresses(hostname) {
+  const [ipv4, ipv6] = await Promise.all([dns.resolve4(hostname).catch(() => []), dns.resolve6(hostname).catch(() => [])]);
+  const addresses = [...ipv4, ...ipv6];
+  return addresses.some((address) => isBlockedIpAddress(address)) ? [] : addresses;
+}
+
+function buildAiFindings(tenantId, events) {
+  const now = new Date().toISOString();
+  const day = now.slice(0, 10);
+  const blocked = events.filter((event) => event.action === "BLOCK");
+  const findings = [];
+  if (blocked.length >= 25) {
+    findings.push(aiFinding(tenantId, day, "sustained_blocked_requests", "high", `${blocked.length} blocked WAF requests were observed in the last 24 hours.`, "Review the affected paths and approve a tenant rate-limit or managed-rule tuning change.", blocked.length, now));
+  }
+  const byRule = blocked.reduce((counts, event) => ({ ...counts, [event.rule_id || "unknown"]: (counts[event.rule_id || "unknown"] || 0) + 1 }), {});
+  for (const [ruleId, count] of Object.entries(byRule).filter(([, count]) => count >= 10).slice(0, 3)) {
+    findings.push(aiFinding(tenantId, day, `rule_concentration_${hashSecret(ruleId).slice(0, 8)}`, "medium", `Rule ${ruleId} accounted for ${count} blocked requests.`, "Keep the rule in count mode only after an approved change set and review false positives.", count, now));
+  }
+  return findings;
+}
+
+function aiFinding(tenantId, day, code, severity, summary, recommendation, evidenceCount, now) {
+  return {
+    finding_id: `aif_${tenantId}_${day}_${code}`,
+    tenant_id: tenantId,
+    code,
+    severity,
+    status: "open",
+    mode: "read_only",
+    source: "cloudwatch_waf_logs",
+    summary,
+    recommendation,
+    evidence_count: evidenceCount,
+    created_at: now,
+    updated_at: now
+  };
 }
 
 async function applyWafChangeSet(changeSet, edgeDeployment) {

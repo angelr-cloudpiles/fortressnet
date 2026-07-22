@@ -4,6 +4,12 @@
 
 This runbook defines the production workflow for connecting one tenant domain to a FortressNet managed web edge. It intentionally creates no edge resources until the customer has completed ownership and certificate validation.
 
+## Identity Prerequisite
+
+- Invite the tenant operator from the Access screen. FortressNet creates the Cognito user and sends the temporary password by email.
+- The operator signs in through the Cognito Hosted UI and completes MFA when enrolled. The API accepts the signed Cognito ID token only after matching its email and groups to the tenant user record.
+- For OIDC or SAML, configure the tenant IdP before inviting users. The provider is created in Cognito, while client secrets are never stored in the FortressNet database.
+
 ## Preconditions
 
 - A platform operator creates the tenant and grants the tenant operator the required roles.
@@ -28,6 +34,13 @@ This runbook defines the production workflow for connecting one tenant domain to
 
 The current verifier is intentionally limited to direct CNAME records. Apex records must be handled by a DNS provider with ALIAS/ANAME support or a Route 53 Alias implementation, which needs a dedicated provider-aware workflow.
 
+## DNS Management
+
+1. After ownership verification, choose `External guided` or `Delegate Route 53`.
+2. For Route 53 delegation, publish the returned NS records at the parent zone before adding managed records.
+3. Run DNS posture to review CAA, DNSSEC, DMARC, SPF and possible origin IP exposure.
+4. Do not create or modify a hosted zone for a domain that has not passed FortressNet ownership verification.
+
 ## WAF Changes
 
 1. Compile a tenant policy to a change set.
@@ -39,4 +52,5 @@ The current verifier is intentionally limited to direct CNAME records. Apex reco
 
 - Approval actions, provisioning, header retrieval, WAF applies, and rollbacks are written to the audit stream.
 - WAF event and report endpoints return events from the tenant's CloudWatch log group and hash client IP addresses before presentation.
+- The AI Analyst is explicitly read-only. It derives findings from real WAF logs and creates recommendations that still require the normal policy approval workflow.
 - Do not add simulated tenant, domain, or event records to validate the platform. Validate capabilities with platform health, IAM, Terraform, and empty-state checks until a real customer domain is authorized.

@@ -34,6 +34,7 @@ const navItems = [
   { id: "overview", label: "Overview", icon: Home },
   { id: "onboarding", label: "Onboarding", icon: CheckCircle2 },
   { id: "domains", label: "Domains", icon: Globe2 },
+  { id: "dns", label: "DNS & TLS", icon: Globe2 },
   { id: "origins", label: "Origins", icon: Layers3 },
   { id: "policies", label: "Policies", icon: Shield },
   { id: "access", label: "Access", icon: Users },
@@ -61,7 +62,10 @@ const emptyState = {
   certificates: [],
   waf_change_sets: [],
   edge_deployments: [],
-  approvals: []
+  approvals: [],
+  dns_zones: [],
+  dns_records: [],
+  ai_findings: []
 };
 
 function App() {
@@ -69,7 +73,8 @@ function App() {
   const [range, setRange] = useState("24H");
   const [environment, setEnvironment] = useState("Production");
   const [platform, setPlatform] = useState(null);
-  const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_admin_token") || "");
+  const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || "");
+  const [authMode, setAuthMode] = useState(() => sessionStorage.getItem("fortressnet_auth_mode") || "");
   const [state, setState] = useState(emptyState);
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [status, setStatus] = useState({ type: "idle", message: "" });
@@ -92,14 +97,36 @@ function App() {
     loadState(token, setState, setStatus, setSelectedTenantId);
   }, [token]);
 
+  useEffect(() => {
+    if (!platform || window.location.pathname !== "/auth/callback") return;
+    completeCognitoCallback(platform)
+      .then((idToken) => {
+        sessionStorage.setItem("fortressnet_auth_token", idToken);
+        sessionStorage.setItem("fortressnet_auth_mode", "cognito");
+        setAuthMode("cognito");
+        setToken(idToken);
+        window.history.replaceState({}, "", "/");
+        setStatus({ type: "success", message: "Cognito session established." });
+      })
+      .catch((error) => {
+        window.history.replaceState({}, "", "/");
+        setStatus({ type: "error", message: error.message });
+      });
+  }, [platform]);
+
   const persistToken = (value) => {
     const clean = value.trim();
     setToken(clean);
     if (clean) {
       sessionStorage.setItem("fortressnet_admin_token", clean);
+      sessionStorage.setItem("fortressnet_auth_mode", "bootstrap");
+      setAuthMode("bootstrap");
       loadState(clean, setState, setStatus, setSelectedTenantId);
     } else {
       sessionStorage.removeItem("fortressnet_admin_token");
+      sessionStorage.removeItem("fortressnet_auth_token");
+      sessionStorage.removeItem("fortressnet_auth_mode");
+      setAuthMode("");
       setState(emptyState);
       setSelectedTenantId("");
     }
@@ -113,11 +140,28 @@ function App() {
     loadState(token, setState, setStatus, setSelectedTenantId);
   };
 
+  const signIn = () => startCognitoLogin(platform).catch((error) => setStatus({ type: "error", message: error.message }));
+  const signOut = () => {
+    sessionStorage.removeItem("fortressnet_admin_token");
+    sessionStorage.removeItem("fortressnet_auth_token");
+    sessionStorage.removeItem("fortressnet_auth_mode");
+    setAuthMode("");
+    setToken("");
+    setState(emptyState);
+    setSelectedTenantId("");
+    if (platform?.cognito_hosted_ui_url && platform?.cognito_app_client_id) {
+      const logoutUrl = new URL(`${platform.cognito_hosted_ui_url}/logout`);
+      logoutUrl.searchParams.set("client_id", platform.cognito_app_client_id);
+      logoutUrl.searchParams.set("logout_uri", `${window.location.origin}/logout`);
+      window.location.assign(logoutUrl.toString());
+    }
+  };
+
   return (
     <div className="app-shell">
       <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} />
       <main className="main">
-        <Topbar environment={environment} setEnvironment={setEnvironment} />
+        <Topbar environment={environment} setEnvironment={setEnvironment} authenticated={Boolean(token)} authMode={authMode} onSignIn={signIn} onSignOut={signOut} />
         <section className="content">
           <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} />
           {status.message && <StatusBanner status={status} />}
@@ -154,6 +198,7 @@ function App() {
               setStatus={setStatus}
             />
           )}
+          {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
           {active === "origins" && (
             <OriginsScreen
               token={token}
@@ -207,7 +252,7 @@ function App() {
             />
           )}
           {active === "events" && <EventsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
-          {active === "ai" && <AiScreen />}
+          {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen state={state} />}
           {active === "profile" && <ProfileScreen token={token} setStatus={setStatus} />}
@@ -258,7 +303,7 @@ function Sidebar({ active, onNavigate, selectedTenant }) {
   );
 }
 
-function Topbar({ environment, setEnvironment }) {
+function Topbar({ environment, setEnvironment, authenticated, authMode, onSignIn, onSignOut }) {
   return (
     <header className="topbar">
       <button className="env-select" onClick={() => setEnvironment(environment === "Production" ? "Staging" : "Production")}>
@@ -273,11 +318,13 @@ function Topbar({ environment, setEnvironment }) {
       </div>
       <button className="date-button"><CalendarDays size={16} /> Live window</button>
       <button className="icon-button"><Bell size={18} /></button>
-      <div className="user">
-        <span>FN</span>
-        <div><strong>Console</strong><small>Management mode</small></div>
-        <ChevronDown size={15} />
-      </div>
+      {authenticated ? (
+        <button className="user" onClick={onSignOut} title="Sign out">
+          <span>FN</span>
+          <div><strong>Console</strong><small>{authMode === "cognito" ? "Cognito session" : "Recovery mode"}</small></div>
+          <ChevronDown size={15} />
+        </button>
+      ) : <button className="primary compact" onClick={onSignIn}>Sign in</button>}
     </header>
   );
 }
@@ -480,6 +527,37 @@ function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   );
 }
 
+function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const zones = filterByTenant(state.dns_zones, selectedTenantId);
+  const [posture, setPosture] = useState(null);
+  const createZone = async (domainId, mode) => {
+    await edgeAction(`/api/domains/${domainId}/dns-zone`, "POST", token, setStatus, onCreated, "DNS zone workflow created.", { mode });
+  };
+  const checkPosture = async (domainId) => {
+    try {
+      const data = await apiRequest(`/api/domains/${domainId}/dns-posture`, token);
+      setPosture(data.posture);
+      setStatus({ type: "success", message: "DNS posture refreshed." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  return (
+    <div className="screen">
+      <Panel title="DNS Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {domains.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Mode</th><th>DNSSEC</th><th>Action</th></tr></thead><tbody>{domains.map((domain) => {
+          const zone = zones.find((item) => item.domain_id === domain.domain_id);
+          return <tr key={domain.domain_id}><td>{domain.domain_name}</td><td>{zone?.mode || "External DNS"}</td><td>{zone?.dnssec_status || "Check posture"}</td><td><span className="button-pair">{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "external_guided")}>Guided</button>}{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "route53_delegated")}>Delegate Route 53</button>}<button className="secondary compact" disabled={!token} onClick={() => checkPosture(domain.domain_id)}>Posture</button></span></td></tr>;
+        })}</tbody></table> : <EmptyTable columns={["Domain", "Mode", "DNSSEC", "Action"]} message="Verify a domain before enabling DNS management." />}
+      </Panel>
+      <Panel title="DNS & TLS Posture">
+        {posture ? <div className="settings-list"><div><Globe2 size={18} /><span>DNSSEC</span><strong>{posture.dnssec_status}</strong></div><div><Shield size={18} /><span>CAA</span><strong>{posture.caa_present ? "Present" : "Missing"}</strong></div><div><Activity size={18} /><span>Origin exposure</span><strong>{posture.origin_ip_exposed ? "Detected" : "Not detected"}</strong></div>{posture.findings.map((finding) => <div key={finding.code}><Bell size={18} /><span>{finding.recommendation}</span><strong>{finding.severity}</strong></div>)}</div> : <EmptyState icon={Globe2} title="No posture check yet" body="Run a posture check for a verified tenant domain." />}
+      </Panel>
+    </div>
+  );
+}
+
 function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
@@ -656,11 +734,21 @@ function EventsScreen({ token, selectedTenantId, setStatus }) {
   );
 }
 
-function AiScreen() {
+function AiScreen({ token, selectedTenantId, setStatus }) {
+  const [findings, setFindings] = useState([]);
+  const analyze = async () => {
+    try {
+      const data = await apiRequest("/api/ai/analyze", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId }) });
+      setFindings(data.findings || []);
+      setStatus({ type: "success", message: `Read-only analysis completed for ${data.analyzed_events} events.` });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
   return (
     <div className="screen ai-screen">
-      <Panel title="AI Security Analyst" action={<span className="mode-readonly">Read-only mode</span>}>
-        <EmptyState icon={Sparkles} title="AI Analyst is ready" body="Findings will appear only after real tenant events and traffic are available." />
+      <Panel title="AI Security Analyst" action={<button className="secondary compact" disabled={!token || !selectedTenantId} onClick={analyze}><Sparkles size={15} /> Analyze</button>}>
+        {findings.length ? <table className="data-table"><thead><tr><th>Severity</th><th>Finding</th><th>Evidence</th><th>Recommendation</th></tr></thead><tbody>{findings.map((finding) => <tr key={finding.finding_id}><td><span className="health pending">{finding.severity}</span></td><td>{finding.summary}</td><td>{finding.evidence_count}</td><td>{finding.recommendation}</td></tr>)}</tbody></table> : <EmptyState icon={Sparkles} title="AI Analyst is ready" body="Findings appear only after analysis of real tenant WAF events." />}
       </Panel>
       <Panel title="Recommended Change Request">
         <EmptyState icon={ClipboardList} title="No recommendations pending" body="The analyst will create reviewable recommendations without applying enforcement changes automatically." />
@@ -720,8 +808,8 @@ function SettingsScreen({ platform, token, onTokenSave }) {
         <div className="management-card">
           <KeyRound size={22} />
           <div>
-            <h3>Bootstrap admin token</h3>
-            <p>Used for initial tenant and domain management until Cognito login is wired into the console.</p>
+            <h3>Recovery access token</h3>
+            <p>Reserved for controlled platform recovery. Normal console access uses Cognito.</p>
           </div>
           <div className="token-input">
             <label className="sr-only" htmlFor="management-token">Management token</label>
@@ -859,7 +947,8 @@ function IdpCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus 
   const [issuerUrl, setIssuerUrl] = useState("");
   const [metadataUrl, setMetadataUrl] = useState("");
   const [clientId, setClientId] = useState("");
-  const [secretReference, setSecretReference] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [defaultRole, setDefaultRole] = useState("read_only");
 
   const submit = async (event) => {
     event.preventDefault();
@@ -870,13 +959,14 @@ function IdpCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus 
       issuer_url: issuerUrl,
       metadata_url: metadataUrl,
       client_id: clientId,
-      secret_reference: secretReference
+      client_secret: clientSecret,
+      default_role: defaultRole
     }, "Identity provider connection saved.", setStatus, () => {
       setName("");
       setIssuerUrl("");
       setMetadataUrl("");
       setClientId("");
-      setSecretReference("");
+      setClientSecret("");
       onCreated();
     });
   };
@@ -892,7 +982,8 @@ function IdpCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus 
       <label htmlFor="idp-issuer">Issuer URL<input id="idp-issuer" value={issuerUrl} onChange={(event) => setIssuerUrl(event.target.value)} placeholder="https://idp.example.com/oauth2/default" /></label>
       <label htmlFor="idp-metadata">Metadata URL<input id="idp-metadata" value={metadataUrl} onChange={(event) => setMetadataUrl(event.target.value)} placeholder="https://idp.example.com/metadata" /></label>
       <label htmlFor="idp-client">Client ID<input id="idp-client" value={clientId} onChange={(event) => setClientId(event.target.value)} /></label>
-      <label htmlFor="idp-secret">Secret reference<input id="idp-secret" value={secretReference} onChange={(event) => setSecretReference(event.target.value)} placeholder="secretsmanager://tenant/idp/client-secret" /></label>
+      {protocol === "oidc" && <label htmlFor="idp-secret">Client secret<input id="idp-secret" type="password" value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} autoComplete="new-password" /></label>}
+      <label htmlFor="idp-role">Default role<select id="idp-role" value={defaultRole} onChange={(event) => setDefaultRole(event.target.value)}><option value="read_only">Read only</option><option value="security_analyst">Security analyst</option></select></label>
       <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Save IdP</button>
     </form>
   );
@@ -1230,7 +1321,7 @@ function AccessRequired({ onNavigate }) {
   return (
     <div className="access-banner">
       <KeyRound size={20} />
-      <span>Management API is protected. Add the bootstrap admin token in Settings to manage tenants, domains and policies.</span>
+      <span>Sign in with Cognito to manage tenants, domains and policies. Platform recovery access remains in Settings.</span>
       <button className="secondary" onClick={() => onNavigate("settings")}>Open settings</button>
     </div>
   );
@@ -1359,6 +1450,55 @@ async function apiRequest(path, token, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`);
   return data;
+}
+
+async function startCognitoLogin(platform) {
+  if (!platform?.cognito_hosted_ui_url || !platform?.cognito_app_client_id) throw new Error("Cognito login is not configured yet.");
+  const state = crypto.randomUUID();
+  const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)));
+  const challengeBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  sessionStorage.setItem("fortressnet_oidc_state", state);
+  sessionStorage.setItem("fortressnet_oidc_verifier", verifier);
+  const loginUrl = new URL(`${platform.cognito_hosted_ui_url}/login`);
+  loginUrl.searchParams.set("client_id", platform.cognito_app_client_id);
+  loginUrl.searchParams.set("response_type", "code");
+  loginUrl.searchParams.set("scope", "openid email profile");
+  loginUrl.searchParams.set("redirect_uri", `${window.location.origin}/auth/callback`);
+  loginUrl.searchParams.set("state", state);
+  loginUrl.searchParams.set("code_challenge_method", "S256");
+  loginUrl.searchParams.set("code_challenge", base64Url(new Uint8Array(challengeBytes)));
+  window.location.assign(loginUrl.toString());
+}
+
+async function completeCognitoCallback(platform) {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  const state = params.get("state");
+  const expectedState = sessionStorage.getItem("fortressnet_oidc_state");
+  const verifier = sessionStorage.getItem("fortressnet_oidc_verifier");
+  sessionStorage.removeItem("fortressnet_oidc_state");
+  sessionStorage.removeItem("fortressnet_oidc_verifier");
+  if (!code || !state || state !== expectedState || !verifier) throw new Error("Invalid Cognito authorization response.");
+  const response = await fetch(`${platform.cognito_hosted_ui_url}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: platform.cognito_app_client_id,
+      code,
+      redirect_uri: `${window.location.origin}/auth/callback`,
+      code_verifier: verifier
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.id_token) throw new Error(payload.error_description || "Cognito token exchange failed.");
+  return payload.id_token;
+}
+
+function base64Url(bytes) {
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 function filterByTenant(items, selectedTenantId) {

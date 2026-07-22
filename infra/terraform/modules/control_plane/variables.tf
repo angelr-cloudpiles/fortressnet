@@ -159,6 +159,21 @@ variable "approvals_table_name" {
   type        = string
 }
 
+variable "dns_zones_table_name" {
+  description = "Managed DNS zones table name."
+  type        = string
+}
+
+variable "dns_records_table_name" {
+  description = "Managed DNS records table name."
+  type        = string
+}
+
+variable "ai_findings_table_name" {
+  description = "AI analyst findings table name."
+  type        = string
+}
+
 variable "edge_logs_bucket_domain_name" {
   description = "S3 bucket domain name for tenant CloudFront access logs."
   type        = string
@@ -171,6 +186,11 @@ variable "cognito_user_pool_id" {
 
 variable "cognito_app_client_id" {
   description = "Cognito app client ID."
+  type        = string
+}
+
+variable "cognito_hosted_ui_url" {
+  description = "Cognito hosted UI base URL."
   type        = string
 }
 

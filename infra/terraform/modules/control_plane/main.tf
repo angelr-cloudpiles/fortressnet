@@ -260,6 +260,9 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.edge_deployments_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_zones_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.users_table_name}/index/*",
@@ -270,8 +273,32 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.certificates_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.edge_deployments_table_name}/index/*",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}/index/*"
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_zones_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}/index/*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:CreateIdentityProvider",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:UpdateUserPoolClient"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:userpool/${var.cognito_user_pool_id}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "route53:ChangeResourceRecordSets",
+          "route53:CreateHostedZone",
+          "route53:GetDNSSEC"
+        ]
+        Resource = "*"
       },
       {
         Effect = "Allow"
@@ -475,6 +502,18 @@ resource "aws_ecs_task_definition" "this" {
           value = var.approvals_table_name
         },
         {
+          name  = "DNS_ZONES_TABLE"
+          value = var.dns_zones_table_name
+        },
+        {
+          name  = "DNS_RECORDS_TABLE"
+          value = var.dns_records_table_name
+        },
+        {
+          name  = "AI_FINDINGS_TABLE"
+          value = var.ai_findings_table_name
+        },
+        {
           name  = "EDGE_LOGS_BUCKET_DOMAIN_NAME"
           value = var.edge_logs_bucket_domain_name
         },
@@ -489,6 +528,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "COGNITO_APP_CLIENT_ID"
           value = var.cognito_app_client_id
+        },
+        {
+          name  = "COGNITO_HOSTED_UI_URL"
+          value = var.cognito_hosted_ui_url
         },
         {
           name  = "AUDIT_LOG_BUCKET"

@@ -66,6 +66,26 @@ resource "aws_cloudwatch_metric_alarm" "cloudfront_5xx" {
   }
 }
 
+resource "aws_cloudwatch_metric_alarm" "waf_blocked_requests" {
+  alarm_name          = "${var.name}-waf-blocked-requests"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "BlockedRequests"
+  namespace           = "AWS/WAFV2"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 100
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "FortressNet platform WAF blocks are elevated; investigate security events."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    WebACL = var.waf_web_acl_name
+    Region = "Global"
+    Rule   = "ALL"
+  }
+}
+
 resource "aws_cloudwatch_dashboard" "platform" {
   dashboard_name = "${var.name}-platform"
 
@@ -130,7 +150,7 @@ resource "aws_cloudwatch_dashboard" "platform" {
           region = "us-east-1"
           title  = "WAF allowed vs blocked"
           metrics = [
-            ["AWS/WAFV2", "AllowedRequests", "WebACL", var.waf_web_acl_name, "Region", var.waf_web_acl_scope, "Rule", "ALL"],
+            ["AWS/WAFV2", "AllowedRequests", "WebACL", var.waf_web_acl_name, "Region", "Global", "Rule", "ALL"],
             [".", "BlockedRequests", ".", ".", ".", ".", ".", "."]
           ]
           stat   = "Sum"

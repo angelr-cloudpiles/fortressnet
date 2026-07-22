@@ -12,8 +12,8 @@ FortressNet ya tiene una base productiva:
 - Entrada publica por CloudFront.
 - Origin ALB restringido a CloudFront con header privado.
 - AWS WAF asociado al edge de la consola.
-- Cognito provisionado para identidad base.
-- API de gestion protegida por bootstrap token o API key.
+- Cognito Hosted UI con Authorization Code + PKCE, grupos RBAC e invitaciones.
+- API de gestion protegida por token Cognito, API key o token de recuperacion controlada.
 - RBAC, users, API keys, perfil personal e IdP metadata persistidos.
 - DynamoDB para tenants, dominios, politicas, usuarios, API keys, IdP connections y perfiles.
 - RDS privado, S3 para logs/reportes, KMS, CloudWatch, SNS y VPC endpoints.
@@ -22,6 +22,10 @@ FortressNet ya tiene una base productiva:
 Brecha principal: varias capacidades existen como infraestructura o metadata, pero todavia no estan convertidas en producto configurable por tenant ni en enforcement automatico sobre dominios de clientes.
 
 Actualizacion de implementacion: el onboarding exige un TXT de propiedad y, solo despues de validarlo, solicita un certificado ACM etiquetado en `us-east-1`. El control plane guarda y muestra los CNAME de validacion de ACM. El flujo de edge por tenant esta implementado: solicitud, aprobacion por un actor distinto, health check HTTPS del origin con proteccion SSRF, CloudFront, WAF, logging cifrado, CNAME de trafico, verificacion de cutover y auditoria. El sistema no crea recursos de cliente sin una solicitud aprobada.
+
+## Excepcion De Red Documentada
+
+El ALB del control plane es publicamente enrutable porque CloudFront necesita un origin HTTP(S) publico. No acepta trafico arbitrario: su security group permite solo el managed prefix list de CloudFront y el listener exige una cabecera privada que CloudFront inyecta. El chequeo `AWS-0053` de Trivy seguira marcando este patron como `HIGH` por el atributo `internal = false`; se revisa como riesgo residual, no se oculta mediante una supresion. La migracion futura a CloudFront VPC origins permitiria evaluar un ALB interno.
 
 ## Principios De Ejecucion
 
@@ -157,6 +161,8 @@ Criterios de aceptacion:
 - Cada evento puede rastrearse hasta fuente y timestamp.
 
 Estado implementado: cada edge crea un log group WAF cifrado con KMS y retencion de 365 dias. La consola consulta esos logs, hashea la IP antes de responder y construye reportes reales bajo demanda. La ingesta S3/Athena para historial masivo sigue pendiente.
+
+Actualizacion de operacion: existe una alarma CloudWatch sobre bloqueos WAF de la plataforma, enlazada al topic SNS existente. El analista read-only usa eventos WAF reales para generar hallazgos persistidos y recomendaciones revisables; no escribe reglas ni cambia enforcement.
 
 ## Fase 2: API Shield MVP
 

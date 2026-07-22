@@ -108,6 +108,21 @@ output "approvals_table_name" {
   value       = aws_dynamodb_table.approvals.name
 }
 
+output "dns_zones_table_name" {
+  description = "Managed DNS zones table name."
+  value       = aws_dynamodb_table.dns_zones.name
+}
+
+output "dns_records_table_name" {
+  description = "Managed DNS records table name."
+  value       = aws_dynamodb_table.dns_records.name
+}
+
+output "ai_findings_table_name" {
+  description = "AI analyst findings table name."
+  value       = aws_dynamodb_table.ai_findings.name
+}
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket

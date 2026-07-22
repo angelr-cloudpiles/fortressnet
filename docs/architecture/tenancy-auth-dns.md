@@ -63,7 +63,7 @@ policy
 
 ## Autenticacion del dashboard
 
-El dashboard usa Cognito inicialmente.
+El dashboard usa Cognito con Authorization Code + PKCE. La API valida el ID token firmado contra el user pool y cruza el sujeto con el registro de usuario y los grupos Cognito antes de resolver el tenant y los scopes. Los atributos mutables del token no autorizan acceso por si solos.
 
 ```mermaid
 sequenceDiagram
@@ -86,27 +86,29 @@ Claims esperados:
 {
   "sub": "user_123",
   "email": "secops@example.com",
-  "tenant_id": "tenant_acme",
-  "role": "security_admin"
+  "cognito:groups": ["security_admins"]
 }
 ```
 
 Roles iniciales:
 
-- `owner`
-- `admin`
+- `platform_owner`
+- `tenant_admin`
 - `security_admin`
-- `developer`
-- `viewer`
-- `billing`
+- `security_analyst`
+- `billing_admin`
+- `read_only`
+
+Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; el correo temporal lo entrega Cognito. La cuenta se activa al completar el primer login. El token de bootstrap queda solo como recuperacion controlada de plataforma.
 
 ## SSO por tenant
 
 Para clientes B2B:
 
-- OIDC con Okta, Azure AD o Google Workspace.
-- SAML para enterprise.
-- Mapeo de grupos del IdP a roles FortressNet.
+- OIDC con Okta, Azure AD o Google Workspace mediante provider Cognito.
+- SAML para enterprise mediante URL de metadata.
+- El secreto OIDC se envia una unica vez a Cognito y no se persiste en DynamoDB.
+- Auto-provisioning opcional y rol por defecto limitado a la conexion del IdP; la conexion, no un claim mutable, determina el tenant.
 
 La autenticacion del dashboard es independiente de la autenticacion de usuarios finales de las aplicaciones protegidas.
 
@@ -136,6 +138,15 @@ FortressNet gestiona la hosted zone en Route 53.
 
 FortressNet gestiona toda la zona DNS del cliente. Esta opcion queda para fases posteriores por el riesgo operativo.
 
+## DNS Gestionado Y Postura
+
+El control plane ofrece dos modos por dominio previamente verificado:
+
+- `external_guided`: FortressNet no modifica DNS externo y entrega instrucciones verificables.
+- `route53_delegated`: FortressNet crea una hosted zone publica, devuelve sus NS y solo permite registros dentro del sufijo delegado.
+
+Cada zona, cambio y registro queda asociado a `tenant_id`, cifrado en DynamoDB y auditado. La postura consulta CAA, DMARC, SPF, DNSSEC y compara las direcciones del hostname con el origin para detectar exposicion directa. El soporte apex usa Alias/ANAME del proveedor; no se simula un CNAME apex invalido.
+
 ## Flujo de onboarding de dominio
 
 ```mermaid
@@ -155,4 +166,3 @@ sequenceDiagram
     Admin->>DNS: Crear CNAME
     FN->>FN: Activar dominio
 ```
-

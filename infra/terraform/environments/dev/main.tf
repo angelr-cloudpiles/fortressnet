@@ -103,9 +103,13 @@ module "control_plane" {
   waf_change_sets_table_name   = module.data_plane.waf_change_sets_table_name
   edge_deployments_table_name  = module.data_plane.edge_deployments_table_name
   approvals_table_name         = module.data_plane.approvals_table_name
+  dns_zones_table_name         = module.data_plane.dns_zones_table_name
+  dns_records_table_name       = module.data_plane.dns_records_table_name
+  ai_findings_table_name       = module.data_plane.ai_findings_table_name
   edge_logs_bucket_domain_name = module.data_plane.edge_logs_bucket_domain_name
   cognito_user_pool_id         = module.identity.user_pool_id
   cognito_app_client_id        = module.identity.app_client_id
+  cognito_hosted_ui_url        = module.identity.hosted_ui_url
 }
 
 resource "aws_route53_record" "origin_ipv4" {
