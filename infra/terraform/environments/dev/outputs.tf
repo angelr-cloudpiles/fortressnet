@@ -3,6 +3,11 @@ output "app_url" {
   value       = "https://${local.app_fqdn}"
 }
 
+output "site_url" {
+  description = "FortressNet public site URL."
+  value       = "https://${var.domain_name}"
+}
+
 output "control_plane_ecr_repository_url" {
   description = "ECR repository URL for the control plane image."
   value       = aws_ecr_repository.control_plane.repository_url

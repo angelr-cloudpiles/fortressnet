@@ -8,6 +8,12 @@ variable "app_fqdn" {
   type        = string
 }
 
+variable "additional_aliases" {
+  description = "Additional CloudFront aliases to serve with the same edge distribution."
+  type        = list(string)
+  default     = []
+}
+
 variable "hosted_zone_name" {
   description = "Route 53 hosted zone name."
   type        = string

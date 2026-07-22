@@ -63,6 +63,7 @@ module "edge" {
 
   name                    = local.name
   app_fqdn                = local.app_fqdn
+  additional_aliases      = [var.domain_name]
   hosted_zone_name        = var.hosted_zone_name
   origin_domain           = module.control_plane.alb_dns_name
   origin_protocol         = "http-only"

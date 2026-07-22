@@ -12,6 +12,7 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
 }
 
 locals {
+  aliases     = distinct(concat([var.app_fqdn], var.additional_aliases))
   metric_name = replace(var.name, "-", "_")
   origin_id   = "${var.name}-control-plane"
 }
@@ -21,6 +22,9 @@ resource "aws_acm_certificate" "this" {
 
   domain_name       = var.app_fqdn
   validation_method = "DNS"
+  subject_alternative_names = [
+    for alias in var.additional_aliases : alias
+  ]
 
   lifecycle {
     create_before_destroy = true
@@ -137,7 +141,7 @@ resource "aws_wafv2_web_acl" "this" {
 resource "aws_cloudfront_distribution" "this" {
   enabled         = true
   comment         = "FortressNet SaaS edge for ${var.app_fqdn}"
-  aliases         = [var.app_fqdn]
+  aliases         = local.aliases
   price_class     = var.price_class
   web_acl_id      = aws_wafv2_web_acl.this.arn
   http_version    = "http2and3"
@@ -199,6 +203,34 @@ resource "aws_route53_record" "app_ipv4" {
 resource "aws_route53_record" "app_ipv6" {
   zone_id = data.aws_route53_zone.platform.zone_id
   name    = var.app_fqdn
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.this.domain_name
+    zone_id                = aws_cloudfront_distribution.this.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "additional_alias_ipv4" {
+  for_each = toset(var.additional_aliases)
+
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = each.value
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.this.domain_name
+    zone_id                = aws_cloudfront_distribution.this.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "additional_alias_ipv6" {
+  for_each = toset(var.additional_aliases)
+
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = each.value
   type    = "AAAA"
 
   alias {

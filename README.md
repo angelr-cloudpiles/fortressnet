@@ -110,6 +110,7 @@ For the lowest MVP cost, use `enable_nat_gateway = false` only if your services 
 
 The `dev` environment is deployed in AWS account `422128689549` using profile `fortressnet`.
 
+- Site URL: `https://fortressnet.app`
 - App URL: `https://app.fortressnet.app`
 - Region: `us-east-1`
 - Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:clean-20260722-001`
