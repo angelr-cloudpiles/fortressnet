@@ -27,12 +27,23 @@ variable "origin_domain" {
 variable "origin_protocol" {
   description = "Origin protocol policy."
   type        = string
-  default     = "http-only"
+  default     = "https-only"
 
   validation {
     condition     = contains(["http-only", "https-only", "match-viewer"], var.origin_protocol)
     error_message = "origin_protocol must be http-only, https-only, or match-viewer."
   }
+}
+
+variable "origin_verify_header_name" {
+  description = "Header name to add to CloudFront origin requests."
+  type        = string
+}
+
+variable "origin_verify_header_value" {
+  description = "Header value to add to CloudFront origin requests."
+  type        = string
+  sensitive   = true
 }
 
 variable "waf_rate_limit" {
@@ -47,6 +58,11 @@ variable "logs_bucket_name" {
 
 variable "logs_bucket_domain_name" {
   description = "Edge logs bucket domain name for CloudFront standard logs."
+  type        = string
+}
+
+variable "platform_kms_key_arn" {
+  description = "Platform KMS key ARN used to encrypt WAF logs."
   type        = string
 }
 

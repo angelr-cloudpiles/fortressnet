@@ -14,7 +14,8 @@ locals {
 
 resource "aws_cloudwatch_log_group" "service" {
   name              = "/aws/ecs/${var.name}/control-plane"
-  retention_in_days = 30
+  retention_in_days = 365
+  kms_key_id        = var.platform_kms_key_arn
 }
 
 resource "aws_security_group" "alb" {
@@ -26,25 +27,30 @@ resource "aws_security_group" "alb" {
 resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
   security_group_id = aws_security_group.alb.id
   prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
-  from_port         = 80
-  to_port           = 80
+  from_port         = 443
+  to_port           = 443
   ip_protocol       = "tcp"
+  description       = "Allow HTTPS from CloudFront origin-facing prefix list only"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_direct_http" {
+resource "aws_vpc_security_group_ingress_rule" "alb_direct_https" {
   for_each = toset(var.allow_direct_http_cidr_blocks)
 
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = each.value
-  from_port         = 80
-  to_port           = 80
+  from_port         = 443
+  to_port           = 443
   ip_protocol       = "tcp"
+  description       = "Allow temporary direct HTTPS access from approved CIDR"
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb" {
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  ip_protocol                  = "tcp"
+  description                  = "Allow ALB egress only to control plane service targets"
 }
 
 resource "aws_security_group" "service" {
@@ -59,12 +65,7 @@ resource "aws_vpc_security_group_ingress_rule" "service_from_alb" {
   from_port                    = var.container_port
   to_port                      = var.container_port
   ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_egress_rule" "service" {
-  security_group_id = aws_security_group.service.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  description                  = "Allow control plane traffic from ALB only"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "database_from_service" {
@@ -73,14 +74,17 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_service" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
+  description                  = "Allow PostgreSQL access from control plane service"
 }
 
 resource "aws_lb" "this" {
-  name               = substr(replace("${var.name}-alb", "_", "-"), 0, 32)
-  load_balancer_type = "application"
-  internal           = false
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = var.public_subnet_ids
+  name                       = substr(replace("${var.name}-alb", "_", "-"), 0, 32)
+  load_balancer_type         = "application"
+  internal                   = false
+  security_groups            = [aws_security_group.alb.id]
+  subnets                    = var.public_subnet_ids
+  enable_deletion_protection = true
+  drop_invalid_header_fields = true
 
   access_logs {
     bucket  = var.log_bucket_name
@@ -108,14 +112,38 @@ resource "aws_lb_target_group" "service" {
   }
 }
 
-resource "aws_lb_listener" "http" {
+resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.this.arn
-  port              = 80
-  protocol          = "HTTP"
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = var.alb_certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
 
   default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "application/json"
+      message_body = jsonencode({ error = "forbidden" })
+      status_code  = "403"
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "verified_cloudfront_origin" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 10
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.service.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = var.origin_verify_header_name
+      values           = [var.origin_verify_header_value]
+    }
   }
 }
 
@@ -392,5 +420,5 @@ resource "aws_ecs_service" "this" {
     container_port   = var.container_port
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.https]
 }

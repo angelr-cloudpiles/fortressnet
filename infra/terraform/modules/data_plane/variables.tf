@@ -30,6 +30,12 @@ variable "database_skip_final_snapshot" {
   default     = false
 }
 
+variable "database_multi_az" {
+  description = "Whether to run the PostgreSQL instance in Multi-AZ mode."
+  type        = bool
+  default     = true
+}
+
 variable "vpc_id" {
   description = "VPC ID."
   type        = string

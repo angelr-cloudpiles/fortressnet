@@ -1,9 +1,11 @@
 resource "aws_ecr_repository" "control_plane" {
   name                 = "${var.project}/control-plane"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = "KMS"
+    kms_key         = module.data_plane.kms_key_arn
   }
 
   image_scanning_configuration {

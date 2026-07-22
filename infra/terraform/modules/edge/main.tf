@@ -11,10 +11,22 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
   name = "Managed-AllViewer"
 }
 
+data "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "Managed-SecurityHeadersPolicy"
+}
+
 locals {
   aliases     = distinct(concat([var.app_fqdn], var.additional_aliases))
   metric_name = replace(var.name, "-", "_")
   origin_id   = "${var.name}-control-plane"
+}
+
+resource "aws_cloudwatch_log_group" "waf" {
+  provider = aws.us_east_1
+
+  name              = "aws-waf-logs-${var.name}-edge"
+  retention_in_days = 365
+  kms_key_id        = var.platform_kms_key_arn
 }
 
 resource "aws_acm_certificate" "this" {
@@ -110,6 +122,28 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 25
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.metric_name}_ip_reputation"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "DefaultIpRateLimit"
     priority = 30
 
@@ -138,14 +172,34 @@ resource "aws_wafv2_web_acl" "this" {
   }
 }
 
+resource "aws_wafv2_web_acl_logging_configuration" "this" {
+  provider = aws.us_east_1
+
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+  resource_arn            = aws_wafv2_web_acl.this.arn
+
+  redacted_fields {
+    single_header {
+      name = "authorization"
+    }
+  }
+
+  redacted_fields {
+    single_header {
+      name = "cookie"
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "this" {
-  enabled         = true
-  comment         = "FortressNet SaaS edge for ${var.app_fqdn}"
-  aliases         = local.aliases
-  price_class     = var.price_class
-  web_acl_id      = aws_wafv2_web_acl.this.arn
-  http_version    = "http2and3"
-  is_ipv6_enabled = true
+  enabled             = true
+  comment             = "FortressNet SaaS edge for ${var.app_fqdn}"
+  aliases             = local.aliases
+  price_class         = var.price_class
+  web_acl_id          = aws_wafv2_web_acl.this.arn
+  http_version        = "http2and3"
+  is_ipv6_enabled     = true
+  default_root_object = "index.html"
 
   logging_config {
     bucket          = var.logs_bucket_domain_name
@@ -157,6 +211,11 @@ resource "aws_cloudfront_distribution" "this" {
     domain_name = var.origin_domain
     origin_id   = local.origin_id
 
+    custom_header {
+      name  = var.origin_verify_header_name
+      value = var.origin_verify_header_value
+    }
+
     custom_origin_config {
       http_port              = 80
       https_port             = 443
@@ -166,13 +225,14 @@ resource "aws_cloudfront_distribution" "this" {
   }
 
   default_cache_behavior {
-    target_origin_id         = local.origin_id
-    viewer_protocol_policy   = "redirect-to-https"
-    allowed_methods          = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-    cached_methods           = ["GET", "HEAD", "OPTIONS"]
-    compress                 = true
-    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    target_origin_id           = local.origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
   }
 
   restrictions {

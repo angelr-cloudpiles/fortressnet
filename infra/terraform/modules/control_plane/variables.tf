@@ -68,6 +68,22 @@ variable "platform_kms_key_arn" {
   type        = string
 }
 
+variable "alb_certificate_arn" {
+  description = "ACM certificate ARN for the public ALB HTTPS listener."
+  type        = string
+}
+
+variable "origin_verify_header_name" {
+  description = "Header name CloudFront must send for the ALB to forward origin traffic."
+  type        = string
+}
+
+variable "origin_verify_header_value" {
+  description = "Header value CloudFront must send for the ALB to forward origin traffic."
+  type        = string
+  sensitive   = true
+}
+
 variable "log_bucket_name" {
   description = "Audit log bucket name."
   type        = string

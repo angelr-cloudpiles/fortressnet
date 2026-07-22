@@ -1,5 +1,6 @@
 resource "aws_sns_topic" "alerts" {
-  name = "${var.name}-alerts"
+  name              = "${var.name}-alerts"
+  kms_master_key_id = var.platform_kms_key_arn
 }
 
 resource "aws_sns_topic_subscription" "email" {

@@ -8,6 +8,14 @@ resource "aws_vpc" "this" {
   }
 }
 
+resource "aws_default_security_group" "this" {
+  vpc_id = aws_vpc.this.id
+
+  tags = {
+    Name = "${var.name}-default-restricted"
+  }
+}
+
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
 
@@ -27,7 +35,7 @@ resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
   cidr_block              = each.value.cidr
   availability_zone       = each.value.az
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
 
   tags = {
     Name = "${var.name}-public-${each.value.az}"

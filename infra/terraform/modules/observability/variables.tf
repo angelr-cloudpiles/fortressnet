@@ -48,3 +48,8 @@ variable "dashboard_region" {
   description = "Region shown in the CloudWatch dashboard widgets."
   type        = string
 }
+
+variable "platform_kms_key_arn" {
+  description = "Platform KMS key ARN used to encrypt alert topics."
+  type        = string
+}

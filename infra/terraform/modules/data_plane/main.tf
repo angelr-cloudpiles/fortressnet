@@ -2,6 +2,8 @@ data "aws_caller_identity" "current" {}
 
 data "aws_canonical_user_id" "current" {}
 
+data "aws_region" "current" {}
+
 data "aws_iam_policy_document" "platform_key" {
   statement {
     sid = "EnableAccountAdministration"
@@ -30,6 +32,28 @@ data "aws_iam_policy_document" "platform_key" {
 
     resources = ["*"]
   }
+
+  statement {
+    sid = "AllowRegionalServiceEncryption"
+
+    principals {
+      type = "Service"
+      identifiers = [
+        "logs.${data.aws_region.current.region}.amazonaws.com",
+        "sns.amazonaws.com"
+      ]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:Encrypt",
+      "kms:GenerateDataKey*",
+      "kms:ReEncrypt*"
+    ]
+
+    resources = ["*"]
+  }
 }
 
 data "aws_iam_policy_document" "audit_logs_bucket" {
@@ -45,6 +69,38 @@ data "aws_iam_policy_document" "audit_logs_bucket" {
     resources = [
       "${aws_s3_bucket.this["audit_logs"].arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
     ]
+  }
+
+  statement {
+    sid = "AllowVpcFlowLogDeliveryAclCheck"
+
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.this["audit_logs"].arn]
+  }
+
+  statement {
+    sid = "AllowVpcFlowLogDeliveryWrite"
+
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.this["audit_logs"].arn}/vpc-flow-logs/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
   }
 }
 
@@ -172,6 +228,7 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_cidr" {
   from_port         = 5432
   to_port           = 5432
   ip_protocol       = "tcp"
+  description       = "Allow PostgreSQL from approved CIDR ${each.value}"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "database_from_security_group" {
@@ -182,12 +239,7 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_security_group" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_egress_rule" "database" {
-  security_group_id = aws_security_group.database.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  description                  = "Allow PostgreSQL from approved application security group"
 }
 
 resource "aws_db_subnet_group" "this" {
@@ -195,25 +247,60 @@ resource "aws_db_subnet_group" "this" {
   subnet_ids = var.private_subnet_ids
 }
 
+resource "aws_iam_role" "rds_enhanced_monitoring" {
+  name = "${var.name}-rds-enhanced-monitoring"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "monitoring.rds.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "rds_enhanced_monitoring" {
+  role       = aws_iam_role.rds_enhanced_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+}
+
 resource "aws_db_instance" "this" {
-  identifier                = "${var.name}-postgres"
-  engine                    = "postgres"
-  engine_version            = "17"
-  instance_class            = var.database_instance_class
-  allocated_storage         = 20
-  max_allocated_storage     = 100
-  db_name                   = var.database_name
-  username                  = var.database_username
-  password                  = random_password.database.result
-  db_subnet_group_name      = aws_db_subnet_group.this.name
-  vpc_security_group_ids    = [aws_security_group.database.id]
-  storage_encrypted         = true
-  kms_key_id                = aws_kms_key.platform.arn
-  publicly_accessible       = false
-  skip_final_snapshot       = var.database_skip_final_snapshot
-  final_snapshot_identifier = var.database_skip_final_snapshot ? null : "${var.name}-postgres-final-${random_id.final_snapshot.hex}"
-  deletion_protection       = var.database_deletion_protection
-  backup_retention_period   = 7
+  identifier                          = "${var.name}-postgres"
+  engine                              = "postgres"
+  engine_version                      = "17"
+  instance_class                      = var.database_instance_class
+  allocated_storage                   = 20
+  max_allocated_storage               = 100
+  db_name                             = var.database_name
+  username                            = var.database_username
+  password                            = random_password.database.result
+  db_subnet_group_name                = aws_db_subnet_group.this.name
+  vpc_security_group_ids              = [aws_security_group.database.id]
+  storage_encrypted                   = true
+  kms_key_id                          = aws_kms_key.platform.arn
+  publicly_accessible                 = false
+  multi_az                            = var.database_multi_az
+  iam_database_authentication_enabled = true
+  apply_immediately                   = true
+  skip_final_snapshot                 = var.database_skip_final_snapshot
+  final_snapshot_identifier           = var.database_skip_final_snapshot ? null : "${var.name}-postgres-final-${random_id.final_snapshot.hex}"
+  deletion_protection                 = var.database_deletion_protection
+  backup_retention_period             = 7
+  copy_tags_to_snapshot               = true
+  auto_minor_version_upgrade          = true
+  enabled_cloudwatch_logs_exports = [
+    "postgresql",
+    "upgrade"
+  ]
+  monitoring_interval             = 60
+  monitoring_role_arn             = aws_iam_role.rds_enhanced_monitoring.arn
+  performance_insights_enabled    = true
+  performance_insights_kms_key_id = aws_kms_key.platform.arn
 }
 
 resource "aws_dynamodb_table" "tenants" {
@@ -421,11 +508,7 @@ resource "aws_s3_bucket_policy" "edge_logs" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "logs" {
-  for_each = {
-    audit_logs = aws_s3_bucket.this["audit_logs"]
-    edge_logs  = aws_s3_bucket.this["edge_logs"]
-    ai_events  = aws_s3_bucket.this["ai_events"]
-  }
+  for_each = aws_s3_bucket.this
 
   bucket = each.value.id
 
@@ -437,6 +520,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
 
     noncurrent_version_expiration {
       noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }

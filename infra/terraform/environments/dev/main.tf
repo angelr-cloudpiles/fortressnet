@@ -28,6 +28,46 @@ module "identity" {
   domain_url = "https://${local.app_fqdn}"
 }
 
+resource "random_password" "origin_verify_header" {
+  length  = 32
+  special = false
+}
+
+data "aws_route53_zone" "platform" {
+  name         = var.hosted_zone_name
+  private_zone = false
+}
+
+resource "aws_acm_certificate" "origin" {
+  domain_name       = local.origin_fqdn
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "origin_certificate_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.origin.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "origin" {
+  certificate_arn         = aws_acm_certificate.origin.arn
+  validation_record_fqdns = [for record in aws_route53_record.origin_certificate_validation : record.fqdn]
+}
+
 module "control_plane" {
   source = "../../modules/control_plane"
 
@@ -45,6 +85,9 @@ module "control_plane" {
   database_security_group_id   = module.data_plane.database_security_group_id
   platform_config_secret       = module.data_plane.platform_config_secret_arn
   platform_kms_key_arn         = module.data_plane.kms_key_arn
+  alb_certificate_arn          = aws_acm_certificate_validation.origin.certificate_arn
+  origin_verify_header_name    = local.origin_verify_header_name
+  origin_verify_header_value   = random_password.origin_verify_header.result
   log_bucket_name              = module.data_plane.audit_logs_bucket_name
   tenants_table_name           = module.data_plane.tenants_table_name
   domains_table_name           = module.data_plane.domains_table_name
@@ -52,6 +95,18 @@ module "control_plane" {
   security_policies_table_name = module.data_plane.security_policies_table_name
   cognito_user_pool_id         = module.identity.user_pool_id
   cognito_app_client_id        = module.identity.app_client_id
+}
+
+resource "aws_route53_record" "origin_ipv4" {
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = local.origin_fqdn
+  type    = "A"
+
+  alias {
+    name                   = module.control_plane.alb_dns_name
+    zone_id                = module.control_plane.alb_zone_id
+    evaluate_target_health = true
+  }
 }
 
 module "edge" {
@@ -62,29 +117,128 @@ module "edge" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  name                    = local.name
-  app_fqdn                = local.app_fqdn
-  additional_aliases      = [var.domain_name]
-  hosted_zone_name        = var.hosted_zone_name
-  origin_domain           = module.control_plane.alb_dns_name
-  origin_protocol         = "http-only"
-  waf_rate_limit          = var.waf_rate_limit
-  logs_bucket_name        = module.data_plane.edge_logs_bucket_name
-  logs_bucket_domain_name = module.data_plane.edge_logs_bucket_domain_name
-  price_class             = "PriceClass_100"
+  name                       = local.name
+  app_fqdn                   = local.app_fqdn
+  additional_aliases         = [var.domain_name]
+  hosted_zone_name           = var.hosted_zone_name
+  origin_domain              = local.origin_fqdn
+  origin_protocol            = "https-only"
+  origin_verify_header_name  = local.origin_verify_header_name
+  origin_verify_header_value = random_password.origin_verify_header.result
+  waf_rate_limit             = var.waf_rate_limit
+  logs_bucket_name           = module.data_plane.edge_logs_bucket_name
+  logs_bucket_domain_name    = module.data_plane.edge_logs_bucket_domain_name
+  platform_kms_key_arn       = module.data_plane.kms_key_arn
+  price_class                = "PriceClass_100"
+}
+
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${local.name}-vpc-endpoints"
+  description = "Private AWS API endpoints for FortressNet control plane"
+  vpc_id      = module.network.vpc_id
+
+  tags = local.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "vpc_endpoints_from_control_plane" {
+  security_group_id            = aws_security_group.vpc_endpoints.id
+  referenced_security_group_id = module.control_plane.service_security_group_id
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  description                  = "Allow HTTPS from control plane tasks to private AWS API endpoints"
+}
+
+resource "aws_vpc_security_group_egress_rule" "control_plane_to_vpc_endpoints" {
+  security_group_id            = module.control_plane.service_security_group_id
+  referenced_security_group_id = aws_security_group.vpc_endpoints.id
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  description                  = "Allow HTTPS from control plane tasks to private interface endpoints"
+}
+
+data "aws_ec2_managed_prefix_list" "s3" {
+  name = "com.amazonaws.${var.aws_region}.s3"
+}
+
+data "aws_ec2_managed_prefix_list" "dynamodb" {
+  name = "com.amazonaws.${var.aws_region}.dynamodb"
+}
+
+resource "aws_vpc_security_group_egress_rule" "control_plane_to_s3_gateway" {
+  security_group_id = module.control_plane.service_security_group_id
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.s3.id
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  description       = "Allow HTTPS from control plane tasks to S3 gateway endpoint"
+}
+
+resource "aws_vpc_security_group_egress_rule" "control_plane_to_dynamodb_gateway" {
+  security_group_id = module.control_plane.service_security_group_id
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.dynamodb.id
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  description       = "Allow HTTPS from control plane tasks to DynamoDB gateway endpoint"
+}
+
+resource "aws_vpc_endpoint" "gateway" {
+  for_each = toset(["s3", "dynamodb"])
+
+  vpc_id            = module.network.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.${each.value}"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [module.network.private_route_table_id]
+
+  tags = merge(local.tags, {
+    Name = "${local.name}-${each.value}-gateway"
+  })
+}
+
+resource "aws_vpc_endpoint" "interface" {
+  for_each = toset([
+    "ecr.api",
+    "ecr.dkr",
+    "logs",
+    "secretsmanager",
+    "kms"
+  ])
+
+  vpc_id              = module.network.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.${each.value}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.network.private_subnet_ids
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(local.tags, {
+    Name = "${local.name}-${replace(each.value, ".", "-")}-endpoint"
+  })
+}
+
+resource "aws_flow_log" "vpc" {
+  log_destination      = "arn:aws:s3:::${module.data_plane.audit_logs_bucket_name}/vpc-flow-logs/"
+  log_destination_type = "s3"
+  traffic_type         = "ALL"
+  vpc_id               = module.network.vpc_id
+
+  tags = local.tags
 }
 
 module "observability" {
   source = "../../modules/observability"
 
-  name                = local.name
-  alarm_email         = var.alarm_email
-  ecs_cluster_name    = module.control_plane.cluster_name
-  ecs_service_name    = module.control_plane.service_name
-  alb_arn_suffix      = module.control_plane.alb_arn_suffix
-  target_group_suffix = module.control_plane.target_group_arn_suffix
-  cloudfront_id       = module.edge.cloudfront_distribution_id
-  waf_web_acl_name    = module.edge.waf_web_acl_name
-  waf_web_acl_scope   = "CloudFront"
-  dashboard_region    = var.aws_region
+  name                 = local.name
+  alarm_email          = var.alarm_email
+  ecs_cluster_name     = module.control_plane.cluster_name
+  ecs_service_name     = module.control_plane.service_name
+  alb_arn_suffix       = module.control_plane.alb_arn_suffix
+  target_group_suffix  = module.control_plane.target_group_arn_suffix
+  cloudfront_id        = module.edge.cloudfront_distribution_id
+  waf_web_acl_name     = module.edge.waf_web_acl_name
+  waf_web_acl_scope    = "CloudFront"
+  dashboard_region     = var.aws_region
+  platform_kms_key_arn = module.data_plane.kms_key_arn
 }
