@@ -47,6 +47,10 @@ flowchart LR
     E --> R[Reports + AI Analyst]
 ```
 
+El backlog operativo detallado para llevar esta fase y sus extensiones a
+paridad funcional progresiva esta en
+[`cloudflare-parity-action-plan.md`](cloudflare-parity-action-plan.md).
+
 ## Fase 2: ZTNA MVP
 
 Objetivo: acceso privado sin VPN para aplicaciones internas.
@@ -87,4 +91,3 @@ Incluye:
 - SLAs.
 - Integracion SIEM.
 - Marketplace AWS.
-
