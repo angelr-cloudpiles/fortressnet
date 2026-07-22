@@ -65,6 +65,8 @@ policy
 
 El dashboard usa Cognito con Authorization Code + PKCE. La API valida el ID token firmado contra el user pool y cruza el sujeto con el registro de usuario y los grupos Cognito antes de resolver el tenant y los scopes. Los atributos mutables del token no autorizan acceso por si solos.
 
+Los origenes OAuth de produccion son `https://fortressnet.app` y `https://app.fortressnet.app`; cada uno tiene registrados sus callbacks `/auth/callback` y logout `/logout`. No se aceptan hosts del ALB, IPs o callbacks locales. El access token solicita el scope `aws.cognito.signin.user.admin` exclusivamente para las operaciones TOTP token-autorizadas de Cognito.
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -100,6 +102,8 @@ Roles iniciales:
 - `read_only`
 
 Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; el correo temporal lo entrega Cognito. La cuenta se activa al completar el primer login. El token de bootstrap queda solo como recuperacion controlada de plataforma.
+
+La configuracion TOTP se inicia en el perfil de FortressNet despues del primer login. El backend comprueba que el access token pertenezca al mismo sujeto del ID token y llama a `AssociateSoftwareToken`, `VerifySoftwareToken` y `SetUserMFAPreference`. El QR se genera en el navegador con el emisor `FortressNet`; el secreto no se persiste y los eventos de auditoria registran unicamente el inicio y la confirmacion de la operacion. Cognito Managed Login no ofrece una configuracion de emisor para su QR nativo, por lo que el portal no usa ese QR para el alta con marca FortressNet.
 
 ## SSO por tenant
 

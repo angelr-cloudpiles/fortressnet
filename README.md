@@ -144,6 +144,8 @@ aws secretsmanager get-secret-value \
 
 The JSON field is `management_bootstrap_token`. Treat it as a recovery secret. Normal console access uses the Cognito Hosted UI with PKCE; use the recovery token only to establish or recover platform ownership.
 
+For day-to-day console access, use `https://fortressnet.app` or `https://app.fortressnet.app`. The Cognito client permits callbacks only to those production origins. Invited users set their temporary password at first login and configure their `FortressNet` TOTP authenticator from `Profile -> Multi-Factor Authentication`. See [the console access guide](docs/user-guide/console-access.md).
+
 Tenant onboarding now verifies an ownership TXT record before requesting a tagged ACM certificate in `us-east-1`. The console exposes the ACM DNS validation CNAME and tracks issuance. Tenant CloudFront/WAF provisioning remains an explicit next approval workflow; no traffic cutover occurs automatically.
 
 Each new tenant receives an enforced plan entitlement. The initial `pilot` plan limits domains, users, API keys, IdP connections, DNS zones and policies; usage is derived from control-plane resources and real WAF events. AWS Marketplace fulfillment remains a separate integration workstream.

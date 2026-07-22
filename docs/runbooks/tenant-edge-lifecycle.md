@@ -7,7 +7,8 @@ This runbook defines the production workflow for connecting one tenant domain to
 ## Identity Prerequisite
 
 - Invite the tenant operator from the Access screen. FortressNet creates the Cognito user and sends the temporary password by email.
-- The operator signs in through the Cognito Hosted UI and completes MFA when enrolled. The API accepts the signed Cognito ID token only after matching its email and groups to the tenant user record.
+- The operator signs in through the Cognito Hosted UI from `https://fortressnet.app` or `https://app.fortressnet.app`. The callback origin must match one of the registered production URLs.
+- After changing the temporary password, the operator completes MFA from `Profile -> Multi-Factor Authentication`. This generates a `FortressNet` TOTP QR through the FortressNet console and verifies it with Cognito. The API accepts the signed Cognito ID token only after matching its email and groups to the tenant user record.
 - For OIDC or SAML, configure the tenant IdP before inviting users. The provider is created in Cognito, while client secrets are never stored in the FortressNet database.
 
 ## Preconditions
