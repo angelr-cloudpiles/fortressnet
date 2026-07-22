@@ -25,6 +25,8 @@ AWS Shield Advanced is intentionally not included yet.
 ## Repository Layout
 
 ```text
+app/
+  control-plane/       # Vite/React FortressNet SaaS console packaged for ECS
 infra/terraform/
   environments/
     dev/                 # Deployable development environment
@@ -48,7 +50,7 @@ docs/
 - A Route 53 hosted zone for `fortressnet.app`
 - An application container image in ECR or another reachable registry
 
-The default dev example uses a public nginx image as a placeholder. Replace it with the real FortressNet control-plane image before deploying a real environment.
+The dev environment creates an ECR repository for the FortressNet control-plane image.
 
 ## Quick Start
 
@@ -65,7 +67,7 @@ Before applying, edit `terraform.tfvars` and set at least:
 - `aws_region`
 - `domain_name`
 - `hosted_zone_name`
-- `app_image`
+- `app_image_tag`
 - `alarm_email`
 
 ## SaaS Tenancy Model
@@ -106,4 +108,11 @@ For the lowest MVP cost, use `enable_nat_gateway = false` only if your services 
 
 ## Deployment Status
 
-This repo currently contains the infrastructure baseline. Application code, CI/CD pipelines, and tenant provisioning service code are expected to be added as separate workstreams.
+The `dev` environment is deployed in AWS account `422128689549` using profile `fortressnet`.
+
+- App URL: `https://app.fortressnet.app`
+- Region: `us-east-1`
+- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:mvp-20260722-001`
+- Terraform backend: `s3://fortressnet-terraform-state-422128689549-us-east-1/fortressnet/dev/terraform.tfstate`
+
+Application code, CI/CD pipelines, and tenant provisioning service logic are expected to grow as separate workstreams.

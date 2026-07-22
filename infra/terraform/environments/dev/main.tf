@@ -35,7 +35,7 @@ module "control_plane" {
   vpc_id                     = module.network.vpc_id
   public_subnet_ids          = module.network.public_subnet_ids
   private_subnet_ids         = module.network.private_subnet_ids
-  app_image                  = var.app_image
+  app_image                  = "${aws_ecr_repository.control_plane.repository_url}:${var.app_image_tag}"
   container_port             = var.app_container_port
   desired_count              = var.desired_count
   database_secret_arn        = module.data_plane.database_secret_arn
@@ -51,8 +51,6 @@ module "control_plane" {
   entitlements_table_name    = module.data_plane.entitlements_table_name
   cognito_user_pool_id       = module.identity.user_pool_id
   cognito_app_client_id      = module.identity.app_client_id
-
-  depends_on = [module.data_plane]
 }
 
 module "edge" {
@@ -72,8 +70,6 @@ module "edge" {
   logs_bucket_name        = module.data_plane.edge_logs_bucket_name
   logs_bucket_domain_name = module.data_plane.edge_logs_bucket_domain_name
   price_class             = "PriceClass_100"
-
-  depends_on = [module.data_plane]
 }
 
 module "observability" {

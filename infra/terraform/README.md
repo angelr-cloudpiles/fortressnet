@@ -22,4 +22,12 @@ CloudFront certificates and WAF Web ACLs require `us-east-1`. Environments confi
 
 ## Remote State
 
-`backend.tf.example` shows an S3 backend template. Create the backend bucket and lock table first, then copy it to `backend.tf`.
+`environments/dev/backend.tf` uses:
+
+- bucket: `fortressnet-terraform-state-422128689549-us-east-1`
+- key: `fortressnet/dev/terraform.tfstate`
+- region: `us-east-1`
+- profile: `fortressnet`
+- native S3 lockfile support
+
+The backend bucket must exist before `terraform init`; it is intentionally outside the main environment state.

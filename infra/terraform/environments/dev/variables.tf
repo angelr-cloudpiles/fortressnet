@@ -34,10 +34,10 @@ variable "app_subdomain" {
   default     = "app"
 }
 
-variable "app_image" {
-  description = "Container image for the FortressNet control plane."
+variable "app_image_tag" {
+  description = "Container image tag for the FortressNet control plane."
   type        = string
-  default     = "public.ecr.aws/nginx/nginx:stable-alpine"
+  default     = "latest"
 }
 
 variable "app_container_port" {

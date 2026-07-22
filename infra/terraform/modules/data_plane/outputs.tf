@@ -61,6 +61,11 @@ output "security_policies_table_name" {
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket
+
+  depends_on = [
+    aws_s3_bucket_policy.audit_logs,
+    aws_s3_bucket_server_side_encryption_configuration.audit_logs
+  ]
 }
 
 output "edge_logs_bucket_name" {
@@ -71,6 +76,12 @@ output "edge_logs_bucket_name" {
 output "edge_logs_bucket_domain_name" {
   description = "Edge logs bucket domain name for CloudFront logging."
   value       = aws_s3_bucket.this["edge_logs"].bucket_domain_name
+
+  depends_on = [
+    aws_s3_bucket_acl.edge_logs,
+    aws_s3_bucket_policy.edge_logs,
+    aws_s3_bucket_server_side_encryption_configuration.kms
+  ]
 }
 
 output "reports_bucket_name" {

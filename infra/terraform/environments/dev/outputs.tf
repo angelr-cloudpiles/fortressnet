@@ -3,6 +3,11 @@ output "app_url" {
   value       = "https://${local.app_fqdn}"
 }
 
+output "control_plane_ecr_repository_url" {
+  description = "ECR repository URL for the control plane image."
+  value       = aws_ecr_repository.control_plane.repository_url
+}
+
 output "cloudfront_domain_name" {
   description = "CloudFront distribution domain."
   value       = module.edge.cloudfront_domain_name

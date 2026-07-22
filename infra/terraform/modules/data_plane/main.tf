@@ -1,5 +1,7 @@
 data "aws_caller_identity" "current" {}
 
+data "aws_canonical_user_id" "current" {}
+
 data "aws_iam_policy_document" "platform_key" {
   statement {
     sid = "EnableAccountAdministration"
@@ -337,7 +339,28 @@ resource "aws_s3_bucket_ownership_controls" "edge_logs" {
 
 resource "aws_s3_bucket_acl" "edge_logs" {
   bucket = aws_s3_bucket.this["edge_logs"].id
-  acl    = "private"
+
+  access_control_policy {
+    owner {
+      id = data.aws_canonical_user_id.current.id
+    }
+
+    grant {
+      grantee {
+        id   = data.aws_canonical_user_id.current.id
+        type = "CanonicalUser"
+      }
+      permission = "FULL_CONTROL"
+    }
+
+    grant {
+      grantee {
+        id   = "c4c1ede66af53448b93c283ce9448c4ba468c9432aa01d700d3878632f77d2d0"
+        type = "CanonicalUser"
+      }
+      permission = "FULL_CONTROL"
+    }
+  }
 
   depends_on = [
     aws_s3_bucket_ownership_controls.edge_logs,
