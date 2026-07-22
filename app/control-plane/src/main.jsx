@@ -59,7 +59,9 @@ const emptyState = {
   origins: [],
   origin_pools: [],
   certificates: [],
-  waf_change_sets: []
+  waf_change_sets: [],
+  edge_deployments: [],
+  approvals: []
 };
 
 function App() {
@@ -154,9 +156,12 @@ function App() {
           )}
           {active === "origins" && (
             <OriginsScreen
+              token={token}
               state={state}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
             />
           )}
           {active === "policies" && (
@@ -201,9 +206,9 @@ function App() {
               setStatus={setStatus}
             />
           )}
-          {active === "events" && <EventsScreen />}
+          {active === "events" && <EventsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "ai" && <AiScreen />}
-          {active === "reports" && <ReportsScreen />}
+          {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen state={state} />}
           {active === "profile" && <ProfileScreen token={token} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
@@ -425,6 +430,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const domains = filterByTenant(state.domains, selectedTenantId);
   const origins = filterByTenant(state.origins, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
+  const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   const latestDomain = domains[0] || null;
 
   return (
@@ -448,26 +454,33 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
         </Panel>
       </div>
       <Panel title="DNS Instructions">
-        <DomainInstructions domain={latestDomain} certificate={certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id)} />
+        <DomainInstructions domain={latestDomain} certificate={certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id)} deployment={deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id)} />
       </Panel>
     </div>
   );
 }
 
 function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   return (
-    <div className="screen two-column">
+    <div className="screen">
+      <div className="two-column">
       <Panel title="Domain Onboarding" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
       </Panel>
       <Panel title="Domain Inventory">
-        <DomainTable domains={filterByTenant(state.domains, selectedTenantId)} token={token} onVerified={onCreated} setStatus={setStatus} />
+        <DomainTable domains={domains} token={token} onVerified={onCreated} setStatus={setStatus} />
+      </Panel>
+      </div>
+      <Panel title="Tenant Edge">
+        <EdgeDeploymentTable token={token} domains={domains} deployments={deployments} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
 }
 
-function OriginsScreen({ state, selectedTenantId, setSelectedTenantId }) {
+function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
@@ -476,7 +489,7 @@ function OriginsScreen({ state, selectedTenantId, setSelectedTenantId }) {
     <div className="screen">
       <div className="dashboard-grid">
         <Panel title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-          <OriginTable origins={origins} />
+          <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
         <Panel title="Origin Pools">
           <OriginPoolTable pools={pools} />
@@ -517,7 +530,7 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
         </Panel>
       </div>
       <Panel title="WAF Change Sets">
-        <WafChangeSetTable changeSets={changeSets} />
+        <WafChangeSetTable changeSets={changeSets} domains={filterByTenant(state.domains, selectedTenantId)} token={token} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
@@ -631,11 +644,13 @@ function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTe
   );
 }
 
-function EventsScreen() {
+function EventsScreen({ token, selectedTenantId, setStatus }) {
+  const [events, setEvents] = useState([]);
+  const load = () => loadOperationalData(`/api/events${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "events", setEvents, setStatus);
   return (
     <div className="screen">
-      <Panel title="Security Event Stream">
-        <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
+      <Panel title="Security Event Stream" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+        {events.length ? <SecurityEventTable events={events} /> : <EmptyTable columns={["Time", "Rule", "Method", "Path", "Country", "Action"]} message="No security events have been collected from tenant WAF logs." />}
       </Panel>
     </div>
   );
@@ -654,20 +669,18 @@ function AiScreen() {
   );
 }
 
-function ReportsScreen() {
-  const reports = [
-    ["Operational Report", "No operational samples available."],
-    ["Security Report", "No tenant security events available."],
-    ["Executive Report", "No tenant reporting period available."],
-    ["Compliance Export", "No evidence package generated."]
-  ];
+function ReportsScreen({ token, selectedTenantId, setStatus }) {
+  const [reports, setReports] = useState([]);
+  const load = () => loadOperationalData(`/api/reports${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "reports", setReports, setStatus);
   return (
-    <div className="screen report-grid">
-      {reports.map(([title, body]) => (
-        <Panel key={title} title={title}>
-          <div className="report-card"><BarChart3 size={32} /><p>{body}</p><button className="secondary">Generate after onboarding</button></div>
-        </Panel>
-      ))}
+    <div className="screen">
+      <Panel title="Security Report" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+        <div className="report-grid">
+          {(reports.length ? reports : [{ report_id: "empty", source: "Waiting for tenant WAF logs", total_events: 0, blocked_events: 0, allowed_events: 0 }]).map((report) => (
+            <div className="report-card" key={report.report_id}><BarChart3 size={32} /><p>{report.source}</p><strong>{report.total_events} events</strong><small>{report.blocked_events} blocked · {report.allowed_events} allowed</small></div>
+          ))}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -1015,7 +1028,7 @@ function DomainTable({ domains, token = "", onVerified = null, setStatus = null 
   );
 }
 
-function DomainInstructions({ domain, certificate }) {
+function DomainInstructions({ domain, certificate, deployment }) {
   if (!domain) {
     return <EmptyState icon={Globe2} title="No onboarding started" body="Create a protected site to receive DNS ownership and CNAME instructions." />;
   }
@@ -1034,6 +1047,13 @@ function DomainInstructions({ domain, certificate }) {
           <code>{record.value}</code>
         </div>
       ))}
+      {deployment?.distribution_domain_name && (
+        <div>
+          <strong>Traffic CNAME</strong>
+          <code>{domain.domain_name}</code>
+          <code>{deployment.distribution_domain_name}</code>
+        </div>
+      )}
       <div>
         <strong>Current step</strong>
         <span className="health pending">{domain.onboarding_step || domain.status}</span>
@@ -1042,14 +1062,14 @@ function DomainInstructions({ domain, certificate }) {
   );
 }
 
-function OriginTable({ origins }) {
+function OriginTable({ origins, token = "", onChanged = null, setStatus = null }) {
   if (!origins.length) {
     return <EmptyTable columns={["Name", "Origin", "Health", "Path"]} message="No origins are configured." />;
   }
 
   return (
     <table className="data-table">
-      <thead><tr><th>Name</th><th>Origin</th><th>Health</th><th>Path</th></tr></thead>
+      <thead><tr><th>Name</th><th>Origin</th><th>Health</th><th>Path</th><th>Action</th></tr></thead>
       <tbody>
         {origins.map((origin) => (
           <tr key={origin.origin_id}>
@@ -1057,6 +1077,7 @@ function OriginTable({ origins }) {
             <td><small>{origin.origin_url}</small></td>
             <td><span className="health pending">{origin.status}</span></td>
             <td>{origin.health_path}</td>
+            <td><button className="secondary compact" disabled={!token} onClick={() => originHealthCheck(origin.origin_id, token, setStatus, onChanged)}>Check</button></td>
           </tr>
         ))}
       </tbody>
@@ -1110,14 +1131,18 @@ function CertificateTable({ certificates, token = "", onRefreshed = null, setSta
   );
 }
 
-function WafChangeSetTable({ changeSets }) {
+function WafChangeSetTable({ changeSets, domains = [], token = "", onChanged = null, setStatus = null }) {
+  const [domainId, setDomainId] = useState("");
+  useEffect(() => {
+    if (!domains.some((domain) => domain.domain_id === domainId)) setDomainId(domains.length === 1 ? domains[0].domain_id : "");
+  }, [domains, domainId]);
   if (!changeSets.length) {
-    return <EmptyTable columns={["Created", "Policy", "Mode", "Status", "Rules"]} message="No WAF change sets have been compiled." />;
+    return <EmptyTable columns={["Created", "Policy", "Mode", "Status", "Rules", "Action"]} message="No WAF change sets have been compiled." />;
   }
 
   return (
     <table className="data-table">
-      <thead><tr><th>Created</th><th>Policy</th><th>Mode</th><th>Status</th><th>Rules</th></tr></thead>
+      <thead><tr><th>Created</th><th>Policy</th><th>Mode</th><th>Status</th><th>Rules</th><th>Target</th><th>Action</th></tr></thead>
       <tbody>
         {changeSets.map((changeSet) => (
           <tr key={changeSet.change_set_id}>
@@ -1126,11 +1151,52 @@ function WafChangeSetTable({ changeSets }) {
             <td>{changeSet.mode}</td>
             <td><span className="health pending">{changeSet.status}</span></td>
             <td>{(changeSet.rules || []).length}</td>
+            <td><select className="compact-select" value={domainId} onChange={(event) => setDomainId(event.target.value)} disabled={!domains.length}><option value="">Select domain</option>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></td>
+            <td><WafAction changeSet={changeSet} domainId={domainId} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
           </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+function EdgeDeploymentTable({ token, domains, deployments, onChanged, setStatus }) {
+  const byDomain = new Map(deployments.map((deployment) => [deployment.domain_id, deployment]));
+  if (!domains.length) return <EmptyTable columns={["Domain", "Edge", "Target", "Action"]} message="Create a domain and issue its certificate before requesting a tenant edge." />;
+  return (
+    <table className="data-table">
+      <thead><tr><th>Domain</th><th>Edge</th><th>Traffic target</th><th>Action</th></tr></thead>
+      <tbody>{domains.map((domain) => {
+        const deployment = byDomain.get(domain.domain_id);
+        return <tr key={domain.domain_id}>
+          <td>{domain.domain_name}</td>
+          <td><span className="health pending">{deployment?.status || "not_requested"}</span></td>
+          <td><small>{deployment?.distribution_domain_name || "Awaiting provision"}</small></td>
+          <td><EdgeAction domain={domain} deployment={deployment} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
+        </tr>;
+      })}</tbody>
+    </table>
+  );
+}
+
+function EdgeAction({ domain, deployment, token, onChanged, setStatus }) {
+  if (!deployment) return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/edge-deployment-request`, "POST", token, setStatus, onChanged, "Edge deployment requested.")}>Request edge</button>;
+  if (deployment.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onChanged, "Edge deployment approved.")}>Approve</button>;
+  if (deployment.status === "approved") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/provision`, "POST", token, setStatus, onChanged, "Edge provisioning started.")}>Provision</button>;
+  if (deployment.status === "provisioning") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onChanged, "Edge status refreshed.")}>Refresh</button>;
+  if (deployment.status === "ready_for_cutover") return <span className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onChanged, "Traffic DNS checked.")}>Check DNS</button></span>;
+  return <span className="mode-readonly">{deployment.status}</span>;
+}
+
+function WafAction({ changeSet, domainId, token, onChanged, setStatus }) {
+  if (changeSet.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "WAF change set approved.")}>Approve</button>;
+  if (changeSet.status === "approved") return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/apply`, "POST", token, setStatus, onChanged, "WAF change set applied.", { domain_id: domainId })}>Apply</button>;
+  if (changeSet.status === "applied") return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/rollback`, "POST", token, setStatus, onChanged, "WAF rollback applied.", { domain_id: domainId })}>Rollback</button>;
+  return <span className="mode-readonly">{changeSet.status}</span>;
+}
+
+function SecurityEventTable({ events }) {
+  return <table className="data-table"><thead><tr><th>Time</th><th>Rule</th><th>Method</th><th>Path</th><th>Country</th><th>Action</th></tr></thead><tbody>{events.map((event) => <tr key={event.event_id}><td>{new Date(event.timestamp).toISOString()}</td><td>{event.rule_id || "-"}</td><td>{event.method}</td><td>{event.uri}</td><td>{event.country}</td><td><span className="health pending">{event.action}</span></td></tr>)}</tbody></table>;
 }
 
 function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId }) {
@@ -1228,6 +1294,45 @@ async function refreshCertificate(certificateId, token, setStatus, onRefreshed) 
     const data = await apiRequest(`/api/certificates/${certificateId}/refresh`, token, { method: "PATCH" });
     setStatus?.({ type: "success", message: `Certificate status: ${data.certificate.status}.` });
     onRefreshed?.();
+  } catch (error) {
+    setStatus?.({ type: "error", message: error.message });
+  }
+}
+
+async function originHealthCheck(originId, token, setStatus, onChanged) {
+  await edgeAction(`/api/origins/${originId}/health-check`, "PATCH", token, setStatus, onChanged, "Origin health checked.");
+}
+
+async function originVerification(deploymentId, token, setStatus) {
+  try {
+    const data = await apiRequest(`/api/edge-deployments/${deploymentId}/origin-verification`, token);
+    const header = `${data.origin_verification.header_name}: ${data.origin_verification.header_value}`;
+    await navigator.clipboard.writeText(header);
+    setStatus?.({ type: "success", message: "Origin verification header copied to the clipboard." });
+  } catch (error) {
+    setStatus?.({ type: "error", message: error.message });
+  }
+}
+
+async function edgeAction(path, method, token, setStatus, onChanged, successMessage, body = null) {
+  try {
+    await apiRequest(path, token, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    setStatus?.({ type: "success", message: successMessage });
+    onChanged?.();
+  } catch (error) {
+    setStatus?.({ type: "error", message: error.message });
+  }
+}
+
+async function loadOperationalData(path, token, key, setValue, setStatus) {
+  try {
+    const data = await apiRequest(path, token);
+    setValue(Array.isArray(data[key]) ? data[key] : []);
+    setStatus?.({ type: "success", message: `${key.replaceAll("_", " ")} refreshed.` });
   } catch (error) {
     setStatus?.({ type: "error", message: error.message });
   }

@@ -258,6 +258,8 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_pools_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.certificates_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.edge_deployments_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.users_table_name}/index/*",
@@ -266,7 +268,9 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origins_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_pools_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.certificates_table_name}/index/*",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}/index/*"
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.edge_deployments_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}/index/*"
         ]
       },
       {
@@ -287,6 +291,49 @@ resource "aws_iam_role_policy" "task" {
           "acm:DescribeCertificate"
         ]
         Resource = "arn:aws:acm:us-east-1:${data.aws_caller_identity.current.account_id}:certificate/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudfront:CreateDistribution",
+          "cloudfront:GetDistribution",
+          "cloudfront:GetDistributionConfig",
+          "cloudfront:ListDistributions"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "wafv2:CreateWebACL",
+          "wafv2:GetWebACL",
+          "wafv2:ListWebACLs",
+          "wafv2:UpdateWebACL",
+          "wafv2:PutLoggingConfiguration",
+          "wafv2:GetLoggingConfiguration"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = "us-east-1"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:AssociateKmsKey",
+          "logs:CreateLogGroup",
+          "logs:DescribeLogGroups",
+          "logs:FilterLogEvents",
+          "logs:PutRetentionPolicy"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = "us-east-1"
+          }
+        }
       },
       {
         Effect = "Allow"
@@ -418,6 +465,22 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "WAF_CHANGE_SETS_TABLE"
           value = var.waf_change_sets_table_name
+        },
+        {
+          name  = "EDGE_DEPLOYMENTS_TABLE"
+          value = var.edge_deployments_table_name
+        },
+        {
+          name  = "APPROVALS_TABLE"
+          value = var.approvals_table_name
+        },
+        {
+          name  = "EDGE_LOGS_BUCKET_DOMAIN_NAME"
+          value = var.edge_logs_bucket_domain_name
+        },
+        {
+          name  = "PLATFORM_KMS_KEY_ARN"
+          value = var.platform_kms_key_arn
         },
         {
           name  = "COGNITO_USER_POOL_ID"

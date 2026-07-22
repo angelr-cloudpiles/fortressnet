@@ -98,6 +98,16 @@ output "waf_change_sets_table_name" {
   value       = aws_dynamodb_table.waf_change_sets.name
 }
 
+output "edge_deployments_table_name" {
+  description = "Tenant edge deployment table name."
+  value       = aws_dynamodb_table.edge_deployments.name
+}
+
+output "approvals_table_name" {
+  description = "Approval workflow table name."
+  value       = aws_dynamodb_table.approvals.name
+}
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket

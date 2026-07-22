@@ -149,6 +149,21 @@ variable "waf_change_sets_table_name" {
   type        = string
 }
 
+variable "edge_deployments_table_name" {
+  description = "Tenant edge deployments table name."
+  type        = string
+}
+
+variable "approvals_table_name" {
+  description = "Approval workflow table name."
+  type        = string
+}
+
+variable "edge_logs_bucket_domain_name" {
+  description = "S3 bucket domain name for tenant CloudFront access logs."
+  type        = string
+}
+
 variable "cognito_user_pool_id" {
   description = "Cognito user pool ID."
   type        = string

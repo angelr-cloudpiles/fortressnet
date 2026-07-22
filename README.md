@@ -14,7 +14,7 @@ The Terraform project under `infra/terraform` provisions the first production-sh
 - Route 53 records and ACM certificate for `app.fortressnet.app`.
 - Cognito user pool, app client, and role groups for SaaS authentication.
 - RDS PostgreSQL for relational control-plane data.
-- DynamoDB tables for tenants, domains, entitlements, and security policy metadata.
+- DynamoDB tables for tenants, domains, entitlements, policy metadata, approval records, and tenant-edge deployments.
 - S3 buckets for audit logs, reports, edge logs, and AI analyst event input.
 - KMS key for platform encryption.
 - CloudWatch log groups, dashboard, alarms, and SNS alert topic.
@@ -89,7 +89,9 @@ The Terraform baseline creates shared platform infrastructure. Customer tenants 
 - edge provisioning triggered by the control plane
 - logs partitioned by tenant and written to S3
 
-For MVP and pilot customers, the included `tenant_edge` module can be used to provision a tenant-specific CloudFront/WAF edge stack from Terraform. At scale, the control plane should provision tenant edge resources through controlled workflows or internal platform automation.
+For MVP and pilot customers, the included `tenant_edge` module can be used to provision a tenant-specific CloudFront/WAF edge stack from Terraform. The control plane now provides the equivalent managed workflow: an issued ACM certificate and validated origin are required, the request needs approval by a different tenant operator, then it creates the CloudFront distribution, a tenant WAF ACL, encrypted WAF logs, and the cutover target. No tenant edge is created from sample data.
+
+The current traffic cutover verifier accepts a direct CNAME. Apex domains require an ALIAS/ANAME-capable DNS provider or a managed Route 53 zone; that workflow remains a product extension rather than an unsafe implicit fallback.
 
 ## Cost Posture
 
@@ -113,6 +115,9 @@ For the lowest MVP cost, use `enable_nat_gateway = false` only if your services 
 - ECS task roles are scoped separately from execution roles.
 - WAF managed rule groups are enabled at the edge.
 - AI analyst is designed as read-only in MVP; enforcement remains deterministic.
+- Tenant-edge WAF changes use approval, explicit domain selection, apply, rollback, and audit records.
+- Origin health checks resolve and pin a public IP, rejecting private or mixed public/private DNS answers.
+- WAF event views and reports query real CloudWatch WAF log groups; empty tenants remain empty.
 
 ## Deployment Status
 

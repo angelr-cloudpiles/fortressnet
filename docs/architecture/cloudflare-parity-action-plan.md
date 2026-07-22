@@ -21,7 +21,7 @@ FortressNet ya tiene una base productiva:
 
 Brecha principal: varias capacidades existen como infraestructura o metadata, pero todavia no estan convertidas en producto configurable por tenant ni en enforcement automatico sobre dominios de clientes.
 
-Actualizacion de implementacion: el onboarding ya exige un TXT de propiedad y, solo despues de validarlo, solicita un certificado ACM etiquetado en `us-east-1`. El control plane guarda y muestra los CNAME de validacion de ACM. La creacion de CloudFront/WAF por tenant sigue pendiente de un flujo de aprobacion, health checks y cutover DNS; el sistema no entrega un CNAME de trafico hasta que ese borde exista.
+Actualizacion de implementacion: el onboarding exige un TXT de propiedad y, solo despues de validarlo, solicita un certificado ACM etiquetado en `us-east-1`. El control plane guarda y muestra los CNAME de validacion de ACM. El flujo de edge por tenant esta implementado: solicitud, aprobacion por un actor distinto, health check HTTPS del origin con proteccion SSRF, CloudFront, WAF, logging cifrado, CNAME de trafico, verificacion de cutover y auditoria. El sistema no crea recursos de cliente sin una solicitud aprobada.
 
 ## Principios De Ejecucion
 
@@ -80,6 +80,8 @@ Criterios de aceptacion:
 - El certificado se emite solo despues de validar ownership.
 - El edge no se marca `active` hasta que health check y DNS esten correctos.
 
+Estado implementado: el verificador actual requiere un CNAME directo hacia el target CloudFront. Para apex se debe usar Route 53 Alias, ANAME o ALIAS del proveedor DNS; la automatizacion de esos proveedores queda pendiente.
+
 ### Epica 2. Origin Management
 
 Entregables:
@@ -100,6 +102,8 @@ Criterios de aceptacion:
 - El cliente puede cambiar origin sin editar Terraform manual.
 - Un origin caido queda reflejado en UI y eventos.
 - El failover no se activa sin pool alternativo validado.
+
+Estado implementado: hay health check HTTPS a demanda, con resolucion DNS fijada a una IP publica y rechazo de respuestas privadas o mixtas. Pool de failover y health checks programados siguen pendientes.
 
 ### Epica 3. WAF Policy Compiler
 
@@ -127,6 +131,8 @@ Criterios de aceptacion:
 - El modo `monitor` registra eventos sin bloquear.
 - El modo `block` se puede activar solo con confirmacion.
 
+Estado implementado: los change sets se compilan, requieren aprobacion separada, se aplican contra un dominio seleccionado de forma explicita y conservan reglas previas para rollback. Los tipos compilados en esta fase son managed rule groups y rate-based rules; custom rules y despliegue gradual siguen pendientes.
+
 ### Epica 4. Security Events Reales
 
 Entregables:
@@ -149,6 +155,8 @@ Criterios de aceptacion:
 - El dashboard no usa valores simulados.
 - Los contadores salen de logs reales o muestran estado vacio.
 - Cada evento puede rastrearse hasta fuente y timestamp.
+
+Estado implementado: cada edge crea un log group WAF cifrado con KMS y retencion de 365 dias. La consola consulta esos logs, hashea la IP antes de responder y construye reportes reales bajo demanda. La ingesta S3/Athena para historial masivo sigue pendiente.
 
 ## Fase 2: API Shield MVP
 

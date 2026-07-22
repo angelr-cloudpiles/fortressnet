@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
+import { CloudFrontClient, CreateDistributionCommand, GetDistributionCommand } from "@aws-sdk/client-cloudfront";
+import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateWebACLCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -17,6 +22,9 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
 const s3 = new S3Client({ region });
 // CloudFront only accepts ACM certificates issued in us-east-1.
 const acm = new ACMClient({ region: "us-east-1" });
+const cloudfront = new CloudFrontClient({ region: "us-east-1" });
+const waf = new WAFV2Client({ region: "us-east-1" });
+const cloudwatchLogs = new CloudWatchLogsClient({ region: "us-east-1" });
 
 const tables = {
   tenants: process.env.TENANTS_TABLE,
@@ -30,13 +38,15 @@ const tables = {
   origins: process.env.ORIGINS_TABLE,
   originPools: process.env.ORIGIN_POOLS_TABLE,
   certificates: process.env.CERTIFICATES_TABLE,
-  wafChangeSets: process.env.WAF_CHANGE_SETS_TABLE
+  wafChangeSets: process.env.WAF_CHANGE_SETS_TABLE,
+  edgeDeployments: process.env.EDGE_DEPLOYMENTS_TABLE,
+  approvals: process.env.APPROVALS_TABLE
 };
 
 const roleScopes = {
   platform_owner: ["*"],
-  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "identity:read", "identity:write", "billing:read", "profile:write"],
-  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "events:read", "reports:read", "profile:write"],
+  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "billing:read", "profile:write"],
+  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "events:read", "reports:read", "profile:write"],
   security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write"],
   billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
   read_only: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
@@ -70,9 +80,9 @@ app.get("/api/platform", (_req, res) => {
 
 app.use("/api", requireManagementAccess);
 
-app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, next) => {
+app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets] = await Promise.all([
+    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.domains),
       scanTable(tables.policies),
@@ -84,7 +94,9 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
       scanTable(tables.origins),
       scanTable(tables.originPools),
       scanTable(tables.certificates),
-      scanTable(tables.wafChangeSets)
+      scanTable(tables.wafChangeSets),
+      scanTable(tables.edgeDeployments),
+      scanTable(tables.approvals)
     ]);
 
     res.json({
@@ -99,7 +111,9 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
       origins: sortByDate(scopeItems(req.actor, origins)),
       origin_pools: sortByDate(scopeItems(req.actor, originPools)),
       certificates: sortByDate(scopeItems(req.actor, certificates)),
-      waf_change_sets: sortByDate(scopeItems(req.actor, wafChangeSets))
+      waf_change_sets: sortByDate(scopeItems(req.actor, wafChangeSets)),
+      edge_deployments: sortByDate(scopeItems(req.actor, edgeDeployments)),
+      approvals: sortByDate(scopeItems(req.actor, approvals))
     });
   } catch (error) {
     next(error);
@@ -432,6 +446,189 @@ app.patch("/api/certificates/:certificateId/refresh", requireScope("edge:write")
   }
 });
 
+app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, domain.tenant_id);
+    const certificates = await queryByIndex(tables.certificates, "domain_id-index", "domain_id", domain.domain_id);
+    const origins = await queryByIndex(tables.origins, "domain_id-index", "domain_id", domain.domain_id);
+    const certificate = certificates.find((item) => item.certificate_arn && item.status === "ISSUED");
+    const origin = origins.find((item) => item.status === "healthy");
+    if (!certificate) return res.status(409).json({ error: "issued_certificate_required" });
+    if (!origin) return res.status(409).json({ error: "healthy_origin_required" });
+    const existing = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domain.domain_id);
+    if (existing.some((item) => !["failed", "rolled_back"].includes(item.status))) return res.status(409).json({ error: "edge_deployment_already_exists" });
+
+    const now = new Date().toISOString();
+    const deployment = {
+      deployment_id: `edge_${crypto.randomUUID()}`,
+      tenant_id: domain.tenant_id,
+      domain_id: domain.domain_id,
+      domain_name: domain.domain_name,
+      origin_id: origin.origin_id,
+      certificate_id: certificate.certificate_id,
+      status: "pending_approval",
+      requested_by: req.actor?.subject || "unknown",
+      log_group_name: tenantWafLogGroup(domain.domain_id),
+      created_at: now,
+      updated_at: now
+    };
+    const approval = createApproval(domain.tenant_id, "edge_deployment", deployment.deployment_id, req.actor, now);
+    await Promise.all([
+      putUnique(tables.edgeDeployments, deployment, "deployment_id"),
+      putUnique(tables.approvals, approval, "approval_id")
+    ]);
+    await audit("edge_deployment.requested", domain.tenant_id, { deployment, approval }, req.actor);
+    res.status(201).json({ edge_deployment: deployment, approval });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/edge-deployments", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
+    res.json({ edge_deployments: sortByDate(deployments) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/edge-deployments/:deploymentId/approve", requireScope("edge:approve"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (deployment.status !== "pending_approval") return res.status(409).json({ error: "edge_deployment_not_pending_approval" });
+    if (!isPlatformActor(req.actor) && deployment.requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.edgeDeployments,
+      Key: { deployment_id: deployment.deployment_id },
+      UpdateExpression: "SET #status = :status, approved_by = :approved_by, approved_at = :approved_at, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": "approved",
+        ":approved_by": req.actor?.subject || "unknown",
+        ":approved_at": now,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+    await approveSubject(deployment.tenant_id, "edge_deployment", deployment.deployment_id, req.actor, now);
+    await audit("edge_deployment.approved", deployment.tenant_id, { deployment_id: deployment.deployment_id }, req.actor);
+    res.json({ edge_deployment: result.Attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/edge-deployments/:deploymentId/provision", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (deployment.status !== "approved") return res.status(409).json({ error: "approved_edge_deployment_required" });
+    const domain = await getById(tables.domains, { domain_id: deployment.domain_id });
+    const origin = await getById(tables.origins, { origin_id: deployment.origin_id });
+    const certificate = await getById(tables.certificates, { certificate_id: deployment.certificate_id });
+    if (!domain || !origin || !certificate || certificate.status !== "ISSUED") return res.status(409).json({ error: "edge_deployment_dependencies_not_ready" });
+
+    const provisioned = await provisionTenantEdge(deployment, domain, origin, certificate);
+    await audit("edge_deployment.provisioned", deployment.tenant_id, publicEdgeDeployment(provisioned), req.actor);
+    res.status(202).json({ edge_deployment: publicEdgeDeployment(provisioned) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/edge-deployments/:deploymentId/refresh", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (!deployment.distribution_id) return res.status(409).json({ error: "distribution_not_created" });
+    const refreshed = await refreshEdgeDeployment(deployment);
+    res.json({ edge_deployment: publicEdgeDeployment(refreshed) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, domain.tenant_id);
+    const [deployment] = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domain.domain_id);
+    if (!deployment || deployment.status !== "ready_for_cutover") return res.status(409).json({ error: "ready_edge_deployment_required" });
+    const cnameRecords = await dns.resolveCname(domain.domain_name).catch(() => []);
+    const target = clean(deployment.distribution_domain_name).replace(/\.$/, "");
+    const cutoverVerified = cnameRecords.some((record) => clean(record).replace(/\.$/, "") === target);
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.domains,
+      Key: { domain_id: domain.domain_id },
+      UpdateExpression: "SET #status = :status, onboarding_step = :step, cutover_last_checked_at = :checked, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": cutoverVerified ? "active" : "pending_traffic_dns",
+        ":step": cutoverVerified ? "active" : "traffic_dns_cutover",
+        ":checked": now,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+    await audit("edge_deployment.cutover_checked", domain.tenant_id, { domain_id: domain.domain_id, cutoverVerified }, req.actor);
+    res.json({ domain: result.Attributes, verified: cutoverVerified, cname_records: cnameRecords, required_target: target });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const origin = await getById(tables.origins, { origin_id: clean(req.params.originId) });
+    if (!origin) return res.status(404).json({ error: "origin_not_found" });
+    tenantForActor(req.actor, origin.tenant_id);
+    const health = await checkOriginHealth(origin);
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.origins,
+      Key: { origin_id: origin.origin_id },
+      UpdateExpression: "SET #status = :status, last_health_check_at = :checked, last_health_check = :health, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": health.healthy ? "healthy" : "unhealthy",
+        ":checked": now,
+        ":health": health,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+    await audit("origin.health_checked", origin.tenant_id, { origin_id: origin.origin_id, health }, req.actor);
+    res.json({ origin: result.Attributes, health });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const deploymentId = clean(req.params.deploymentId);
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: deploymentId });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (!deployment.origin_header_name || !deployment.origin_header_value) return res.status(409).json({ error: "origin_verification_not_available" });
+    await audit("edge_deployment.origin_verification_viewed", deployment.tenant_id, { deployment_id: deploymentId }, req.actor);
+    res.json({ origin_verification: { header_name: deployment.origin_header_name, header_value: deployment.origin_header_value } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/policies", requireScope("policy:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -538,12 +735,104 @@ app.get("/api/waf-change-sets", requireScope("policy:read"), async (req, res, ne
   }
 });
 
-app.get("/api/events", requireScope("events:read"), (_req, res) => {
-  res.json({ events: [] });
+app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("edge:approve"), async (req, res, next) => {
+  try {
+    const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
+    if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
+    tenantForActor(req.actor, changeSet.tenant_id);
+    if (changeSet.status !== "pending_approval") return res.status(409).json({ error: "waf_change_set_not_pending_approval" });
+    if (!isPlatformActor(req.actor) && changeSet.created_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.wafChangeSets,
+      Key: { change_set_id: changeSet.change_set_id },
+      UpdateExpression: "SET #status = :status, approved_by = :approved_by, approved_at = :approved_at, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": "approved",
+        ":approved_by": req.actor?.subject || "unknown",
+        ":approved_at": now,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+    const approval = createApproval(changeSet.tenant_id, "waf_change_set", changeSet.change_set_id, changeSet.created_by, now);
+    approval.status = "approved";
+    approval.approved_by = req.actor?.subject || "unknown";
+    approval.approved_at = now;
+    await putUnique(tables.approvals, approval, "approval_id");
+    await audit("waf_change_set.approved", changeSet.tenant_id, { change_set_id: changeSet.change_set_id }, req.actor);
+    res.json({ waf_change_set: result.Attributes, approval });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/reports", requireScope("reports:read"), (_req, res) => {
-  res.json({ reports: [] });
+app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
+    if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
+    tenantForActor(req.actor, changeSet.tenant_id);
+    if (changeSet.status !== "approved") return res.status(409).json({ error: "approved_waf_change_set_required" });
+    const domainId = clean(req.body?.domain_id);
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    const edgeDeployment = await edgeDeploymentForDomain(domainId, changeSet.tenant_id);
+    if (!edgeDeployment?.web_acl_id || !["provisioning", "ready_for_cutover", "active"].includes(edgeDeployment.status)) return res.status(409).json({ error: "provisioned_edge_required" });
+
+    const applied = await applyWafChangeSet(changeSet, edgeDeployment);
+    await audit("waf_change_set.applied", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, domain_id: domainId }, req.actor);
+    res.json({ waf_change_set: applied });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/waf-change-sets/:changeSetId/rollback", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
+    if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
+    tenantForActor(req.actor, changeSet.tenant_id);
+    if (changeSet.status !== "applied" || !Array.isArray(changeSet.rollback_rules)) return res.status(409).json({ error: "rollback_not_available" });
+    const domainId = clean(req.body?.domain_id);
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    const edgeDeployment = await edgeDeploymentForDomain(domainId, changeSet.tenant_id);
+    if (!edgeDeployment?.web_acl_id) return res.status(409).json({ error: "provisioned_edge_required" });
+    await replaceWafRules(edgeDeployment, changeSet.rollback_rules);
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.wafChangeSets,
+      Key: { change_set_id: changeSet.change_set_id },
+      UpdateExpression: "SET #status = :status, rolled_back_at = :rolled_back_at, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":status": "rolled_back", ":rolled_back_at": now, ":updated_at": now },
+      ReturnValues: "ALL_NEW"
+    }));
+    await audit("waf_change_set.rolled_back", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, domain_id: domainId }, req.actor);
+    res.json({ waf_change_set: result.Attributes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/events", requireScope("events:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
+    res.json({ events: await collectSecurityEvents(deployments, Number(req.query.limit || 100)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/reports", requireScope("reports:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
+    const events = await collectSecurityEvents(deployments, 500);
+    res.json({ reports: [buildSecurityReport(tenantId || "platform", events, deployments)] });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
@@ -982,25 +1271,26 @@ async function scanTable(TableName) {
 
 async function queryByTenant(TableName, tenantId) {
   if (!TableName || !tenantId) return [];
-  const result = await dynamo.send(new QueryCommand({
-    TableName,
-    IndexName: "tenant_id-index",
-    KeyConditionExpression: "tenant_id = :tenant_id",
-    ExpressionAttributeValues: { ":tenant_id": tenantId }
-  }));
-  return result.Items || [];
+  return queryByIndex(TableName, "tenant_id-index", "tenant_id", tenantId);
 }
 
 async function queryByIndex(TableName, IndexName, keyName, keyValue) {
   if (!TableName || !keyValue) return [];
-  const result = await dynamo.send(new QueryCommand({
-    TableName,
-    IndexName,
-    KeyConditionExpression: "#key = :value",
-    ExpressionAttributeNames: { "#key": keyName },
-    ExpressionAttributeValues: { ":value": keyValue }
-  }));
-  return result.Items || [];
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const result = await dynamo.send(new QueryCommand({
+      TableName,
+      IndexName,
+      KeyConditionExpression: "#key = :value",
+      ExpressionAttributeNames: { "#key": keyName },
+      ExpressionAttributeValues: { ":value": keyValue },
+      ExclusiveStartKey
+    }));
+    items.push(...(result.Items || []));
+    ExclusiveStartKey = result.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
 }
 
 async function getById(TableName, Key) {
@@ -1099,6 +1389,401 @@ async function refreshCertificateRecord(certificate) {
   return refreshed;
 }
 
+function createApproval(tenantId, subjectType, subjectId, actor, now) {
+  return {
+    approval_id: `apr_${crypto.randomUUID()}`,
+    tenant_id: tenantId,
+    subject_type: subjectType,
+    subject_id: subjectId,
+    status: "pending",
+    requested_by: typeof actor === "string" ? actor : actor?.subject || "unknown",
+    created_at: now,
+    updated_at: now
+  };
+}
+
+async function approveSubject(tenantId, subjectType, subjectId, actor, now) {
+  const approvals = await queryByTenant(tables.approvals, tenantId);
+  const approval = approvals.find((item) => item.subject_type === subjectType && item.subject_id === subjectId && item.status === "pending");
+  if (!approval) return;
+  await dynamo.send(new UpdateCommand({
+    TableName: tables.approvals,
+    Key: { approval_id: approval.approval_id },
+    UpdateExpression: "SET #status = :status, approved_by = :approved_by, approved_at = :approved_at, updated_at = :updated_at",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: {
+      ":status": "approved",
+      ":approved_by": actor?.subject || "unknown",
+      ":approved_at": now,
+      ":updated_at": now
+    }
+  }));
+}
+
+async function edgeDeploymentForDomain(domainId, tenantId) {
+  const deployments = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domainId);
+  return deployments.find((deployment) => deployment.tenant_id === tenantId) || null;
+}
+
+async function provisionTenantEdge(deployment, domain, origin, certificate) {
+  const now = new Date().toISOString();
+  const logGroupName = deployment.log_group_name || tenantWafLogGroup(domain.domain_id);
+  await ensureWafLogGroup(logGroupName);
+  const webAcl = await ensureTenantWebAcl(deployment, domain);
+  await ensureWafLogging(webAcl.ARN, logGroupName);
+  const originHeaderName = deployment.origin_header_name || "X-FortressNet-Origin-Verify";
+  const originHeaderValue = deployment.origin_header_value || crypto.randomBytes(24).toString("base64url");
+  const distribution = deployment.distribution_id
+    ? await cloudfront.send(new GetDistributionCommand({ Id: deployment.distribution_id }))
+    : await cloudfront.send(new CreateDistributionCommand({
+      DistributionConfig: cloudFrontDistributionConfig(deployment, domain, origin, certificate, webAcl.ARN, originHeaderName, originHeaderValue)
+    }));
+  const current = distribution.Distribution;
+  const updated = {
+    ...deployment,
+    status: current?.Status === "Deployed" ? "ready_for_cutover" : "provisioning",
+    web_acl_id: webAcl.Id,
+    web_acl_arn: webAcl.ARN,
+    web_acl_name: webAcl.Name,
+    distribution_id: current?.Id,
+    distribution_domain_name: current?.DomainName,
+    log_group_name: logGroupName,
+    origin_header_name: originHeaderName,
+    origin_header_value: originHeaderValue,
+    provisioned_at: now,
+    updated_at: now
+  };
+  await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+  await dynamo.send(new UpdateCommand({
+    TableName: tables.domains,
+    Key: { domain_id: domain.domain_id },
+    UpdateExpression: "SET #status = :status, onboarding_step = :step, edge_target = :target, updated_at = :updated_at",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: {
+      ":status": updated.status === "ready_for_cutover" ? "pending_traffic_dns" : "edge_provisioning",
+      ":step": updated.status === "ready_for_cutover" ? "traffic_dns_cutover" : "edge_provisioning",
+      ":target": current?.DomainName || "",
+      ":updated_at": now
+    }
+  }));
+  return updated;
+}
+
+async function refreshEdgeDeployment(deployment) {
+  const response = await cloudfront.send(new GetDistributionCommand({ Id: deployment.distribution_id }));
+  const now = new Date().toISOString();
+  const ready = response.Distribution?.Status === "Deployed";
+  const updated = {
+    ...deployment,
+    status: ready ? "ready_for_cutover" : "provisioning",
+    distribution_domain_name: response.Distribution?.DomainName || deployment.distribution_domain_name,
+    updated_at: now
+  };
+  await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+  if (ready) {
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.domains,
+      Key: { domain_id: deployment.domain_id },
+      UpdateExpression: "SET #status = :status, onboarding_step = :step, edge_target = :target, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": "pending_traffic_dns",
+        ":step": "traffic_dns_cutover",
+        ":target": updated.distribution_domain_name,
+        ":updated_at": now
+      }
+    }));
+  }
+  return updated;
+}
+
+async function ensureWafLogGroup(logGroupName) {
+  try {
+    await cloudwatchLogs.send(new CreateLogGroupCommand({
+      logGroupName,
+      kmsKeyId: process.env.PLATFORM_KMS_KEY_ARN
+    }));
+  } catch (error) {
+    if (error?.name !== "ResourceAlreadyExistsException") throw error;
+  }
+  await cloudwatchLogs.send(new PutRetentionPolicyCommand({ logGroupName, retentionInDays: 365 }));
+}
+
+async function ensureTenantWebAcl(deployment, domain) {
+  if (deployment.web_acl_id && deployment.web_acl_arn) return { Id: deployment.web_acl_id, ARN: deployment.web_acl_arn, Name: deployment.web_acl_name || tenantWebAclName(domain.domain_id) };
+  const name = tenantWebAclName(domain.domain_id);
+  let nextMarker;
+  do {
+    const existing = await waf.send(new ListWebACLsCommand({ Scope: "CLOUDFRONT", Limit: 100, NextMarker: nextMarker }));
+    const match = (existing.WebACLs || []).find((item) => item.Name === name);
+    if (match) return { Id: match.Id, ARN: match.ARN, Name: match.Name };
+    nextMarker = existing.NextMarker;
+  } while (nextMarker);
+  const response = await waf.send(new CreateWebACLCommand({
+    Name: name,
+    Description: `FortressNet managed edge for ${domain.domain_name}`,
+    Scope: "CLOUDFRONT",
+    DefaultAction: { Allow: {} },
+    Rules: [],
+    VisibilityConfig: wafVisibilityConfig(`fn_${domain.domain_id}`),
+    Tags: [
+      { Key: "ManagedBy", Value: "FortressNet" },
+      { Key: "TenantId", Value: domain.tenant_id },
+      { Key: "DomainId", Value: domain.domain_id }
+    ]
+  }));
+  if (!response.Summary?.Id || !response.Summary.ARN) throw httpError(502, "waf_web_acl_create_failed");
+  return response.Summary;
+}
+
+async function ensureWafLogging(webAclArn, logGroupName) {
+  const accountId = webAclArn.split(":")[4];
+  await waf.send(new PutLoggingConfigurationCommand({
+    ResourceArn: webAclArn,
+    LogDestinationConfigs: [`arn:aws:logs:us-east-1:${accountId}:log-group:${logGroupName}`],
+    RedactedFields: [
+      { SingleHeader: { Name: "authorization" } },
+      { SingleHeader: { Name: "cookie" } }
+    ]
+  }));
+}
+
+function cloudFrontDistributionConfig(deployment, domain, origin, certificate, webAclArn, originHeaderName, originHeaderValue) {
+  const originId = `origin-${domain.domain_id}`;
+  return {
+    CallerReference: deployment.deployment_id,
+    Comment: `FortressNet tenant edge ${domain.domain_name}`,
+    Enabled: true,
+    Aliases: { Quantity: 1, Items: [domain.domain_name] },
+    Origins: {
+      Quantity: 1,
+      Items: [{
+        Id: originId,
+        DomainName: origin.hostname,
+        CustomHeaders: { Quantity: 1, Items: [{ HeaderName: originHeaderName, HeaderValue: originHeaderValue }] },
+        CustomOriginConfig: {
+          HTTPPort: 80,
+          HTTPSPort: 443,
+          OriginProtocolPolicy: "https-only",
+          OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+        }
+      }]
+    },
+    DefaultCacheBehavior: {
+      TargetOriginId: originId,
+      ViewerProtocolPolicy: "redirect-to-https",
+      AllowedMethods: { Quantity: 7, Items: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"], CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } },
+      Compress: true,
+      CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+      OriginRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+      ResponseHeadersPolicyId: "67f7725c-6f97-4210-82d7-5512b31e9d03",
+      TrustedSigners: { Enabled: false, Quantity: 0 },
+      TrustedKeyGroups: { Enabled: false, Quantity: 0 }
+    },
+    Restrictions: { GeoRestriction: { RestrictionType: "none", Quantity: 0 } },
+    ViewerCertificate: { ACMCertificateArn: certificate.certificate_arn, SSLSupportMethod: "sni-only", MinimumProtocolVersion: "TLSv1.2_2021" },
+    WebACLId: webAclArn,
+    HttpVersion: "http2and3",
+    IsIPV6Enabled: true,
+    PriceClass: "PriceClass_100",
+    Logging: {
+      Enabled: true,
+      IncludeCookies: false,
+      Bucket: process.env.EDGE_LOGS_BUCKET_DOMAIN_NAME,
+      Prefix: `tenant/${deployment.tenant_id}/domain/${domain.domain_id}/`
+    }
+  };
+}
+
+function tenantWafLogGroup(domainId) {
+  return `aws-waf-logs-${process.env.FORTRESSNET_ENV || "fortressnet"}-${domainId}`.slice(0, 512);
+}
+
+function tenantWebAclName(domainId) {
+  return `fortressnet-${process.env.FORTRESSNET_ENV || "edge"}-${domainId}`.replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 128);
+}
+
+function wafVisibilityConfig(metricName) {
+  return {
+    CloudWatchMetricsEnabled: true,
+    MetricName: metricName.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 128),
+    SampledRequestsEnabled: true
+  };
+}
+
+function publicEdgeDeployment(deployment) {
+  if (!deployment) return {};
+  const { origin_header_value, ...safe } = deployment;
+  return safe;
+}
+
+async function checkOriginHealth(origin) {
+  const target = normalizeOriginUrl(origin.origin_url);
+  if (!target) throw httpError(400, "valid_https_origin_url_required");
+  const address = await resolvePublicOriginAddress(target.hostname);
+  const pathName = normalizeHealthPath(origin.health_path);
+  const timeoutMs = Math.min(Math.max(Number(origin.timeout_seconds || 10) * 1000, 1000), 15000);
+  const result = await requestHealthCheck(target, address, pathName, timeoutMs, origin.host_header || target.hostname);
+  return { ...result, address, checked_url: `${target.protocol}//${target.hostname}${pathName}` };
+}
+
+async function resolvePublicOriginAddress(hostname) {
+  if (isBlockedIpAddress(hostname)) throw httpError(400, "private_origin_address_denied");
+  const addresses = [];
+  const [ipv4, ipv6] = await Promise.all([
+    dns.resolve4(hostname).catch(() => []),
+    dns.resolve6(hostname).catch(() => [])
+  ]);
+  addresses.push(...ipv4, ...ipv6);
+  if (addresses.some((item) => isBlockedIpAddress(item))) throw httpError(400, "mixed_private_origin_resolution_denied");
+  const address = addresses.find((item) => !isBlockedIpAddress(item));
+  if (!address) throw httpError(400, "public_origin_resolution_required");
+  return address;
+}
+
+function requestHealthCheck(target, address, pathName, timeoutMs, hostHeader) {
+  const client = target.protocol === "https:" ? https : http;
+  return new Promise((resolve) => {
+    const request = client.request({
+      protocol: target.protocol,
+      hostname: address,
+      servername: target.hostname,
+      port: target.port || (target.protocol === "https:" ? 443 : 80),
+      path: pathName,
+      method: "GET",
+      headers: { Host: hostHeader, "User-Agent": "FortressNet-Origin-Health/1.0" },
+      timeout: timeoutMs
+    }, (response) => {
+      response.resume();
+      resolve({ healthy: response.statusCode >= 200 && response.statusCode < 400, status_code: response.statusCode, error: "" });
+    });
+    request.once("timeout", () => request.destroy(new Error("timeout")));
+    request.once("error", (error) => resolve({ healthy: false, status_code: 0, error: error?.message || "request_failed" }));
+    request.end();
+  });
+}
+
+function normalizeHealthPath(value) {
+  const pathName = clean(value) || "/";
+  return pathName.startsWith("/") && !pathName.startsWith("//") ? pathName : "/";
+}
+
+async function applyWafChangeSet(changeSet, edgeDeployment) {
+  if ((changeSet.rules || []).some((rule) => rule.type === "custom_rule")) throw httpError(409, "unsupported_custom_waf_rule");
+  const webAcl = await waf.send(new GetWebACLCommand({ Id: edgeDeployment.web_acl_id, Name: edgeDeployment.web_acl_name || tenantWebAclName(edgeDeployment.domain_id), Scope: "CLOUDFRONT" }));
+  if (!webAcl.LockToken) throw httpError(502, "waf_web_acl_not_available");
+  const compiledRules = toAwsWafRules(changeSet.rules || [], edgeDeployment.domain_id);
+  await waf.send(new UpdateWebACLCommand({
+    Id: edgeDeployment.web_acl_id,
+    Name: webAcl.WebACL.Name,
+    Scope: "CLOUDFRONT",
+    LockToken: webAcl.LockToken,
+    DefaultAction: webAcl.WebACL.DefaultAction || { Allow: {} },
+    VisibilityConfig: webAcl.WebACL.VisibilityConfig || wafVisibilityConfig(`fn_${edgeDeployment.domain_id}`),
+    Rules: compiledRules
+  }));
+  const now = new Date().toISOString();
+  const updated = {
+    ...changeSet,
+    status: "applied",
+    domain_id: edgeDeployment.domain_id,
+    web_acl_id: edgeDeployment.web_acl_id,
+    rollback_rules: webAcl.WebACL.Rules || [],
+    applied_at: now,
+    updated_at: now
+  };
+  await dynamo.send(new PutCommand({ TableName: tables.wafChangeSets, Item: updated }));
+  return updated;
+}
+
+async function replaceWafRules(edgeDeployment, rules) {
+  const webAcl = await waf.send(new GetWebACLCommand({ Id: edgeDeployment.web_acl_id, Name: edgeDeployment.web_acl_name || tenantWebAclName(edgeDeployment.domain_id), Scope: "CLOUDFRONT" }));
+  if (!webAcl.LockToken) throw httpError(502, "waf_web_acl_not_available");
+  await waf.send(new UpdateWebACLCommand({
+    Id: edgeDeployment.web_acl_id,
+    Name: webAcl.WebACL.Name,
+    Scope: "CLOUDFRONT",
+    LockToken: webAcl.LockToken,
+    DefaultAction: webAcl.WebACL.DefaultAction || { Allow: {} },
+    VisibilityConfig: webAcl.WebACL.VisibilityConfig || wafVisibilityConfig(`fn_${edgeDeployment.domain_id}`),
+    Rules: rules
+  }));
+}
+
+function toAwsWafRules(rules, domainId) {
+  return rules.map((rule, index) => {
+    const common = {
+      Name: `${rule.name}-${index}`.replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 128),
+      Priority: (index + 1) * 10,
+      VisibilityConfig: wafVisibilityConfig(`fn_${domainId}_${index + 1}`)
+    };
+    if (rule.type === "managed_rule_group") {
+      return {
+        ...common,
+        OverrideAction: rule.override_action === "count" ? { Count: {} } : { None: {} },
+        Statement: { ManagedRuleGroupStatement: { Name: rule.rule_group, VendorName: rule.vendor || "AWS" } }
+      };
+    }
+    if (rule.type === "rate_based_rule") {
+      return {
+        ...common,
+        Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: { RateBasedStatement: { AggregateKeyType: rule.aggregate_key_type || "IP", Limit: Number(rule.limit || 2000) } }
+      };
+    }
+    throw httpError(409, "unsupported_waf_rule_type");
+  });
+}
+
+async function collectSecurityEvents(deployments, limit) {
+  const results = await Promise.all(deployments.filter((item) => item.log_group_name).map(async (deployment) => {
+    const response = await cloudwatchLogs.send(new FilterLogEventsCommand({
+      logGroupName: deployment.log_group_name,
+      startTime: Date.now() - 24 * 60 * 60 * 1000,
+      limit: Math.min(Math.max(limit, 1), 500)
+    })).catch((error) => {
+      if (["ResourceNotFoundException", "AccessDeniedException"].includes(error?.name)) return { events: [] };
+      throw error;
+    });
+    return (response.events || []).map((event) => normalizeWafLogEvent(event, deployment)).filter(Boolean);
+  }));
+  return results.flat().sort((a, b) => b.timestamp - a.timestamp).slice(0, Math.min(Math.max(limit, 1), 500));
+}
+
+function normalizeWafLogEvent(event, deployment) {
+  const record = parseJson(event.message, null);
+  if (!record) return null;
+  const request = record.httpRequest || {};
+  return {
+    event_id: `evt_${hashSecret(`${deployment.deployment_id}:${event.eventId || event.timestamp}`)}`,
+    tenant_id: deployment.tenant_id,
+    domain_id: deployment.domain_id,
+    timestamp: Number(event.timestamp || record.timestamp || 0),
+    action: record.action || "UNKNOWN",
+    rule_id: record.terminatingRuleId || "",
+    method: request.httpMethod || "",
+    uri: request.uri || "",
+    country: request.country || "",
+    client_ip_hash: request.clientIp ? hashSecret(request.clientIp).slice(0, 16) : ""
+  };
+}
+
+function buildSecurityReport(tenantId, events, deployments) {
+  const blocked = events.filter((event) => event.action === "BLOCK").length;
+  const allowed = events.filter((event) => event.action === "ALLOW").length;
+  return {
+    report_id: `rpt_${tenantId}_${new Date().toISOString().slice(0, 10)}`,
+    tenant_id: tenantId,
+    generated_at: new Date().toISOString(),
+    source: "cloudwatch_waf_logs",
+    edge_deployments: deployments.length,
+    total_events: events.length,
+    blocked_events: blocked,
+    allowed_events: allowed,
+    top_rules: Object.entries(events.reduce((counts, event) => ({ ...counts, [event.rule_id || "none"]: (counts[event.rule_id || "none"] || 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([rule_id, count]) => ({ rule_id, count }))
+  };
+}
+
 async function audit(action, tenantId, payload, actor = null) {
   try {
     const bucket = process.env.AUDIT_LOG_BUCKET;
@@ -1155,7 +1840,7 @@ function normalizeDomain(value) {
 function normalizeOriginUrl(value) {
   try {
     const url = new URL(clean(value));
-    if (!["http:", "https:"].includes(url.protocol)) return null;
+    if (url.protocol !== "https:") return null;
     const host = url.hostname.toLowerCase();
     if (!host || host === "localhost" || host.endsWith(".local")) return null;
     if (isBlockedIpAddress(host)) return null;

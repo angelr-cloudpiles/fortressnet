@@ -101,6 +101,9 @@ module "control_plane" {
   origin_pools_table_name      = module.data_plane.origin_pools_table_name
   certificates_table_name      = module.data_plane.certificates_table_name
   waf_change_sets_table_name   = module.data_plane.waf_change_sets_table_name
+  edge_deployments_table_name  = module.data_plane.edge_deployments_table_name
+  approvals_table_name         = module.data_plane.approvals_table_name
+  edge_logs_bucket_domain_name = module.data_plane.edge_logs_bucket_domain_name
   cognito_user_pool_id         = module.identity.user_pool_id
   cognito_app_client_id        = module.identity.app_client_id
 }
