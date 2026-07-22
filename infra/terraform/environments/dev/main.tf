@@ -173,6 +173,18 @@ resource "aws_vpc_security_group_egress_rule" "control_plane_to_vpc_endpoints" {
   description                  = "Allow HTTPS from control plane tasks to private interface endpoints"
 }
 
+# Cognito Managed Login user pools do not support PrivateLink API calls. The
+# control plane therefore reaches Cognito through the existing NAT gateway on
+# HTTPS only; security groups cannot express an AWS service FQDN restriction.
+resource "aws_vpc_security_group_egress_rule" "control_plane_to_cognito" {
+  security_group_id = module.control_plane.service_security_group_id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  description       = "Allow HTTPS to Cognito Managed Login APIs through NAT"
+}
+
 data "aws_ec2_managed_prefix_list" "s3" {
   name = "com.amazonaws.${var.aws_region}.s3"
 }

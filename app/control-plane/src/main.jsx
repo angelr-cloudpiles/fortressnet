@@ -254,7 +254,7 @@ function App() {
           {active === "events" && <EventsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
-          {active === "billing" && <BillingScreen state={state} />}
+          {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
         </section>
@@ -615,11 +615,11 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
 }
 
 function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
-  const users = filterByTenant(state.users, selectedTenantId);
+  const users = selectedTenantId ? filterByTenant(state.users, selectedTenantId) : state.users.filter((user) => user.tenant_id === "platform");
 
   return (
     <div className="screen split-detail">
-      <Panel title="Users and Roles" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel title={selectedTenantId ? "Users and Roles" : "Platform Owners"} action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         {users.length ? (
           <table className="data-table">
             <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Scopes</th><th>MFA</th></tr></thead>
@@ -773,26 +773,57 @@ function ReportsScreen({ token, selectedTenantId, setStatus }) {
   );
 }
 
-function BillingScreen({ state }) {
+function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, onChanged, setStatus }) {
+  const [summary, setSummary] = useState(null);
+  const [plan, setPlan] = useState("");
+  const load = async () => {
+    if (!selectedTenantId || !token) return;
+    try {
+      const data = await apiRequest(`/api/billing/summary?tenant_id=${encodeURIComponent(selectedTenantId)}`, token);
+      setSummary(data);
+      setPlan(data.entitlement?.plan || "pilot");
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  useEffect(() => { load(); }, [selectedTenantId, token]);
+  const updatePlan = async () => {
+    try {
+      await apiRequest(`/api/tenants/${selectedTenantId}/entitlement`, token, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }) });
+      setStatus({ type: "success", message: "Plan limits updated." });
+      await load();
+      onChanged();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  const usageRows = summary ? [
+    ["Domains", summary.usage.domains, summary.entitlement.limits.domains],
+    ["Users", summary.usage.users, summary.entitlement.limits.users],
+    ["Active API keys", summary.usage.api_keys, summary.entitlement.limits.api_keys],
+    ["External IdPs", summary.usage.idp_connections, summary.entitlement.limits.idp_connections],
+    ["Managed DNS zones", summary.usage.dns_zones, summary.entitlement.limits.dns_zones],
+    ["Policies", summary.usage.policies, summary.entitlement.limits.policies]
+  ] : [];
+
   return (
     <div className="screen billing-grid">
-      <Panel title="Current Plan">
+      <Panel title="Current Plan" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         <div className="plan-box">
-          <span>{state.entitlements.length ? "Entitlement connected" : "No subscription selected"}</span>
-          <strong>$0 / month</strong>
-          <p>Billing starts when a tenant subscription or AWS Marketplace entitlement is connected.</p>
+          {summary ? <><span>{summary.entitlement.plan_label} · {summary.entitlement.billing_status}</span><strong>{summary.entitlement.source}</strong><p>Limits are enforced by the control plane. Marketplace fulfillment is not connected yet.</p></> : <><span>No tenant selected</span><p>Select a tenant to view its real entitlement and observed usage.</p></>}
         </div>
       </Panel>
       <Panel title="Usage This Month">
         <div className="usage-list">
-          {["Protected requests 0", "Bandwidth 0 GB", "AI analysis units 0", "Log retention not started"].map((item) => <div key={item}><span>{item}</span><div><i style={{ width: "0%" }}></i></div></div>)}
+          {usageRows.length ? usageRows.map(([label, current, limit]) => <div key={label}><span>{label} {current} / {limit}</span><div><i style={{ width: `${Math.min(100, Math.round((current / Math.max(1, limit)) * 100))}%` }}></i></div></div>) : <span className="mode-readonly">No observed tenant usage.</span>}
         </div>
       </Panel>
       <Panel title="Marketplace">
         <div className="marketplace-box">
           <CircleDollarSign size={30} />
-          <h3>Marketplace not connected</h3>
-          <p>Entitlements will sync after the SaaS contract fulfillment flow is enabled.</p>
+          <h3>{summary?.entitlement.source === "aws_marketplace" ? "Marketplace entitlement" : "Direct pilot entitlement"}</h3>
+          <p>Observed WAF events: {summary?.usage.observed_waf_requests ?? "not available"}. Blocked events: {summary?.usage.blocked_waf_requests ?? "not available"}.</p>
+          {summary && <div className="button-pair"><select className="compact-select" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select><button className="secondary compact" onClick={updatePlan}>Update limits</button></div>}
         </div>
       </Panel>
     </div>
@@ -1066,7 +1097,7 @@ function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
 
 function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
   const [name, setName] = useState("");
-  const [mode, setMode] = useState("managed_defaults");
+  const [mode, setMode] = useState("monitor");
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1088,7 +1119,7 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   return (
     <form className="policy-editor" onSubmit={submit}>
       <div><label htmlFor="policy-name">Policy name</label><input id="policy-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
-      <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="managed_defaults">Managed defaults</option><option value="count">Count only</option><option value="block">Block</option></select></div>
+      <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="monitor">Monitor first</option><option value="block">Block after observation</option></select></div>
       <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\napproval_required: true`}</pre>
       <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Create policy</button>
     </form>

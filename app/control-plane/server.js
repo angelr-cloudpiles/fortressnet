@@ -10,7 +10,7 @@ import { CloudFrontClient, CreateDistributionCommand, GetDistributionCommand } f
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, UpdateUserPoolClientCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, GetDNSSECCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateWebACLCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
@@ -62,6 +62,24 @@ const roleScopes = {
   billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
   read_only: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
 };
+
+const planCatalog = Object.freeze({
+  pilot: {
+    label: "Pilot",
+    billing_status: "pilot_pending_contract",
+    limits: { domains: 1, users: 5, api_keys: 2, idp_connections: 1, dns_zones: 1, policies: 3, log_retention_days: 30 }
+  },
+  business: {
+    label: "Business",
+    billing_status: "contract_pending",
+    limits: { domains: 10, users: 25, api_keys: 10, idp_connections: 3, dns_zones: 10, policies: 25, log_retention_days: 90 }
+  },
+  enterprise: {
+    label: "Enterprise",
+    billing_status: "contract_pending",
+    limits: { domains: 100, users: 250, api_keys: 100, idp_connections: 25, dns_zones: 100, policies: 250, log_retention_days: 365 }
+  }
+});
 
 const allowedScopes = Array.from(new Set(Object.values(roleScopes).flat())).filter((scope) => scope !== "*").sort();
 
@@ -153,6 +171,7 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
     if (!domainName) return res.status(400).json({ error: "valid_domain_required" });
     if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
     if (!tables.origins || !tables.originPools || !tables.certificates) return res.status(503).json({ error: "onboarding_tables_not_configured" });
+    await enforceTenantLimit(tenantId, "domains", (await queryByTenant(tables.domains, tenantId)).length);
 
     const now = new Date().toISOString();
     const verification = crypto.randomBytes(16).toString("hex");
@@ -236,24 +255,27 @@ app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), asy
     const body = req.body || {};
     const name = clean(body.name);
     if (!name) return res.status(400).json({ error: "tenant_name_required" });
+    const plan = normalizePlan(body.plan);
+    if (!plan) return res.status(400).json({ error: "supported_plan_required" });
 
     const now = new Date().toISOString();
     const tenant = {
       tenant_id: `tenant_${slugify(name)}_${crypto.randomBytes(3).toString("hex")}`,
       name,
       status: clean(body.status) || "active",
-      plan: clean(body.plan) || "pilot",
+      plan,
       created_at: now,
       updated_at: now
     };
-
-    await dynamo.send(new PutCommand({
-      TableName: tables.tenants,
-      Item: tenant,
-      ConditionExpression: "attribute_not_exists(tenant_id)"
+    const entitlement = createEntitlement(tenant, now);
+    await dynamo.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: { TableName: tables.tenants, Item: tenant, ConditionExpression: "attribute_not_exists(tenant_id)" } },
+        { Put: { TableName: tables.entitlements, Item: entitlement, ConditionExpression: "attribute_not_exists(customer_identifier)" } }
+      ]
     }));
-    await audit("tenant.created", tenant.tenant_id, tenant, req.actor);
-    res.status(201).json({ tenant });
+    await audit("tenant.created", tenant.tenant_id, { tenant, entitlement }, req.actor);
+    res.status(201).json({ tenant, entitlement });
   } catch (error) {
     next(error);
   }
@@ -267,6 +289,62 @@ app.get("/api/tenants", requireScope("tenant:read"), async (req, res, next) => {
   }
 });
 
+app.get("/api/billing/summary", requireScope("billing:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    const [tenant, entitlement, domains, users, apiKeys, idpConnections, dnsZones, policies, deployments] = await Promise.all([
+      getById(tables.tenants, { tenant_id: tenantId }),
+      getTenantEntitlement(tenantId),
+      queryByTenant(tables.domains, tenantId),
+      queryByTenant(tables.users, tenantId),
+      queryByTenant(tables.apiKeys, tenantId),
+      queryByTenant(tables.idpConnections, tenantId),
+      queryByTenant(tables.dnsZones, tenantId),
+      queryByTenant(tables.policies, tenantId),
+      queryByTenant(tables.edgeDeployments, tenantId)
+    ]);
+    if (!tenant || !entitlement) return res.status(404).json({ error: "tenant_entitlement_not_found" });
+    const events = await collectSecurityEvents(deployments, 5000);
+    const usage = {
+      domains: domains.length,
+      users: users.length,
+      api_keys: apiKeys.filter((item) => item.status === "active").length,
+      idp_connections: idpConnections.filter((item) => item.status === "active").length,
+      dns_zones: dnsZones.length,
+      policies: policies.length,
+      observed_waf_requests: events.length,
+      blocked_waf_requests: events.filter((event) => event.action === "BLOCK").length
+    };
+    res.json({ tenant, entitlement: publicEntitlement(entitlement), usage, usage_period: currentUsagePeriod() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/tenants/:tenantId/entitlement", requirePlatformActor, requireScope("billing:write"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.params.tenantId);
+    const tenant = await getById(tables.tenants, { tenant_id: tenantId });
+    const plan = normalizePlan(req.body?.plan);
+    if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
+    if (!plan) return res.status(400).json({ error: "supported_plan_required" });
+    const entitlement = createEntitlement({ ...tenant, plan }, new Date().toISOString());
+    await dynamo.send(new PutCommand({ TableName: tables.entitlements, Item: entitlement }));
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.tenants,
+      Key: { tenant_id: tenantId },
+      UpdateExpression: "SET #plan = :plan, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#plan": "plan" },
+      ExpressionAttributeValues: { ":plan": plan, ":updated_at": entitlement.updated_at }
+    }));
+    await audit("tenant.entitlement_updated", tenantId, publicEntitlement(entitlement), req.actor);
+    res.json({ entitlement: publicEntitlement(entitlement) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/domains", requireScope("domain:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -274,6 +352,7 @@ app.post("/api/domains", requireScope("domain:write"), async (req, res, next) =>
     const domainName = normalizeDomain(body.domain_name);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!domainName) return res.status(400).json({ error: "valid_domain_required" });
+    await enforceTenantLimit(tenantId, "domains", (await queryByTenant(tables.domains, tenantId)).length);
 
     const now = new Date().toISOString();
     const verification = crypto.randomBytes(12).toString("hex");
@@ -660,6 +739,7 @@ app.post("/api/domains/:domainId/dns-zone", requireScope("domain:write"), async 
     if (!["external_guided", "route53_delegated"].includes(mode)) return res.status(400).json({ error: "unsupported_dns_mode" });
     const existing = (await queryByTenant(tables.dnsZones, domain.tenant_id)).find((zone) => zone.domain_id === domain.domain_id);
     if (existing) return res.status(409).json({ error: "dns_zone_already_exists" });
+    await enforceTenantLimit(domain.tenant_id, "dns_zones", (await queryByTenant(tables.dnsZones, domain.tenant_id)).length);
 
     const now = new Date().toISOString();
     const zone = {
@@ -802,6 +882,9 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
     const name = clean(body.name);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!name) return res.status(400).json({ error: "policy_name_required" });
+    await enforceTenantLimit(tenantId, "policies", (await queryByTenant(tables.policies, tenantId)).length);
+    const mode = normalizeWafMode(body.mode);
+    if (!mode) return res.status(400).json({ error: "supported_waf_mode_required" });
 
     const now = new Date().toISOString();
     const policy = {
@@ -809,7 +892,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
       tenant_id: tenantId,
       name,
       scope: clean(body.scope) || "all_domains",
-      mode: clean(body.mode) || "managed_defaults",
+      mode,
       approval_required: true,
       status: "draft",
       created_at: now,
@@ -944,6 +1027,7 @@ app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("edge:write"), 
     if (!domainId) return res.status(400).json({ error: "domain_id_required" });
     const edgeDeployment = await edgeDeploymentForDomain(domainId, changeSet.tenant_id);
     if (!edgeDeployment?.web_acl_id || !["provisioning", "ready_for_cutover", "active"].includes(edgeDeployment.status)) return res.status(409).json({ error: "provisioned_edge_required" });
+    if (changeSet.mode === "block") await requirePilotMonitorBaseline(changeSet, edgeDeployment);
 
     const applied = await applyWafChangeSet(changeSet, edgeDeployment);
     await audit("waf_change_set.applied", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, domain_id: domainId }, req.actor);
@@ -1029,6 +1113,7 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
 
     const existing = await queryByIndex(tables.users, "email-index", "email", email);
     if (existing.some((item) => item.tenant_id === tenantId)) return res.status(409).json({ error: "user_already_exists" });
+    await enforceTenantLimit(tenantId, "users", (await queryByTenant(tables.users, tenantId)).length);
     const now = new Date().toISOString();
     const user = {
       user_id: `usr_${crypto.randomUUID()}`,
@@ -1114,6 +1199,7 @@ app.post("/api/api-keys", requireScope("identity:write"), async (req, res, next)
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!name) return res.status(400).json({ error: "api_key_name_required" });
     if (!scopes.length) return res.status(400).json({ error: "scope_required_or_not_granted" });
+    await enforceTenantLimit(tenantId, "api_keys", (await queryByTenant(tables.apiKeys, tenantId)).filter((item) => item.status === "active").length);
 
     const keyId = `key_${crypto.randomUUID()}`;
     const secret = crypto.randomBytes(32).toString("base64url");
@@ -1196,6 +1282,7 @@ app.post("/api/idp-connections", requireScope("identity:write"), async (req, res
     if (protocol === "saml" && !isHttpsUrl(body.metadata_url)) return res.status(400).json({ error: "saml_metadata_url_required" });
     const existing = (await queryByTenant(tables.idpConnections, tenantId)).find((item) => item.name.toLowerCase() === name.toLowerCase());
     if (existing) return res.status(409).json({ error: "idp_connection_name_already_exists" });
+    await enforceTenantLimit(tenantId, "idp_connections", (await queryByTenant(tables.idpConnections, tenantId)).length);
 
     const now = new Date().toISOString();
     const connection = {
@@ -1332,7 +1419,7 @@ app.use((req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(error.statusCode || 500).json({ error: error.code || "internal_error" });
+  res.status(error.statusCode || 500).json({ error: error.code || "internal_error", details: error.details || undefined });
 });
 
 app.listen(port, "0.0.0.0", () => {
@@ -1652,6 +1739,64 @@ async function getById(TableName, Key) {
   if (!TableName || !Key) return null;
   const result = await dynamo.send(new GetCommand({ TableName, Key }));
   return result.Item || null;
+}
+
+function normalizePlan(value) {
+  const plan = clean(value).toLowerCase() || "pilot";
+  return planCatalog[plan] ? plan : "";
+}
+
+function createEntitlement(tenant, now) {
+  const plan = normalizePlan(tenant.plan);
+  const definition = planCatalog[plan];
+  return {
+    customer_identifier: tenant.tenant_id,
+    tenant_id: tenant.tenant_id,
+    plan,
+    plan_label: definition.label,
+    billing_status: definition.billing_status,
+    source: "direct_pilot",
+    limits: definition.limits,
+    created_at: now,
+    updated_at: now
+  };
+}
+
+async function getTenantEntitlement(tenantId) {
+  if (!tenantId || tenantId === "platform") return null;
+  return getById(tables.entitlements, { customer_identifier: tenantId });
+}
+
+async function enforceTenantLimit(tenantId, resource, currentCount) {
+  if (!tenantId || tenantId === "platform") return;
+  const entitlement = await getTenantEntitlement(tenantId);
+  if (!entitlement) throw httpError(409, "tenant_entitlement_required");
+  const limit = Number(entitlement.limits?.[resource]);
+  if (Number.isFinite(limit) && currentCount >= limit) {
+    const error = httpError(409, "plan_limit_exceeded");
+    error.details = { resource, limit, current: currentCount, plan: entitlement.plan };
+    throw error;
+  }
+}
+
+function publicEntitlement(entitlement) {
+  return {
+    customer_identifier: entitlement.customer_identifier,
+    tenant_id: entitlement.tenant_id,
+    plan: entitlement.plan,
+    plan_label: entitlement.plan_label,
+    billing_status: entitlement.billing_status,
+    source: entitlement.source,
+    limits: entitlement.limits,
+    updated_at: entitlement.updated_at
+  };
+}
+
+function currentUsagePeriod() {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return { starts_at: start.toISOString(), ends_at: end.toISOString(), source: "observed_control_plane_and_waf_events" };
 }
 
 async function putUnique(TableName, Item, keyName) {
@@ -2330,6 +2475,29 @@ function isPrivateIpv4(host) {
     (a === 100 && b >= 64 && b <= 127) ||
     a >= 224
   );
+}
+
+function normalizeWafMode(value) {
+  const mode = clean(value).toLowerCase() || "monitor";
+  return { managed_defaults: "monitor", count: "monitor", monitor: "monitor", block: "block", emergency_lockdown: "emergency_lockdown" }[mode] || "";
+}
+
+async function requirePilotMonitorBaseline(changeSet, edgeDeployment) {
+  const minimumAgeMs = 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - minimumAgeMs;
+  const changeSets = await queryByTenant(tables.wafChangeSets, changeSet.tenant_id);
+  const baseline = changeSets.find((item) => (
+    item.change_set_id !== changeSet.change_set_id &&
+    item.domain_id === edgeDeployment.domain_id &&
+    item.status === "applied" &&
+    item.mode === "monitor" &&
+    Date.parse(item.applied_at || "") <= cutoff
+  ));
+  if (!baseline) {
+    const error = httpError(409, "monitor_observation_window_required");
+    error.details = { domain_id: edgeDeployment.domain_id, minimum_observation_hours: 24 };
+    throw error;
+  }
 }
 
 function compileWafRules(policy) {

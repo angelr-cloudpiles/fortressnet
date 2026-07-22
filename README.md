@@ -126,7 +126,7 @@ The `dev` environment is deployed in AWS account `422128689549` using profile `f
 - Site URL: `https://fortressnet.app`
 - App URL: `https://app.fortressnet.app`
 - Region: `us-east-1`
-- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:secure-20260722-acm-tenant-001`
+- Control plane image: see `infra/terraform/environments/dev/terraform.tfvars` for the deployed immutable release tag.
 - Terraform backend: `s3://fortressnet-terraform-state-422128689549-us-east-1/fortressnet/dev/terraform.tfstate`
 
 ## Management Access
@@ -142,8 +142,10 @@ aws secretsmanager get-secret-value \
   --output text
 ```
 
-The JSON field is `management_bootstrap_token`. Treat it as a secret. Cognito is provisioned and will replace this bootstrap flow once the hosted login is wired into the frontend.
+The JSON field is `management_bootstrap_token`. Treat it as a recovery secret. Normal console access uses the Cognito Hosted UI with PKCE; use the recovery token only to establish or recover platform ownership.
 
 Tenant onboarding now verifies an ownership TXT record before requesting a tagged ACM certificate in `us-east-1`. The console exposes the ACM DNS validation CNAME and tracks issuance. Tenant CloudFront/WAF provisioning remains an explicit next approval workflow; no traffic cutover occurs automatically.
 
-Application code, CI/CD pipelines, marketplace fulfillment, AI event analysis, and automated tenant edge provisioning are expected to grow as separate workstreams.
+Each new tenant receives an enforced plan entitlement. The initial `pilot` plan limits domains, users, API keys, IdP connections, DNS zones and policies; usage is derived from control-plane resources and real WAF events. AWS Marketplace fulfillment remains a separate integration workstream.
+
+For Cognito Managed Login, the user pool API cannot be reached through AWS PrivateLink. The control-plane security group therefore permits outbound TCP/443 through the existing NAT gateway so it can call Cognito; all other task egress stays restricted to VPC endpoints, S3 and DynamoDB prefix lists.

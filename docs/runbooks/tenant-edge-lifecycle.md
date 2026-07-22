@@ -17,6 +17,7 @@ This runbook defines the production workflow for connecting one tenant domain to
 - The tenant publishes the FortressNet ownership TXT record.
 - FortressNet requests ACM only after TXT verification. The tenant publishes the ACM validation CNAME and the certificate reaches `ISSUED`.
 - The tenant operator runs the origin health check. Resolution must contain only public addresses.
+- The tenant has an active entitlement. Pilot limits are enforced before any new domain, user, API key, IdP, DNS zone or policy is created.
 
 ## Approval And Provisioning
 
@@ -43,10 +44,17 @@ The current verifier is intentionally limited to direct CNAME records. Apex reco
 
 ## WAF Changes
 
-1. Compile a tenant policy to a change set.
+1. Start the first tenant policy in `monitor` mode and compile it to a change set.
 2. A different authorized operator approves the change set.
 3. Select the exact tenant domain in the console and apply the change.
-4. Use rollback to restore the previous WAF rules if the change has an unexpected effect.
+4. Keep monitor mode applied for at least 24 hours before applying a `block` policy to the same domain.
+5. Use rollback to restore the previous WAF rules if the change has an unexpected effect.
+
+## Pilot Billing And Readiness
+
+- The Billing view is an operational entitlement view, not an invoice. It reports enforced limits and observed WAF events; no consumption is fabricated.
+- A plan upgrade is a platform-owner operation until Marketplace fulfillment is integrated.
+- Do not create a tenant until the customer, domain and origin are real and authorized. The first platform owner is invited through Cognito and must complete the temporary-password flow before normal console administration.
 
 ## Evidence And Incident Response
 
