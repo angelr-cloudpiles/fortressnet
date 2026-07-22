@@ -58,6 +58,26 @@ output "security_policies_table_name" {
   value       = aws_dynamodb_table.security_policies.name
 }
 
+output "users_table_name" {
+  description = "Users table name."
+  value       = aws_dynamodb_table.users.name
+}
+
+output "api_keys_table_name" {
+  description = "API keys table name."
+  value       = aws_dynamodb_table.api_keys.name
+}
+
+output "idp_connections_table_name" {
+  description = "Identity provider connections table name."
+  value       = aws_dynamodb_table.idp_connections.name
+}
+
+output "profiles_table_name" {
+  description = "Profiles table name."
+  value       = aws_dynamodb_table.profiles.name
+}
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket

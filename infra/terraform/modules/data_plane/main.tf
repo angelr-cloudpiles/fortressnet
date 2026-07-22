@@ -405,6 +405,130 @@ resource "aws_dynamodb_table" "security_policies" {
   }
 }
 
+resource "aws_dynamodb_table" "users" {
+  name         = "${var.name}-users"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "user_id"
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "email"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    hash_key        = "tenant_id"
+    projection_type = "ALL"
+  }
+
+  global_secondary_index {
+    name            = "email-index"
+    hash_key        = "email"
+    projection_type = "ALL"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "api_keys" {
+  name         = "${var.name}-api-keys"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "key_id"
+
+  attribute {
+    name = "key_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    hash_key        = "tenant_id"
+    projection_type = "ALL"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "idp_connections" {
+  name         = "${var.name}-idp-connections"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "idp_id"
+
+  attribute {
+    name = "idp_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    hash_key        = "tenant_id"
+    projection_type = "ALL"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "profiles" {
+  name         = "${var.name}-profiles"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "profile_id"
+
+  attribute {
+    name = "profile_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 

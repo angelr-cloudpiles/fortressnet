@@ -93,6 +93,10 @@ module "control_plane" {
   domains_table_name           = module.data_plane.domains_table_name
   entitlements_table_name      = module.data_plane.entitlements_table_name
   security_policies_table_name = module.data_plane.security_policies_table_name
+  users_table_name             = module.data_plane.users_table_name
+  api_keys_table_name          = module.data_plane.api_keys_table_name
+  idp_connections_table_name   = module.data_plane.idp_connections_table_name
+  profiles_table_name          = module.data_plane.profiles_table_name
   cognito_user_pool_id         = module.identity.user_pool_id
   cognito_app_client_id        = module.identity.app_client_id
 }

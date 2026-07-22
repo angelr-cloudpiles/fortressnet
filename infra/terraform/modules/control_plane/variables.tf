@@ -109,6 +109,26 @@ variable "security_policies_table_name" {
   type        = string
 }
 
+variable "users_table_name" {
+  description = "Users table name."
+  type        = string
+}
+
+variable "api_keys_table_name" {
+  description = "API keys table name."
+  type        = string
+}
+
+variable "idp_connections_table_name" {
+  description = "Identity provider connections table name."
+  type        = string
+}
+
+variable "profiles_table_name" {
+  description = "Profiles table name."
+  type        = string
+}
+
 variable "cognito_user_pool_id" {
   description = "Cognito user pool ID."
   type        = string

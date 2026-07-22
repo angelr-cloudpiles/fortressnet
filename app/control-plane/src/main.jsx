@@ -15,6 +15,7 @@ import {
   Globe2,
   Home,
   KeyRound,
+  Link2,
   LockKeyhole,
   MoreHorizontal,
   Plus,
@@ -32,10 +33,14 @@ const navItems = [
   { id: "overview", label: "Overview", icon: Home },
   { id: "domains", label: "Domains", icon: Globe2 },
   { id: "policies", label: "Policies", icon: Shield },
+  { id: "access", label: "Access", icon: Users },
+  { id: "idp", label: "External IdP", icon: Link2 },
+  { id: "api-keys", label: "API Keys", icon: KeyRound },
   { id: "events", label: "Events", icon: ClipboardList },
   { id: "ai", label: "AI Analyst", icon: Sparkles, badge: "Beta" },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "billing", label: "Billing", icon: CreditCard },
+  { id: "profile", label: "Profile", icon: Users },
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
@@ -43,7 +48,11 @@ const emptyState = {
   tenants: [],
   domains: [],
   policies: [],
-  entitlements: []
+  entitlements: [],
+  users: [],
+  api_keys: [],
+  idp_connections: [],
+  profiles: []
 };
 
 function App() {
@@ -136,10 +145,43 @@ function App() {
               setStatus={setStatus}
             />
           )}
+          {active === "access" && (
+            <AccessScreen
+              token={token}
+              platform={platform}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
+          {active === "idp" && (
+            <IdpScreen
+              token={token}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
+          {active === "api-keys" && (
+            <ApiKeysScreen
+              token={token}
+              platform={platform}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
           {active === "events" && <EventsScreen />}
           {active === "ai" && <AiScreen />}
           {active === "reports" && <ReportsScreen />}
           {active === "billing" && <BillingScreen state={state} />}
+          {active === "profile" && <ProfileScreen token={token} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
         </section>
       </main>
@@ -395,6 +437,114 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
   );
 }
 
+function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const users = filterByTenant(state.users, selectedTenantId);
+
+  return (
+    <div className="screen split-detail">
+      <Panel title="Users and Roles" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {users.length ? (
+          <table className="data-table">
+            <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Scopes</th><th>MFA</th></tr></thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.user_id}>
+                  <td><strong>{user.display_name}</strong><small>{user.email}</small></td>
+                  <td><span className="health pending">{user.status}</span></td>
+                  <td>{(user.roles || []).join(", ")}</td>
+                  <td>{(user.scopes || []).slice(0, 4).join(", ") || "none"}</td>
+                  <td>{user.mfa_required ? "Required" : "Optional"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState icon={Users} title="No users configured" body="Create users with tenant-scoped roles and granular scopes." />
+        )}
+      </Panel>
+      <Panel title="Invite User">
+        <UserCreateForm token={token} platform={platform} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
+function IdpScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const connections = filterByTenant(state.idp_connections, selectedTenantId);
+
+  return (
+    <div className="screen split-detail">
+      <Panel title="External Identity Providers" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {connections.length ? (
+          <table className="data-table">
+            <thead><tr><th>Name</th><th>Protocol</th><th>Status</th><th>Issuer</th><th>Provisioning</th></tr></thead>
+            <tbody>
+              {connections.map((idp) => (
+                <tr key={idp.idp_id}>
+                  <td>{idp.name}</td>
+                  <td>{idp.protocol?.toUpperCase()}</td>
+                  <td><span className="health pending">{idp.status}</span></td>
+                  <td>{idp.issuer_url || idp.metadata_url || "pending"}</td>
+                  <td>{idp.auto_provisioning ? "Enabled" : "Disabled"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState icon={Link2} title="No external IdP connected" body="Configure OIDC or SAML metadata per tenant." />
+        )}
+      </Panel>
+      <Panel title="Add IdP Connection">
+        <IdpCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
+function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const apiKeys = filterByTenant(state.api_keys, selectedTenantId);
+  const [newKey, setNewKey] = useState("");
+
+  const handleCreated = (value) => {
+    setNewKey(value || "");
+    onCreated();
+  };
+
+  return (
+    <div className="screen split-detail">
+      <Panel title="API Keys" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {newKey && (
+          <div className="secret-once">
+            <strong>Copy this key now. It will not be shown again.</strong>
+            <code>{newKey}</code>
+          </div>
+        )}
+        {apiKeys.length ? (
+          <table className="data-table">
+            <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Scopes</th><th>Last used</th></tr></thead>
+            <tbody>
+              {apiKeys.map((apiKey) => (
+                <tr key={apiKey.key_id}>
+                  <td>{apiKey.name}</td>
+                  <td><code>{apiKey.key_prefix}</code></td>
+                  <td><span className="health pending">{apiKey.status}</span></td>
+                  <td>{(apiKey.scopes || []).join(", ")}</td>
+                  <td>{apiKey.last_used_at || "never"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState icon={KeyRound} title="No API keys" body="Create scoped keys for automation and tenant integrations." />
+        )}
+      </Panel>
+      <Panel title="Create API Key">
+        <ApiKeyCreateForm token={token} platform={platform} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={handleCreated} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
 function EventsScreen() {
   return (
     <div className="screen">
@@ -493,6 +643,62 @@ function SettingsScreen({ platform, token, onTokenSave }) {
   );
 }
 
+function ProfileScreen({ token, setStatus }) {
+  const [profile, setProfile] = useState({
+    display_name: "",
+    email: "",
+    timezone: "UTC",
+    locale: "en-US",
+    notification_email: true,
+    notification_security: true
+  });
+
+  useEffect(() => {
+    if (!token) return;
+    apiRequest("/api/profile", token)
+      .then((data) => setProfile((current) => ({ ...current, ...(data.profile || {}) })))
+      .catch((error) => setStatus({ type: "error", message: error.message }));
+  }, [token, setStatus]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      const data = await apiRequest("/api/profile", token, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile)
+      });
+      setProfile(data.profile);
+      setStatus({ type: "success", message: "Profile updated." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+
+  return (
+    <div className="screen settings-grid">
+      <Panel title="Personal Profile">
+        <form className="form-grid" onSubmit={submit}>
+          <label htmlFor="profile-name">Display name<input id="profile-name" value={profile.display_name || ""} onChange={(event) => setProfile({ ...profile, display_name: event.target.value })} /></label>
+          <label htmlFor="profile-email">Email<input id="profile-email" value={profile.email || ""} onChange={(event) => setProfile({ ...profile, email: event.target.value })} /></label>
+          <label htmlFor="profile-timezone">Timezone<input id="profile-timezone" value={profile.timezone || "UTC"} onChange={(event) => setProfile({ ...profile, timezone: event.target.value })} /></label>
+          <label htmlFor="profile-locale">Locale<input id="profile-locale" value={profile.locale || "en-US"} onChange={(event) => setProfile({ ...profile, locale: event.target.value })} /></label>
+          <label className="check-row"><input type="checkbox" checked={profile.notification_email !== false} onChange={(event) => setProfile({ ...profile, notification_email: event.target.checked })} /> Email notifications</label>
+          <label className="check-row"><input type="checkbox" checked={profile.notification_security !== false} onChange={(event) => setProfile({ ...profile, notification_security: event.target.checked })} /> Security notifications</label>
+          <button className="primary" disabled={!token}><CheckCircle2 size={16} /> Save profile</button>
+        </form>
+      </Panel>
+      <Panel title="Session Context">
+        <div className="settings-list">
+          <div><Users size={18} /><span>Actor</span><strong>Bootstrap/API</strong></div>
+          <div><LockKeyhole size={18} /><span>Profile storage</span><strong>DynamoDB</strong></div>
+          <div><Bell size={18} /><span>Notification preference</span><strong>{profile.notification_security === false ? "Limited" : "Security on"}</strong></div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function TenantCreateForm({ token, onCreated, setStatus }) {
   const [name, setName] = useState("");
   const [plan, setPlan] = useState("pilot");
@@ -510,6 +716,126 @@ function TenantCreateForm({ token, onCreated, setStatus }) {
       <label htmlFor="tenant-name">Tenant name<input id="tenant-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
       <label htmlFor="tenant-plan">Plan<select id="tenant-plan" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
       <button className="primary" disabled={!token || !name}><Plus size={16} /> Create tenant</button>
+    </form>
+  );
+}
+
+function UserCreateForm({ token, platform, tenants, selectedTenantId, onCreated, setStatus }) {
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("tenant_admin");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/users", token, {
+      tenant_id: selectedTenantId || "platform",
+      display_name: displayName,
+      email,
+      roles: [role],
+      scopes: []
+    }, "User created.", setStatus, () => {
+      setDisplayName("");
+      setEmail("");
+      onCreated();
+    });
+  };
+
+  if (!tenants.length) {
+    return <EmptyState icon={Users} title="Create a tenant first" body="Tenant users require a tenant context." />;
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label htmlFor="user-name">Display name<input id="user-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Jane Admin" /></label>
+      <label htmlFor="user-email">Email<input id="user-email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="jane@example.com" /></label>
+      <label htmlFor="user-role">Role<select id="user-role" value={role} onChange={(event) => setRole(event.target.value)}>{(platform?.roles || []).filter((item) => item !== "platform_owner").map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <button className="primary" disabled={!token || !selectedTenantId || !displayName || !email}><Plus size={16} /> Create user</button>
+    </form>
+  );
+}
+
+function IdpCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
+  const [name, setName] = useState("");
+  const [protocol, setProtocol] = useState("oidc");
+  const [issuerUrl, setIssuerUrl] = useState("");
+  const [metadataUrl, setMetadataUrl] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [secretReference, setSecretReference] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/idp-connections", token, {
+      tenant_id: selectedTenantId,
+      name,
+      protocol,
+      issuer_url: issuerUrl,
+      metadata_url: metadataUrl,
+      client_id: clientId,
+      secret_reference: secretReference
+    }, "Identity provider connection saved.", setStatus, () => {
+      setName("");
+      setIssuerUrl("");
+      setMetadataUrl("");
+      setClientId("");
+      setSecretReference("");
+      onCreated();
+    });
+  };
+
+  if (!tenants.length) {
+    return <EmptyState icon={Users} title="Create a tenant first" body="External IdPs are configured per tenant." />;
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label htmlFor="idp-name">Name<input id="idp-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Okta workforce" /></label>
+      <label htmlFor="idp-protocol">Protocol<select id="idp-protocol" value={protocol} onChange={(event) => setProtocol(event.target.value)}><option value="oidc">OIDC</option><option value="saml">SAML</option></select></label>
+      <label htmlFor="idp-issuer">Issuer URL<input id="idp-issuer" value={issuerUrl} onChange={(event) => setIssuerUrl(event.target.value)} placeholder="https://idp.example.com/oauth2/default" /></label>
+      <label htmlFor="idp-metadata">Metadata URL<input id="idp-metadata" value={metadataUrl} onChange={(event) => setMetadataUrl(event.target.value)} placeholder="https://idp.example.com/metadata" /></label>
+      <label htmlFor="idp-client">Client ID<input id="idp-client" value={clientId} onChange={(event) => setClientId(event.target.value)} /></label>
+      <label htmlFor="idp-secret">Secret reference<input id="idp-secret" value={secretReference} onChange={(event) => setSecretReference(event.target.value)} placeholder="secretsmanager://tenant/idp/client-secret" /></label>
+      <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Save IdP</button>
+    </form>
+  );
+}
+
+function ApiKeyCreateForm({ token, platform, tenants, selectedTenantId, onCreated, setStatus }) {
+  const [name, setName] = useState("");
+  const [scopes, setScopes] = useState(["tenant:read", "domain:read"]);
+
+  const toggleScope = (scope) => {
+    setScopes((current) => current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope]);
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      const data = await apiRequest("/api/api-keys", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenant_id: selectedTenantId, name, scopes })
+      });
+      setStatus({ type: "success", message: "API key created." });
+      setName("");
+      onCreated(data.api_key_value);
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+
+  if (!tenants.length) {
+    return <EmptyState icon={Users} title="Create a tenant first" body="API keys must be scoped to a tenant." />;
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label htmlFor="api-key-name">Key name<input id="api-key-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="CI deployment integration" /></label>
+      <div className="scope-picker">
+        {(platform?.scopes || []).map((scope) => (
+          <label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scope}</label>
+        ))}
+      </div>
+      <button className="primary" disabled={!token || !selectedTenantId || !name || !scopes.length}><KeyRound size={16} /> Create key</button>
     </form>
   );
 }
