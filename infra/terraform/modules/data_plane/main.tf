@@ -190,24 +190,24 @@ resource "aws_db_subnet_group" "this" {
 }
 
 resource "aws_db_instance" "this" {
-  identifier             = "${var.name}-postgres"
-  engine                 = "postgres"
-  engine_version         = "17"
-  instance_class         = var.database_instance_class
-  allocated_storage       = 20
-  max_allocated_storage   = 100
-  db_name                 = var.database_name
-  username                = var.database_username
-  password                = random_password.database.result
-  db_subnet_group_name    = aws_db_subnet_group.this.name
-  vpc_security_group_ids  = [aws_security_group.database.id]
-  storage_encrypted       = true
-  kms_key_id              = aws_kms_key.platform.arn
-  publicly_accessible     = false
-  skip_final_snapshot     = var.database_skip_final_snapshot
+  identifier                = "${var.name}-postgres"
+  engine                    = "postgres"
+  engine_version            = "17"
+  instance_class            = var.database_instance_class
+  allocated_storage         = 20
+  max_allocated_storage     = 100
+  db_name                   = var.database_name
+  username                  = var.database_username
+  password                  = random_password.database.result
+  db_subnet_group_name      = aws_db_subnet_group.this.name
+  vpc_security_group_ids    = [aws_security_group.database.id]
+  storage_encrypted         = true
+  kms_key_id                = aws_kms_key.platform.arn
+  publicly_accessible       = false
+  skip_final_snapshot       = var.database_skip_final_snapshot
   final_snapshot_identifier = var.database_skip_final_snapshot ? null : "${var.name}-postgres-final-${random_id.final_snapshot.hex}"
-  deletion_protection     = var.database_deletion_protection
-  backup_retention_period = 7
+  deletion_protection       = var.database_deletion_protection
+  backup_retention_period   = 7
 }
 
 resource "aws_dynamodb_table" "tenants" {

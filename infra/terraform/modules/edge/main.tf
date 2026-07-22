@@ -135,13 +135,13 @@ resource "aws_wafv2_web_acl" "this" {
 }
 
 resource "aws_cloudfront_distribution" "this" {
-  enabled             = true
-  comment             = "FortressNet SaaS edge for ${var.app_fqdn}"
-  aliases             = [var.app_fqdn]
-  price_class         = var.price_class
-  web_acl_id          = aws_wafv2_web_acl.this.arn
-  http_version        = "http2and3"
-  is_ipv6_enabled     = true
+  enabled         = true
+  comment         = "FortressNet SaaS edge for ${var.app_fqdn}"
+  aliases         = [var.app_fqdn]
+  price_class     = var.price_class
+  web_acl_id      = aws_wafv2_web_acl.this.arn
+  http_version    = "http2and3"
+  is_ipv6_enabled = true
 
   logging_config {
     bucket          = var.logs_bucket_domain_name

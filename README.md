@@ -112,7 +112,7 @@ The `dev` environment is deployed in AWS account `422128689549` using profile `f
 
 - App URL: `https://app.fortressnet.app`
 - Region: `us-east-1`
-- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:mvp-20260722-001`
+- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:clean-20260722-001`
 - Terraform backend: `s3://fortressnet-terraform-state-422128689549-us-east-1/fortressnet/dev/terraform.tfstate`
 
 Application code, CI/CD pipelines, and tenant provisioning service logic are expected to grow as separate workstreams.

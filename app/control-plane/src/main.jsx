@@ -1,11 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
   Bell,
-  Bot,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -14,25 +12,19 @@ import {
   ClipboardList,
   CreditCard,
   FileText,
-  Filter,
-  Gauge,
   Globe2,
   Home,
   KeyRound,
-  LayoutDashboard,
   LockKeyhole,
-  Menu,
   MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
   Settings,
   Shield,
-  ShieldAlert,
   Sparkles,
   TerminalSquare,
-  Users,
-  Zap
+  Users
 } from "lucide-react";
 import "./styles.css";
 
@@ -48,48 +40,20 @@ const navItems = [
 ];
 
 const metrics = [
-  { label: "Protected Requests", value: "23.7M", delta: "+18.6%", trend: "up", color: "blue", data: [32, 34, 31, 35, 36, 34, 38, 37, 42, 46, 41, 40, 38] },
-  { label: "Blocked Requests", value: "312.6K", delta: "+24.3%", trend: "risk", color: "red", data: [18, 22, 21, 20, 27, 32, 33, 29, 35, 30, 26, 28, 25] },
-  { label: "WAF Matches", value: "428.1K", delta: "+15.7%", trend: "up", color: "orange", data: [25, 29, 26, 31, 28, 35, 33, 37, 32, 40, 36, 39, 34] },
-  { label: "Bot Score Avg", value: "28", delta: "-5", trend: "good", color: "green", data: [34, 32, 33, 31, 30, 29, 28, 27, 27, 26, 28, 27, 26] },
-  { label: "Latency p95", value: "142 ms", delta: "-12 ms", trend: "good", color: "blue", data: [27, 30, 28, 33, 35, 37, 34, 31, 29, 28, 30, 31, 33] },
-  { label: "Est. Monthly Cost", value: "$18,420", delta: "-8.7%", trend: "good", color: "green", data: [42, 41, 39, 38, 37, 36, 35, 33, 32, 31, 30, 29, 28] }
+  { label: "Protected Requests", value: "0", delta: "Waiting for traffic", trend: "neutral", color: "blue" },
+  { label: "Blocked Requests", value: "0", delta: "No security events", trend: "neutral", color: "red" },
+  { label: "WAF Matches", value: "0", delta: "Rules ready", trend: "neutral", color: "orange" },
+  { label: "Bot Score Avg", value: "-", delta: "No requests yet", trend: "neutral", color: "green" },
+  { label: "Latency p95", value: "-", delta: "No edge samples", trend: "neutral", color: "blue" },
+  { label: "Est. Monthly Cost", value: "$0", delta: "Usage metering idle", trend: "neutral", color: "green" }
 ];
 
-const events = [
-  { time: "12:55:23", type: "SQL Injection", severity: "High", domain: "api.acme-payments.com", source: "203.0.113.45", country: "US", action: "Blocked" },
-  { time: "12:54:11", type: "XSS Attempt", severity: "Medium", domain: "www.acme-payments.com", source: "198.51.100.23", country: "US", action: "Blocked" },
-  { time: "12:53:47", type: "Bad Bot", severity: "Medium", domain: "static.acme-payments.com", source: "45.76.201.88", country: "DE", action: "Challenged" },
-  { time: "12:52:02", type: "API Abuse", severity: "Medium", domain: "api.acme-payments.com", source: "203.0.113.9", country: "SG", action: "Rate Limited" },
-  { time: "12:51:18", type: "LFI Attempt", severity: "Low", domain: "www.acme-payments.com", source: "192.0.2.77", country: "GB", action: "Blocked" },
-  { time: "12:50:44", type: "Credential Stuffing", severity: "High", domain: "login.acme-payments.com", source: "185.199.108.12", country: "NL", action: "Challenged" }
-];
-
-const domains = [
-  { domain: "www.acme-payments.com", status: "Healthy", requests: "8.7M", blocked: "74.2K", waf: "102.1K", latency: "118 ms" },
-  { domain: "api.acme-payments.com", status: "Healthy", requests: "6.2M", blocked: "98.7K", waf: "156.3K", latency: "142 ms" },
-  { domain: "login.acme-payments.com", status: "Healthy", requests: "1.8M", blocked: "12.3K", waf: "24.8K", latency: "96 ms" },
-  { domain: "static.acme-payments.com", status: "Healthy", requests: "5.1M", blocked: "4.1K", waf: "7.6K", latency: "87 ms" },
-  { domain: "billing.acme-payments.com", status: "Degraded", requests: "1.1M", blocked: "9.8K", waf: "14.3K", latency: "215 ms" }
-];
-
-const incidents = [
-  { sev: "High", title: "SQLi Attack Detected", domain: "api.acme-payments.com", firstSeen: "12:41 PM", status: "Ongoing" },
-  { sev: "Medium", title: "Credential Stuffing", domain: "login.acme-payments.com", firstSeen: "12:05 PM", status: "Ongoing" },
-  { sev: "Medium", title: "API Rate Limit Exceeded", domain: "api.acme-payments.com", firstSeen: "11:32 AM", status: "Ongoing" }
-];
-
-const policies = [
-  { name: "OWASP Managed Rules", scope: "All domains", mode: "Block", matches: "284.2K", updated: "2h ago" },
-  { name: "Login Abuse Protection", scope: "login.acme-payments.com", mode: "Challenge", matches: "33.6K", updated: "1d ago" },
-  { name: "API Token Rate Limit", scope: "/v1/*", mode: "Throttle", matches: "51.8K", updated: "3d ago" },
-  { name: "High Risk ASN Blocklist", scope: "API + Login", mode: "Log only", matches: "11.2K", updated: "5d ago" }
-];
-
-const aiFindings = [
-  { title: "Credential stuffing campaign", confidence: 91, impact: "High", summary: "344 unique IPs are rotating user agents against login endpoints with low human interaction signals." },
-  { title: "SQLi spike from AS13335", confidence: 87, impact: "High", summary: "Unusual SQLi patterns increased 4.8x against /v1/transactions over the last two hours." },
-  { title: "Possible false positive", confidence: 74, impact: "Medium", summary: "A new mobile app version is triggering API schema mismatch events on /v1/cards." }
+const setupSteps = [
+  "Create or select tenant",
+  "Add first protected domain",
+  "Verify DNS ownership",
+  "Attach security profile",
+  "Activate edge CNAME"
 ];
 
 function App() {
@@ -105,7 +69,7 @@ function App() {
         <Topbar environment={environment} setEnvironment={setEnvironment} />
         <section className="content">
           <PageHeader active={active} pageTitle={pageTitle} />
-          {active === "overview" && <Overview range={range} setRange={setRange} />}
+          {active === "overview" && <Overview range={range} setRange={setRange} onNavigate={setActive} />}
           {active === "domains" && <DomainsScreen />}
           {active === "policies" && <PoliciesScreen />}
           {active === "events" && <EventsScreen />}
@@ -129,7 +93,7 @@ function Sidebar({ active, onNavigate }) {
       <div className="tenant-label">Tenant</div>
       <button className="tenant-button">
         <Users size={16} />
-        <span>Acme Payments</span>
+        <span>No tenant selected</span>
         <ChevronDown size={15} />
       </button>
       <nav className="nav">
@@ -149,11 +113,11 @@ function Sidebar({ active, onNavigate }) {
         <div className="edge-status">
           <span className="status-dot green"></span>
           <div>
-            <strong>Edge Status</strong>
-            <p>Operational</p>
+            <strong>Platform Status</strong>
+            <p>Ready</p>
           </div>
         </div>
-        <div className="version">Version v2026.07.21</div>
+        <div className="version">Version v2026.07.22</div>
       </div>
     </aside>
   );
@@ -169,14 +133,14 @@ function Topbar({ environment, setEnvironment }) {
       </button>
       <div className="search">
         <Search size={17} />
-        <input aria-label="Search" placeholder="Search domains, IPs, policies, events..." />
-        <kbd>⌘K</kbd>
+        <input aria-label="Search" placeholder="Search tenants, domains, policies, events..." />
+        <kbd>/</kbd>
       </div>
-      <button className="date-button"><CalendarDays size={16} /> Jul 21, 2026 00:00 - Jul 21, 2026 23:59</button>
-      <button className="icon-button"><Bell size={18} /><span className="badge-dot">12</span></button>
+      <button className="date-button"><CalendarDays size={16} /> Live window</button>
+      <button className="icon-button"><Bell size={18} /></button>
       <div className="user">
-        <span>JD</span>
-        <div><strong>Jane Doe</strong><small>Admin</small></div>
+        <span>FN</span>
+        <div><strong>Console</strong><small>Not signed in</small></div>
         <ChevronDown size={15} />
       </div>
     </header>
@@ -184,17 +148,19 @@ function Topbar({ environment, setEnvironment }) {
 }
 
 function PageHeader({ active, pageTitle }) {
+  const title = active === "overview" ? "FortressNet Console" : pageTitle;
   const subtitle = active === "overview"
-    ? "Tenant ID: acme-payments-01 · 29 Domains · 7 Data Centers · 2,341 Active Rules"
-    : "Acme Payments · Production · Managed SaaS tenant";
+    ? "SaaS multi-tenant edge security platform - no customer data loaded"
+    : "Clean deployment - connect a tenant to start collecting data";
+
   return (
     <div className="page-header">
       <div>
-        <h1>{active === "overview" ? "Acme Payments" : pageTitle}</h1>
+        <h1>{title}</h1>
         <p>{subtitle}</p>
       </div>
       <div className="header-actions">
-        <button className="secondary"><Plus size={16} /> Add Widget</button>
+        <button className="secondary"><Plus size={16} /> Create tenant</button>
         <button className="secondary"><RefreshCw size={16} /> Sync</button>
         <button className="icon-button bordered"><MoreHorizontal size={18} /></button>
       </div>
@@ -202,7 +168,7 @@ function PageHeader({ active, pageTitle }) {
   );
 }
 
-function Overview({ range, setRange }) {
+function Overview({ range, setRange, onNavigate }) {
   return (
     <div className="screen">
       <div className="metric-grid">
@@ -210,24 +176,30 @@ function Overview({ range, setRange }) {
       </div>
       <div className="dashboard-grid">
         <Panel className="traffic-panel" title="Edge Traffic" action={<Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} />}>
-          <LineChart />
+          <EmptyChart />
         </Panel>
-        <Panel title="Threat Distribution" action={<button className="tiny">Top Threats <ChevronDown size={14} /></button>}>
-          <ThreatDistribution />
+        <Panel title="Threat Distribution" action={<button className="tiny">No tenant <ChevronDown size={14} /></button>}>
+          <EmptyState icon={Shield} title="No threats recorded" body="Threat data appears after a tenant activates its first protected domain." />
         </Panel>
-        <Panel title="Active Incidents" count="3">
-          <IncidentList />
+        <Panel title="Active Incidents" count="0">
+          <EmptyState icon={CheckCircle2} title="No active incidents" body="Incident detection is ready and will stay empty until real traffic is inspected." />
         </Panel>
       </div>
       <div className="table-grid">
-        <Panel title="Recent Security Events" action={<button className="link-button">View all events <ChevronRight size={14} /></button>}>
-          <EventsTable compact />
+        <Panel title="Recent Security Events" action={<button className="link-button">View event stream <ChevronRight size={14} /></button>}>
+          <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
         </Panel>
-        <Panel title="Domain Health" action={<button className="link-button">View all domains <ChevronRight size={14} /></button>}>
-          <DomainTable compact />
+        <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Add first domain <ChevronRight size={14} /></button>}>
+          <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "Latency p95"]} message="No protected domains are configured." />
         </Panel>
       </div>
-      <AiRecommendation />
+      <Panel title="Onboarding">
+        <div className="setup-steps">
+          {setupSteps.map((step, index) => (
+            <div key={step} className={index === 0 ? "current" : ""}><span>{index + 1}</span>{step}</div>
+          ))}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -240,21 +212,16 @@ function MetricCard({ metric }) {
         {metric.label.includes("Cost") && <CircleDollarSign size={16} />}
       </div>
       <div className="metric-value">{metric.value}</div>
-      <div className={`metric-delta ${metric.trend}`}>{metric.delta} <span>vs previous period</span></div>
-      <SparkLine data={metric.data} color={metric.color} />
+      <div className={`metric-delta ${metric.trend}`}>{metric.delta}</div>
+      <SparkLine color={metric.color} />
     </article>
   );
 }
 
-function SparkLine({ data, color = "blue" }) {
-  const points = data.map((value, index) => {
-    const x = (index / (data.length - 1)) * 150;
-    const y = 42 - ((value - Math.min(...data)) / (Math.max(...data) - Math.min(...data) || 1)) * 30;
-    return `${x},${y}`;
-  }).join(" ");
+function SparkLine({ color = "blue" }) {
   return (
-    <svg className="spark" viewBox="0 0 150 46" preserveAspectRatio="none">
-      <polyline points={points} className={`stroke-${color}`} fill="none" strokeWidth="2" />
+    <svg className="spark empty-spark" viewBox="0 0 150 46" preserveAspectRatio="none">
+      <line x1="0" x2="150" y1="34" y2="34" className={`stroke-${color}`} strokeWidth="2" strokeDasharray="4 5" />
     </svg>
   );
 }
@@ -263,7 +230,7 @@ function Panel({ title, count, action, className = "", children }) {
   return (
     <section className={`panel ${className}`}>
       <div className="panel-header">
-        <h2>{title} {count && <span className="count">{count}</span>}</h2>
+        <h2>{title} {count !== undefined && <span className="count">{count}</span>}</h2>
         {action}
       </div>
       {children}
@@ -281,18 +248,15 @@ function Segmented({ value, setValue, options }) {
   );
 }
 
-function LineChart() {
-  const total = [66, 55, 61, 58, 64, 59, 68, 90, 72, 78, 62, 67, 58, 71, 80, 64, 76, 82, 58, 68];
-  const allowed = [45, 38, 43, 40, 42, 39, 48, 56, 46, 50, 38, 42, 37, 45, 51, 40, 48, 50, 39, 47];
-  const blocked = [8, 5, 6, 6, 5, 7, 6, 7, 5, 7, 6, 5, 7, 8, 6, 5, 7, 8, 5, 7];
+function EmptyChart() {
   return (
     <div className="chart-wrap">
       <div className="legend"><span className="legend-blue"></span>Total <span className="legend-green"></span>Allowed <span className="legend-red"></span>Blocked</div>
       <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="none">
         {[0, 1, 2, 3, 4].map((i) => <line key={i} x1="45" x2="705" y1={40 + i * 52} y2={40 + i * 52} />)}
-        <Path values={total} className="stroke-blue" />
-        <Path values={allowed} className="stroke-green" />
-        <Path values={blocked} className="stroke-red" />
+        <line x1="45" x2="705" y1="250" y2="250" className="stroke-blue clean-baseline" />
+        <line x1="45" x2="705" y1="250" y2="250" className="stroke-green clean-baseline" />
+        <line x1="45" x2="705" y1="250" y2="250" className="stroke-red clean-baseline" />
         {["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"].map((label, i) => (
           <text key={label} x={45 + i * 128} y="284">{label}</text>
         ))}
@@ -301,120 +265,26 @@ function LineChart() {
   );
 }
 
-function Path({ values, className }) {
-  const max = 95;
-  const min = 0;
-  const points = values.map((v, i) => `${45 + (i / (values.length - 1)) * 660},${250 - ((v - min) / (max - min)) * 210}`).join(" ");
-  return <polyline points={points} className={className} fill="none" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />;
-}
-
-function ThreatDistribution() {
-  const items = [
-    ["SQL Injection", "82,341", "red"],
-    ["Cross-Site Scripting", "71,204", "orange"],
-    ["LFI / RFI", "45,112", "yellow"],
-    ["Bad Bots", "38,765", "green"],
-    ["API Abuse", "33,981", "blue"],
-    ["Credential Stuffing", "27,665", "indigo"],
-    ["Other", "128,188", "gray"]
-  ];
+function EmptyState({ icon: Icon, title, body }) {
   return (
-    <div className="threats">
-      <div className="donut"></div>
-      <div className="threat-list">
-        {items.map(([label, value, color]) => (
-          <div key={label}><span className={`swatch ${color}`}></span><span>{label}</span><strong>{value}</strong></div>
-        ))}
-        <footer><span>Total</span><strong>427,256</strong></footer>
-      </div>
+    <div className="empty-state">
+      <Icon size={30} />
+      <h3>{title}</h3>
+      <p>{body}</p>
     </div>
   );
 }
 
-function IncidentList() {
+function EmptyTable({ columns, message }) {
   return (
-    <div className="incident-list">
-      {incidents.map((incident) => (
-        <article key={incident.title}>
-          <div className={`sev ${incident.sev.toLowerCase()}`}>{incident.sev}</div>
-          <h3>{incident.title}</h3>
-          <p>{incident.domain}</p>
-          <small>First seen: {incident.firstSeen}</small>
-          <span>{incident.status}</span>
-        </article>
-      ))}
-      <button className="link-button">View all incidents <ChevronRight size={14} /></button>
-    </div>
-  );
-}
-
-function EventsTable({ compact = false }) {
-  return (
-    <table className="data-table">
-      <thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Domain</th><th>Source</th><th>Action</th></tr></thead>
+    <table className="data-table clean-table">
+      <thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
       <tbody>
-        {(compact ? events.slice(0, 5) : events).map((event) => (
-          <tr key={`${event.time}-${event.type}`}>
-            <td>{event.time}</td>
-            <td>{event.type}</td>
-            <td><Severity value={event.severity} /></td>
-            <td>{event.domain}</td>
-            <td>{event.source} <span className="flag">{event.country}</span></td>
-            <td><span className={`action ${event.action.toLowerCase().replace(" ", "-")}`}>{event.action}</span></td>
-          </tr>
-        ))}
+        <tr>
+          <td colSpan={columns.length}>{message}</td>
+        </tr>
       </tbody>
     </table>
-  );
-}
-
-function DomainTable({ compact = false }) {
-  return (
-    <table className="data-table">
-      <thead><tr><th>Domain</th><th>Status</th><th>Requests</th><th>Blocked</th><th>WAF Matches</th><th>Latency p95</th></tr></thead>
-      <tbody>
-        {(compact ? domains : [...domains, { domain: "admin.acme-payments.com", status: "Pending DNS", requests: "0", blocked: "0", waf: "0", latency: "-" }]).map((row) => (
-          <tr key={row.domain}>
-            <td>{row.domain}</td>
-            <td><Health value={row.status} /></td>
-            <td>{row.requests}</td>
-            <td>{row.blocked}</td>
-            <td>{row.waf}</td>
-            <td className={row.status === "Degraded" ? "danger-text" : ""}>{row.latency}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function Severity({ value }) {
-  return <span className={`severity ${value.toLowerCase()}`}>{value}</span>;
-}
-
-function Health({ value }) {
-  const healthy = value === "Healthy";
-  const pending = value === "Pending DNS";
-  return <span className={`health ${healthy ? "healthy" : pending ? "pending" : "degraded"}`}>{healthy ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}{value}</span>;
-}
-
-function AiRecommendation() {
-  return (
-    <Panel title="AI Analyst" action={<span className="beta">Beta</span>}>
-      <div className="ai-recommendation">
-        <Sparkles size={22} />
-        <div>
-          <p><strong>Anomaly detected:</strong> Unusual increase in SQLi attempts targeting <a>/v1/transactions</a> from AS13335 over the last 2 hours.</p>
-          <p><strong>Recommendation:</strong> Enable stricter SQLi rule set for <a>api.acme-payments.com</a> and add a temporary ASN rate limit.</p>
-          <button className="link-button">View analysis <ChevronRight size={14} /></button>
-        </div>
-        <aside>
-          <label>Confidence</label>
-          <div className="confidence"><span style={{ width: "87%" }}></span></div>
-          <strong>87%</strong>
-        </aside>
-      </div>
-    </Panel>
   );
 }
 
@@ -422,20 +292,14 @@ function DomainsScreen() {
   return (
     <div className="screen two-column">
       <Panel title="Domain Onboarding" action={<button className="primary"><Plus size={16} /> Add domain</button>}>
-        <div className="onboarding">
-          {["Verify ownership", "Issue ACM certificate", "Provision CloudFront", "Attach WAF", "Activate CNAME"].map((step, i) => (
-            <div key={step} className={i < 4 ? "done" : "current"}><span>{i + 1}</span>{step}</div>
+        <div className="setup-steps vertical">
+          {setupSteps.slice(1).map((step, index) => (
+            <div key={step} className={index === 0 ? "current" : ""}><span>{index + 1}</span>{step}</div>
           ))}
-        </div>
-        <div className="dns-box">
-          <strong>CNAME target</strong>
-          <code>tenant-acme.edge.fortressnet.app</code>
-          <strong>TXT verification</strong>
-          <code>_fortressnet-verify.api.acme-payments.com = fn-7e92c4</code>
         </div>
       </Panel>
       <Panel title="Domain Inventory">
-        <DomainTable />
+        <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "Latency p95"]} message="No protected domains are configured." />
       </Panel>
     </div>
   );
@@ -445,22 +309,13 @@ function PoliciesScreen() {
   return (
     <div className="screen split-detail">
       <Panel title="Policies" action={<button className="primary"><Plus size={16} /> New policy</button>}>
-        <div className="policy-list">
-          {policies.map((policy, i) => (
-            <button key={policy.name} className={i === 0 ? "selected" : ""}>
-              <ShieldAlert size={18} />
-              <span><strong>{policy.name}</strong><small>{policy.scope}</small></span>
-              <em>{policy.mode}</em>
-            </button>
-          ))}
-        </div>
+        <EmptyState icon={Shield} title="No tenant policies yet" body="Managed AWS WAF defaults are provisioned. Tenant-specific policies appear after domain onboarding." />
       </Panel>
-      <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> View YAML</button>}>
+      <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> View template</button>}>
         <div className="policy-editor">
-          <div><label>Mode</label><select><option>Block</option><option>Challenge</option><option>Log only</option></select></div>
-          <div><label>Scope</label><input value="All production domains" readOnly /></div>
-          <div><label>Ruleset</label><input value="AWSManagedRulesCommonRuleSet + FortressNet SQLi hardening" readOnly /></div>
-          <pre>{`action: block\nscope: all_domains\nrulesets:\n  - owasp-core\n  - aws-common\nexplainability: enabled\nsampling: 100%`}</pre>
+          <div><label>Mode</label><input value="No tenant selected" readOnly /></div>
+          <div><label>Scope</label><input value="Not configured" readOnly /></div>
+          <pre>{`tenant_id: pending\nscope: no_domains\nenforcement: managed_defaults\napproval_required: true`}</pre>
         </div>
       </Panel>
     </div>
@@ -470,14 +325,8 @@ function PoliciesScreen() {
 function EventsScreen() {
   return (
     <div className="screen">
-      <div className="toolbar-row">
-        <button className="secondary"><Filter size={16} /> Severity</button>
-        <button className="secondary"><Globe2 size={16} /> Domain</button>
-        <button className="secondary"><Bot size={16} /> Bot score</button>
-        <button className="primary"><RefreshCw size={16} /> Refresh stream</button>
-      </div>
       <Panel title="Security Event Stream">
-        <EventsTable />
+        <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
       </Panel>
     </div>
   );
@@ -487,42 +336,27 @@ function AiScreen() {
   return (
     <div className="screen ai-screen">
       <Panel title="AI Security Analyst" action={<span className="mode-readonly">Read-only mode</span>}>
-        <div className="findings-grid">
-          {aiFindings.map((finding) => (
-            <article className="finding" key={finding.title}>
-              <div><Sparkles size={18} /><Severity value={finding.impact} /></div>
-              <h3>{finding.title}</h3>
-              <p>{finding.summary}</p>
-              <footer><span>Confidence</span><strong>{finding.confidence}%</strong></footer>
-            </article>
-          ))}
-        </div>
+        <EmptyState icon={Sparkles} title="AI Analyst is ready" body="Findings will appear only after real tenant events and traffic are available." />
       </Panel>
       <Panel title="Recommended Change Request">
-        <div className="change-request">
-          <h3>Enable stricter SQLi inspection for `/v1/transactions`</h3>
-          <p>AI Analyst found a 4.8x increase in SQLi payloads from hosting ASNs. The suggested policy change requires admin approval.</p>
-          <div className="approval-actions">
-            <button className="secondary">Reject</button>
-            <button className="primary">Approve draft</button>
-          </div>
-        </div>
+        <EmptyState icon={ClipboardList} title="No recommendations pending" body="The analyst will create reviewable recommendations without applying enforcement changes automatically." />
       </Panel>
     </div>
   );
 }
 
 function ReportsScreen() {
+  const reports = [
+    ["Operational Report", "No operational samples available."],
+    ["Security Report", "No tenant security events available."],
+    ["Executive Report", "No tenant reporting period available."],
+    ["Compliance Export", "No evidence package generated."]
+  ];
   return (
     <div className="screen report-grid">
-      {[
-        ["Operational Report", "Latency, availability, origin errors, bandwidth and cost."],
-        ["Security Report", "Incidents, attack trends, blocked requests and rule impact."],
-        ["Executive Report", "Risk reduction, monthly trend and business-level summary."],
-        ["Compliance Export", "Evidence packages for audits and tenant reporting."]
-      ].map(([title, body]) => (
+      {reports.map(([title, body]) => (
         <Panel key={title} title={title}>
-          <div className="report-card"><BarChart3 size={32} /><p>{body}</p><button className="secondary">Generate PDF</button></div>
+          <div className="report-card"><BarChart3 size={32} /><p>{body}</p><button className="secondary">Generate after onboarding</button></div>
         </Panel>
       ))}
     </div>
@@ -534,21 +368,21 @@ function BillingScreen() {
     <div className="screen billing-grid">
       <Panel title="Current Plan">
         <div className="plan-box">
-          <span>Business</span>
-          <strong>$999 / month</strong>
-          <p>Includes 100M protected requests, 10 domains, 30-day retention and AI summaries.</p>
+          <span>No subscription selected</span>
+          <strong>$0 / month</strong>
+          <p>Billing starts when a tenant subscription or AWS Marketplace entitlement is connected.</p>
         </div>
       </Panel>
       <Panel title="Usage This Month">
         <div className="usage-list">
-          {["Protected requests 23.7M / 100M", "Bandwidth 1.4 TB / 5 TB", "AI analysis units 1,842 / 5,000", "Log retention 30 days"].map((item) => <div key={item}><span>{item}</span><div><i></i></div></div>)}
+          {["Protected requests 0", "Bandwidth 0 GB", "AI analysis units 0", "Log retention not started"].map((item) => <div key={item}><span>{item}</span><div><i style={{ width: "0%" }}></i></div></div>)}
         </div>
       </Panel>
       <Panel title="Marketplace">
         <div className="marketplace-box">
           <CircleDollarSign size={30} />
-          <h3>AWS Marketplace connected</h3>
-          <p>Entitlements synced 18 minutes ago. Usage metering is reported hourly.</p>
+          <h3>Marketplace not connected</h3>
+          <p>Entitlements will sync after the SaaS contract fulfillment flow is enabled.</p>
         </div>
       </Panel>
     </div>
@@ -558,12 +392,12 @@ function BillingScreen() {
 function SettingsScreen() {
   return (
     <div className="screen settings-grid">
-      <Panel title="Tenant Security">
+      <Panel title="Platform Security">
         <div className="settings-list">
-          <div><KeyRound size={18} /><span>KMS key</span><strong>Shared SaaS managed</strong></div>
-          <div><LockKeyhole size={18} /><span>SSO</span><strong>OIDC enabled</strong></div>
-          <div><Activity size={18} /><span>Audit logs</span><strong>365 days</strong></div>
-          <div><Gauge size={18} /><span>Policy approval</span><strong>Required for block rules</strong></div>
+          <div><KeyRound size={18} /><span>KMS key</span><strong>Provisioned</strong></div>
+          <div><LockKeyhole size={18} /><span>Authentication</span><strong>Cognito ready</strong></div>
+          <div><Activity size={18} /><span>Audit logs</span><strong>Enabled</strong></div>
+          <div><Globe2 size={18} /><span>DNS</span><strong>app.fortressnet.app active</strong></div>
         </div>
       </Panel>
     </div>

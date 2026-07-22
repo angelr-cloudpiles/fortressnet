@@ -433,10 +433,18 @@ kbd {
   color: var(--red);
 }
 
+.metric-delta.neutral {
+  color: var(--muted);
+}
+
 .spark {
   width: 100%;
   height: 42px;
   margin-top: 5px;
+}
+
+.empty-spark {
+  opacity: .68;
 }
 
 .stroke-blue { stroke: var(--blue); }
@@ -558,6 +566,45 @@ kbd {
 .line-chart text {
   fill: #667085;
   font-size: 12px;
+}
+
+.clean-baseline {
+  stroke-dasharray: 8 8;
+  opacity: .56;
+}
+
+.empty-state {
+  min-height: 222px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 28px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-state svg {
+  box-sizing: content-box;
+  padding: 8px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+}
+
+.empty-state h3 {
+  margin: 6px 0 0;
+  color: var(--ink);
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.empty-state p {
+  max-width: 310px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .threats {
@@ -698,6 +745,13 @@ kbd {
   border-bottom: 1px solid var(--line-soft);
   color: #344054;
   white-space: nowrap;
+}
+
+.clean-table td {
+  height: 146px;
+  color: var(--muted);
+  text-align: center;
+  white-space: normal;
 }
 
 .flag {
@@ -847,6 +901,50 @@ a {
 .onboarding .done {
   border-color: #b9dbc9;
   background: #f5fbf8;
+}
+
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.setup-steps.vertical {
+  grid-template-columns: 1fr;
+}
+
+.setup-steps div {
+  min-height: 96px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 740;
+}
+
+.setup-steps span {
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 12px;
+  color: #fff;
+  background: var(--muted);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 30px;
+  text-align: center;
+}
+
+.setup-steps .current {
+  border-color: #9fc6ff;
+  background: #f7fbff;
+}
+
+.setup-steps .current span {
+  background: var(--blue);
 }
 
 .dns-box {
@@ -1223,6 +1321,7 @@ code {
   .metric-grid,
   .findings-grid,
   .onboarding,
+  .setup-steps,
   .policy-editor {
     grid-template-columns: 1fr;
   }
