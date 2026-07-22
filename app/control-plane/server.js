@@ -3,6 +3,7 @@ import dns from "node:dns/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -14,6 +15,8 @@ const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-e
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
 const s3 = new S3Client({ region });
+// CloudFront only accepts ACM certificates issued in us-east-1.
+const acm = new ACMClient({ region: "us-east-1" });
 
 const tables = {
   tenants: process.env.TENANTS_TABLE,
@@ -85,18 +88,18 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
     ]);
 
     res.json({
-      tenants: sortByDate(tenants),
-      domains: sortByDate(domains),
-      policies: sortByDate(policies),
-      entitlements: sortByDate(entitlements),
-      users: sortByDate(users),
-      api_keys: sortByDate(apiKeys).map(publicApiKey),
-      idp_connections: sortByDate(idpConnections),
-      profiles: sortByDate(profiles),
-      origins: sortByDate(origins),
-      origin_pools: sortByDate(originPools),
-      certificates: sortByDate(certificates),
-      waf_change_sets: sortByDate(wafChangeSets)
+      tenants: sortByDate(scopeItems(req.actor, tenants)),
+      domains: sortByDate(scopeItems(req.actor, domains)),
+      policies: sortByDate(scopeItems(req.actor, policies)),
+      entitlements: sortByDate(scopeItems(req.actor, entitlements)),
+      users: sortByDate(scopeItems(req.actor, users)),
+      api_keys: sortByDate(scopeItems(req.actor, apiKeys)).map(publicApiKey),
+      idp_connections: sortByDate(scopeItems(req.actor, idpConnections)),
+      profiles: sortByDate(scopeProfiles(req.actor, profiles)),
+      origins: sortByDate(scopeItems(req.actor, origins)),
+      origin_pools: sortByDate(scopeItems(req.actor, originPools)),
+      certificates: sortByDate(scopeItems(req.actor, certificates)),
+      waf_change_sets: sortByDate(scopeItems(req.actor, wafChangeSets))
     });
   } catch (error) {
     next(error);
@@ -106,7 +109,7 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
 app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const domainName = normalizeDomain(body.domain_name);
     const originUrl = normalizeOriginUrl(body.origin_url);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
@@ -126,7 +129,7 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
       verification_type: "TXT",
       verification_name: `_fortressnet-verify.${domainName}`,
       verification_value: `fn-${verification}`,
-      cname_target: `${tenantId.replaceAll("_", "-")}.edge.fortressnet.app`,
+      edge_status: "not_provisioned",
       requests: 0,
       blocked: 0,
       waf_matches: 0,
@@ -173,8 +176,7 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
       domain_name: domainName,
       provider: "aws_acm",
       region: "us-east-1",
-      status: "pending_dns_validation",
-      requested_at: now,
+      status: "pending_ownership_verification",
       created_at: now,
       updated_at: now
     };
@@ -192,7 +194,7 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
   }
 });
 
-app.post("/api/tenants", requireScope("tenant:write"), async (req, res, next) => {
+app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const name = clean(body.name);
@@ -220,9 +222,9 @@ app.post("/api/tenants", requireScope("tenant:write"), async (req, res, next) =>
   }
 });
 
-app.get("/api/tenants", requireScope("tenant:read"), async (_req, res, next) => {
+app.get("/api/tenants", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    res.json({ tenants: sortByDate(await scanTable(tables.tenants)) });
+    res.json({ tenants: sortByDate(scopeItems(req.actor, await scanTable(tables.tenants))) });
   } catch (error) {
     next(error);
   }
@@ -231,7 +233,7 @@ app.get("/api/tenants", requireScope("tenant:read"), async (_req, res, next) => 
 app.post("/api/domains", requireScope("domain:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const domainName = normalizeDomain(body.domain_name);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!domainName) return res.status(400).json({ error: "valid_domain_required" });
@@ -247,7 +249,7 @@ app.post("/api/domains", requireScope("domain:write"), async (req, res, next) =>
       verification_type: "TXT",
       verification_name: `_fortressnet-verify.${domainName}`,
       verification_value: `fn-${verification}`,
-      cname_target: `${tenantId.replaceAll("_", "-")}.edge.fortressnet.app`,
+      edge_status: "not_provisioned",
       requests: 0,
       blocked: 0,
       waf_matches: 0,
@@ -270,7 +272,7 @@ app.post("/api/domains", requireScope("domain:write"), async (req, res, next) =>
 
 app.get("/api/domains", requireScope("domain:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     if (!tenantId) return res.json({ domains: sortByDate(await scanTable(tables.domains)) });
 
     const result = await dynamo.send(new QueryCommand({
@@ -291,6 +293,7 @@ app.patch("/api/domains/:domainId/verify-dns", requireScope("domain:write"), asy
     if (!domainId) return res.status(400).json({ error: "domain_id_required" });
     const current = await getById(tables.domains, { domain_id: domainId });
     if (!current) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, current.tenant_id);
 
     let records = [];
     let verified = false;
@@ -318,8 +321,24 @@ app.patch("/api/domains/:domainId/verify-dns", requireScope("domain:write"), asy
       ReturnValues: "ALL_NEW"
     }));
 
-    await audit("domain.dns_checked", current.tenant_id, { domain_id: domainId, verified, error }, req.actor);
-    res.json({ domain: result.Attributes, verified, records });
+    let certificate = null;
+    let certificateError = "";
+    if (verified) {
+      try {
+        certificate = await requestOrRefreshCertificate(current, now);
+      } catch (requestError) {
+        certificateError = requestError?.name || "certificate_request_failed";
+      }
+    }
+
+    await audit("domain.dns_checked", current.tenant_id, {
+      domain_id: domainId,
+      verified,
+      error,
+      certificate_id: certificate?.certificate_id || null,
+      certificate_error: certificateError
+    }, req.actor);
+    res.json({ domain: result.Attributes, verified, records, certificate, certificate_error: certificateError || null });
   } catch (error) {
     next(error);
   }
@@ -327,7 +346,7 @@ app.patch("/api/domains/:domainId/verify-dns", requireScope("domain:write"), asy
 
 app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const origins = tenantId ? await queryByTenant(tables.origins, tenantId) : await scanTable(tables.origins);
     res.json({ origins: sortByDate(origins) });
   } catch (error) {
@@ -338,12 +357,14 @@ app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
 app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const domainId = clean(body.domain_id);
     const originUrl = normalizeOriginUrl(body.origin_url);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!domainId) return res.status(400).json({ error: "domain_id_required" });
     if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
+    const domain = await getById(tables.domains, { domain_id: domainId });
+    if (!domain || domain.tenant_id !== tenantId) return res.status(404).json({ error: "domain_not_found" });
 
     const now = new Date().toISOString();
     const origin = {
@@ -373,7 +394,7 @@ app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
 
 app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const pools = tenantId ? await queryByTenant(tables.originPools, tenantId) : await scanTable(tables.originPools);
     res.json({ origin_pools: sortByDate(pools) });
   } catch (error) {
@@ -383,9 +404,29 @@ app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) =
 
 app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const certificates = tenantId ? await queryByTenant(tables.certificates, tenantId) : await scanTable(tables.certificates);
     res.json({ certificates: sortByDate(certificates) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/certificates/:certificateId/refresh", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const certificateId = clean(req.params.certificateId);
+    if (!certificateId) return res.status(400).json({ error: "certificate_id_required" });
+    const certificate = await getById(tables.certificates, { certificate_id: certificateId });
+    if (!certificate) return res.status(404).json({ error: "certificate_not_found" });
+    tenantForActor(req.actor, certificate.tenant_id);
+    if (!certificate.certificate_arn) return res.status(409).json({ error: "certificate_not_requested" });
+
+    const refreshed = await refreshCertificateRecord(certificate);
+    await audit("certificate.refreshed", certificate.tenant_id, {
+      certificate_id: certificateId,
+      status: refreshed.status
+    }, req.actor);
+    res.json({ certificate: refreshed });
   } catch (error) {
     next(error);
   }
@@ -394,7 +435,7 @@ app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) =
 app.post("/api/policies", requireScope("policy:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const name = clean(body.name);
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!name) return res.status(400).json({ error: "policy_name_required" });
@@ -426,7 +467,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
 
 app.get("/api/policies", requireScope("policy:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     if (!tenantId) return res.json({ policies: sortByDate(await scanTable(tables.policies)) });
 
     const result = await dynamo.send(new QueryCommand({
@@ -448,6 +489,7 @@ app.post("/api/policies/:policyId/compile", requireScope("policy:write"), async 
     if (!tables.wafChangeSets) return res.status(503).json({ error: "waf_change_sets_table_not_configured" });
     const policy = await getById(tables.policies, { policy_id: policyId });
     if (!policy) return res.status(404).json({ error: "policy_not_found" });
+    tenantForActor(req.actor, policy.tenant_id);
 
     const now = new Date().toISOString();
     const rules = compileWafRules(policy);
@@ -488,7 +530,7 @@ app.post("/api/policies/:policyId/compile", requireScope("policy:write"), async 
 
 app.get("/api/waf-change-sets", requireScope("policy:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const changeSets = tenantId ? await queryByTenant(tables.wafChangeSets, tenantId) : await scanTable(tables.wafChangeSets);
     res.json({ waf_change_sets: sortByDate(changeSets) });
   } catch (error) {
@@ -506,7 +548,7 @@ app.get("/api/reports", requireScope("reports:read"), (_req, res) => {
 
 app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const users = tenantId ? await queryByTenant(tables.users, tenantId) : await scanTable(tables.users);
     res.json({ users: sortByDate(users) });
   } catch (error) {
@@ -517,15 +559,18 @@ app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
 app.post("/api/users", requireScope("identity:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id) || "platform";
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id) || (isPlatformActor(req.actor) ? "platform" : ""));
     const email = normalizeEmail(body.email);
     const displayName = clean(body.display_name);
-    const roles = normalizeList(body.roles).filter((role) => roleScopes[role]);
+    const roles = normalizeList(body.roles).filter((role) => roleScopes[role] && (isPlatformActor(req.actor) || role !== "platform_owner"));
     const scopes = Array.from(new Set([...roles.flatMap((role) => roleScopes[role] || []), ...normalizeList(body.scopes)]));
 
     if (!email) return res.status(400).json({ error: "valid_email_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
     if (!roles.length) return res.status(400).json({ error: "role_required" });
+    if (!isPlatformActor(req.actor) && scopes.some((scope) => scope === "*" || !hasScope(req.actor, scope))) {
+      return res.status(403).json({ error: "privilege_escalation_denied" });
+    }
 
     const now = new Date().toISOString();
     const user = {
@@ -556,7 +601,7 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
 
 app.get("/api/api-keys", requireScope("identity:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const apiKeys = tenantId ? await queryByTenant(tables.apiKeys, tenantId) : await scanTable(tables.apiKeys);
     res.json({ api_keys: sortByDate(apiKeys).map(publicApiKey) });
   } catch (error) {
@@ -567,12 +612,13 @@ app.get("/api/api-keys", requireScope("identity:read"), async (req, res, next) =
 app.post("/api/api-keys", requireScope("identity:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const name = clean(body.name);
-    const scopes = normalizeList(body.scopes).filter((scope) => allowedScopes.includes(scope));
+    const requestedScopes = normalizeList(body.scopes).filter((scope) => allowedScopes.includes(scope));
+    const scopes = isPlatformActor(req.actor) ? requestedScopes : requestedScopes.filter((scope) => hasScope(req.actor, scope));
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!name) return res.status(400).json({ error: "api_key_name_required" });
-    if (!scopes.length) return res.status(400).json({ error: "scope_required" });
+    if (!scopes.length) return res.status(400).json({ error: "scope_required_or_not_granted" });
 
     const keyId = `key_${crypto.randomUUID()}`;
     const secret = crypto.randomBytes(32).toString("base64url");
@@ -609,6 +655,9 @@ app.patch("/api/api-keys/:keyId/revoke", requireScope("identity:write"), async (
   try {
     const keyId = clean(req.params.keyId);
     if (!keyId) return res.status(400).json({ error: "key_id_required" });
+    const current = await getById(tables.apiKeys, { key_id: keyId });
+    if (!current) return res.status(404).json({ error: "api_key_not_found" });
+    tenantForActor(req.actor, current.tenant_id);
     const now = new Date().toISOString();
     const result = await dynamo.send(new UpdateCommand({
       TableName: tables.apiKeys,
@@ -631,7 +680,7 @@ app.patch("/api/api-keys/:keyId/revoke", requireScope("identity:write"), async (
 
 app.get("/api/idp-connections", requireScope("identity:read"), async (req, res, next) => {
   try {
-    const tenantId = clean(req.query.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const connections = tenantId ? await queryByTenant(tables.idpConnections, tenantId) : await scanTable(tables.idpConnections);
     res.json({ idp_connections: sortByDate(connections) });
   } catch (error) {
@@ -642,7 +691,7 @@ app.get("/api/idp-connections", requireScope("identity:read"), async (req, res, 
 app.post("/api/idp-connections", requireScope("identity:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const tenantId = clean(body.tenant_id);
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
     const name = clean(body.name);
     const protocol = clean(body.protocol).toLowerCase();
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
@@ -744,7 +793,7 @@ app.use((req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({ error: "internal_error" });
+  res.status(error.statusCode || 500).json({ error: error.code || "internal_error" });
 });
 
 app.listen(port, "0.0.0.0", () => {
@@ -820,6 +869,44 @@ function requireScope(scope) {
 function hasScope(actor, scope) {
   const scopes = actor?.scopes || [];
   return scopes.includes("*") || scopes.includes(scope);
+}
+
+function requirePlatformActor(req, res, next) {
+  if (!isPlatformActor(req.actor)) return res.status(403).json({ error: "platform_access_required" });
+  next();
+}
+
+function isPlatformActor(actor) {
+  return Boolean(actor?.scopes?.includes("*"));
+}
+
+function tenantForActor(actor, requestedTenantId) {
+  const tenantId = clean(requestedTenantId);
+  if (isPlatformActor(actor)) return tenantId;
+  if (!actor?.tenant_id || actor.tenant_id === "platform") {
+    throw httpError(403, "tenant_context_required");
+  }
+  if (tenantId && tenantId !== actor.tenant_id) {
+    throw httpError(403, "cross_tenant_access_denied");
+  }
+  return actor.tenant_id;
+}
+
+function scopeItems(actor, items) {
+  if (isPlatformActor(actor)) return items;
+  return items.filter((item) => item?.tenant_id === actor?.tenant_id);
+}
+
+function scopeProfiles(actor, profiles) {
+  if (isPlatformActor(actor)) return profiles;
+  return profiles.filter((profile) => profile?.profile_id === actorProfileId(actor));
+}
+
+function httpError(statusCode, code) {
+  const error = new Error(code);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
 }
 
 function securityHeaders(_req, res, next) {
@@ -904,6 +991,18 @@ async function queryByTenant(TableName, tenantId) {
   return result.Items || [];
 }
 
+async function queryByIndex(TableName, IndexName, keyName, keyValue) {
+  if (!TableName || !keyValue) return [];
+  const result = await dynamo.send(new QueryCommand({
+    TableName,
+    IndexName,
+    KeyConditionExpression: "#key = :value",
+    ExpressionAttributeNames: { "#key": keyName },
+    ExpressionAttributeValues: { ":value": keyValue }
+  }));
+  return result.Items || [];
+}
+
 async function getById(TableName, Key) {
   if (!TableName || !Key) return null;
   const result = await dynamo.send(new GetCommand({ TableName, Key }));
@@ -917,6 +1016,87 @@ async function putUnique(TableName, Item, keyName) {
     Item,
     ConditionExpression: `attribute_not_exists(${keyName})`
   }));
+}
+
+async function requestOrRefreshCertificate(domain, now) {
+  const [certificate] = await queryByIndex(tables.certificates, "domain_id-index", "domain_id", domain.domain_id);
+  if (!certificate) throw httpError(409, "certificate_record_not_found");
+
+  if (certificate.certificate_arn) {
+    return refreshCertificateRecord(certificate);
+  }
+
+  const request = await acm.send(new RequestCertificateCommand({
+    DomainName: domain.domain_name,
+    ValidationMethod: "DNS",
+    IdempotencyToken: crypto.createHash("sha256").update(domain.domain_id).digest("hex").slice(0, 32),
+    Options: { CertificateTransparencyLoggingPreference: "ENABLED" },
+    Tags: [
+      { Key: "ManagedBy", Value: "FortressNet" },
+      { Key: "TenantId", Value: domain.tenant_id },
+      { Key: "DomainId", Value: domain.domain_id }
+    ]
+  }));
+
+  const requested = {
+    ...certificate,
+    certificate_arn: request.CertificateArn,
+    status: "pending_dns_validation",
+    requested_at: now,
+    updated_at: now
+  };
+  await dynamo.send(new PutCommand({ TableName: tables.certificates, Item: requested }));
+
+  // ACM can be eventually consistent immediately after RequestCertificate.
+  try {
+    return await refreshCertificateRecord(requested);
+  } catch (error) {
+    if (error?.name !== "ResourceNotFoundException") throw error;
+    return requested;
+  }
+}
+
+async function refreshCertificateRecord(certificate) {
+  const response = await acm.send(new DescribeCertificateCommand({ CertificateArn: certificate.certificate_arn }));
+  const acmCertificate = response.Certificate;
+  if (!acmCertificate) throw httpError(502, "certificate_describe_failed");
+
+  const now = new Date().toISOString();
+  const refreshed = {
+    ...certificate,
+    status: acmCertificate.Status || "unknown",
+    acm_status: acmCertificate.Status || "unknown",
+    validation_records: (acmCertificate.DomainValidationOptions || []).flatMap((option) => {
+      const record = option.ResourceRecord;
+      return record ? [{
+        domain_name: option.DomainName,
+        validation_status: option.ValidationStatus,
+        name: record.Name,
+        type: record.Type,
+        value: record.Value
+      }] : [];
+    }),
+    issued_at: acmCertificate.IssuedAt ? new Date(acmCertificate.IssuedAt).toISOString() : "",
+    not_after: acmCertificate.NotAfter ? new Date(acmCertificate.NotAfter).toISOString() : "",
+    failure_reason: acmCertificate.FailureReason || "",
+    updated_at: now
+  };
+  await dynamo.send(new PutCommand({ TableName: tables.certificates, Item: refreshed }));
+
+  if (acmCertificate.Status === "ISSUED") {
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.domains,
+      Key: { domain_id: certificate.domain_id },
+      UpdateExpression: "SET #status = :status, onboarding_step = :step, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": "certificate_issued_pending_edge",
+        ":step": "edge_provisioning",
+        ":updated_at": now
+      }
+    }));
+  }
+  return refreshed;
 }
 
 async function audit(action, tenantId, payload, actor = null) {
@@ -978,13 +1158,30 @@ function normalizeOriginUrl(value) {
     if (!["http:", "https:"].includes(url.protocol)) return null;
     const host = url.hostname.toLowerCase();
     if (!host || host === "localhost" || host.endsWith(".local")) return null;
-    if (isPrivateIpv4(host)) return null;
+    if (isBlockedIpAddress(host)) return null;
     url.hash = "";
     url.search = "";
     return url;
   } catch {
     return null;
   }
+}
+
+function isBlockedIpAddress(host) {
+  const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isPrivateIpv4(normalized)) return true;
+  if (!normalized.includes(":")) return false;
+  return (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("::ffff:") ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe8") ||
+    normalized.startsWith("fe9") ||
+    normalized.startsWith("fea") ||
+    normalized.startsWith("feb")
+  );
 }
 
 function isPrivateIpv4(host) {

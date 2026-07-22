@@ -21,6 +21,8 @@ FortressNet ya tiene una base productiva:
 
 Brecha principal: varias capacidades existen como infraestructura o metadata, pero todavia no estan convertidas en producto configurable por tenant ni en enforcement automatico sobre dominios de clientes.
 
+Actualizacion de implementacion: el onboarding ya exige un TXT de propiedad y, solo despues de validarlo, solicita un certificado ACM etiquetado en `us-east-1`. El control plane guarda y muestra los CNAME de validacion de ACM. La creacion de CloudFront/WAF por tenant sigue pendiente de un flujo de aprobacion, health checks y cutover DNS; el sistema no entrega un CNAME de trafico hasta que ese borde exista.
+
 ## Principios De Ejecucion
 
 - Seguridad primero: ningun cambio de enforcement automatico sin auditoria y rollback.
@@ -557,4 +559,3 @@ Una capacidad se considera lista solo si cumple:
 | M8 | Client-side security | Snippet detecta scripts/cookies/conexiones |
 | M9 | Load balancing | Pool con health check y failover |
 | M10 | ZTNA/SASE foundation | Device registry y private app MVP |
-

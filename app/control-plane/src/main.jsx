@@ -448,7 +448,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
         </Panel>
       </div>
       <Panel title="DNS Instructions">
-        <DomainInstructions domain={latestDomain} />
+        <DomainInstructions domain={latestDomain} certificate={certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id)} />
       </Panel>
     </div>
   );
@@ -483,7 +483,7 @@ function OriginsScreen({ state, selectedTenantId, setSelectedTenantId }) {
         </Panel>
       </div>
       <Panel title="TLS Certificates">
-        <CertificateTable certificates={certificates} />
+        <CertificateTable certificates={certificates} token={token} onRefreshed={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
@@ -1015,7 +1015,7 @@ function DomainTable({ domains, token = "", onVerified = null, setStatus = null 
   );
 }
 
-function DomainInstructions({ domain }) {
+function DomainInstructions({ domain, certificate }) {
   if (!domain) {
     return <EmptyState icon={Globe2} title="No onboarding started" body="Create a protected site to receive DNS ownership and CNAME instructions." />;
   }
@@ -1027,11 +1027,13 @@ function DomainInstructions({ domain }) {
         <code>{domain.verification_name}</code>
         <code>{domain.verification_value}</code>
       </div>
-      <div>
-        <strong>Traffic CNAME</strong>
-        <code>{domain.domain_name}</code>
-        <code>{domain.cname_target}</code>
-      </div>
+      {certificate?.validation_records?.map((record) => (
+        <div key={record.name}>
+          <strong>ACM validation CNAME</strong>
+          <code>{record.name}</code>
+          <code>{record.value}</code>
+        </div>
+      ))}
       <div>
         <strong>Current step</strong>
         <span className="health pending">{domain.onboarding_step || domain.status}</span>
@@ -1084,14 +1086,14 @@ function OriginPoolTable({ pools }) {
   );
 }
 
-function CertificateTable({ certificates }) {
+function CertificateTable({ certificates, token = "", onRefreshed = null, setStatus = null }) {
   if (!certificates.length) {
-    return <EmptyTable columns={["Domain", "Provider", "Region", "Status"]} message="No certificate requests are tracked." />;
+    return <EmptyTable columns={["Domain", "Provider", "Region", "Status", "Validation", "Action"]} message="No certificate requests are tracked." />;
   }
 
   return (
     <table className="data-table">
-      <thead><tr><th>Domain</th><th>Provider</th><th>Region</th><th>Status</th></tr></thead>
+      <thead><tr><th>Domain</th><th>Provider</th><th>Region</th><th>Status</th><th>Validation</th><th>Action</th></tr></thead>
       <tbody>
         {certificates.map((certificate) => (
           <tr key={certificate.certificate_id}>
@@ -1099,6 +1101,8 @@ function CertificateTable({ certificates }) {
             <td>{certificate.provider}</td>
             <td>{certificate.region}</td>
             <td><span className="health pending">{certificate.status}</span></td>
+            <td><small>{certificate.validation_records?.length ? "DNS record ready" : "Awaiting ownership check"}</small></td>
+            <td><button className="secondary compact" disabled={!token || !certificate.certificate_arn} onClick={() => refreshCertificate(certificate.certificate_id, token, setStatus, onRefreshed)}>Refresh</button></td>
           </tr>
         ))}
       </tbody>
@@ -1214,6 +1218,16 @@ async function verifyDomainDns(domainId, token, setStatus, onVerified) {
     const data = await apiRequest(`/api/domains/${domainId}/verify-dns`, token, { method: "PATCH" });
     setStatus?.({ type: data.verified ? "success" : "warning", message: data.verified ? "DNS ownership verified." : "DNS record not found yet." });
     onVerified?.();
+  } catch (error) {
+    setStatus?.({ type: "error", message: error.message });
+  }
+}
+
+async function refreshCertificate(certificateId, token, setStatus, onRefreshed) {
+  try {
+    const data = await apiRequest(`/api/certificates/${certificateId}/refresh`, token, { method: "PATCH" });
+    setStatus?.({ type: "success", message: `Certificate status: ${data.certificate.status}.` });
+    onRefreshed?.();
   } catch (error) {
     setStatus?.({ type: "error", message: error.message });
   }

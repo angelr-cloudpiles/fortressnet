@@ -272,6 +272,25 @@ resource "aws_iam_role_policy" "task" {
       {
         Effect = "Allow"
         Action = [
+          "acm:RequestCertificate"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/ManagedBy" = "FortressNet"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "acm:DescribeCertificate"
+        ]
+        Resource = "arn:aws:acm:us-east-1:${data.aws_caller_identity.current.account_id}:certificate/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "s3:GetObject",
           "s3:PutObject",
           "s3:ListBucket"
