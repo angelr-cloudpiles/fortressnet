@@ -475,7 +475,8 @@ function SettingsScreen({ platform, token, onTokenSave }) {
             <p>Used for initial tenant and domain management until Cognito login is wired into the console.</p>
           </div>
           <div className="token-input">
-            <input value={draftToken} type="password" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
+            <label className="sr-only" htmlFor="management-token">Management token</label>
+            <input id="management-token" value={draftToken} type="password" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
             <button className="primary" onClick={() => onTokenSave(draftToken)}>Save</button>
           </div>
         </div>
@@ -506,8 +507,8 @@ function TenantCreateForm({ token, onCreated, setStatus }) {
 
   return (
     <form className="form-grid" onSubmit={submit}>
-      <label>Tenant name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
-      <label>Plan<select value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
+      <label htmlFor="tenant-name">Tenant name<input id="tenant-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
+      <label htmlFor="tenant-plan">Plan<select id="tenant-plan" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
       <button className="primary" disabled={!token || !name}><Plus size={16} /> Create tenant</button>
     </form>
   );
@@ -536,8 +537,8 @@ function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
 
   return (
     <form className="form-grid" onSubmit={submit}>
-      <label>Protected domain<input value={domainName} onChange={(event) => setDomainName(event.target.value)} placeholder="www.customer.com" /></label>
-      <label>Origin URL<input value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://origin.customer.com" /></label>
+      <label htmlFor="protected-domain">Protected domain<input id="protected-domain" value={domainName} onChange={(event) => setDomainName(event.target.value)} placeholder="www.customer.com" /></label>
+      <label htmlFor="origin-url">Origin URL<input id="origin-url" value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://origin.customer.com" /></label>
       <button className="primary" disabled={!token || !selectedTenantId || !domainName}><Plus size={16} /> Add domain</button>
     </form>
   );
@@ -566,8 +567,8 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
 
   return (
     <form className="policy-editor" onSubmit={submit}>
-      <div><label>Policy name</label><input value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
-      <div><label>Mode</label><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="managed_defaults">Managed defaults</option><option value="count">Count only</option><option value="block">Block</option></select></div>
+      <div><label htmlFor="policy-name">Policy name</label><input id="policy-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
+      <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="managed_defaults">Managed defaults</option><option value="count">Count only</option><option value="block">Block</option></select></div>
       <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\napproval_required: true`}</pre>
       <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Create policy</button>
     </form>

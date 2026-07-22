@@ -24,6 +24,8 @@ const tables = {
 const platformConfig = parseJson(process.env.PLATFORM_CONFIG_SECRET, {});
 const managementToken = platformConfig.management_bootstrap_token || process.env.MANAGEMENT_BOOTSTRAP_TOKEN;
 
+app.disable("x-powered-by");
+app.use(securityHeaders);
 app.use(express.json({ limit: "256kb" }));
 
 app.get("/healthz", (_req, res) => {
@@ -214,9 +216,20 @@ app.get("/api/reports", (_req, res) => {
   res.json({ reports: [] });
 });
 
-app.use(express.static(path.join(__dirname, "dist")));
+app.use(blockSensitivePaths);
+app.use(express.static(path.join(__dirname, "dist"), {
+  dotfiles: "deny",
+  index: false,
+  maxAge: "1h",
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-store");
+    }
+  }
+}));
 app.use((req, res, next) => {
-  if (req.method !== "GET" || req.path.startsWith("/api/")) return next();
+  if (!["GET", "HEAD"].includes(req.method) || req.path.startsWith("/api/")) return next();
+  res.setHeader("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
@@ -241,6 +254,58 @@ function requireManagementAccess(req, res, next) {
     return res.status(401).json({ error: "management_access_required" });
   }
 
+  next();
+}
+
+function securityHeaders(_req, res, next) {
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "upgrade-insecure-requests"
+  ].join("; "));
+  next();
+}
+
+function blockSensitivePaths(req, res, next) {
+  const target = req.path.toLowerCase();
+  const blocked = [
+    /^\/\./,
+    /^\/.*\.env/,
+    /^\/.*\.tfstate/,
+    /^\/.*\.tfvars/,
+    /^\/.*\.pem$/,
+    /^\/.*\.key$/,
+    /^\/.*\.crt$/,
+    /^\/.*\.sql$/,
+    /^\/.*\.bak$/,
+    /^\/.*\.zip$/,
+    /^\/.*\.tar$/,
+    /^\/.*\.gz$/,
+    /^\/config(\.json)?$/,
+    /^\/api\/config$/,
+    /^\/keys?\.json$/,
+    /^\/server-status$/,
+    /^\/phpinfo\.php$/
+  ];
+
+  if (blocked.some((pattern) => pattern.test(target))) {
+    return res.status(404).json({ error: "not_found" });
+  }
   next();
 }
 

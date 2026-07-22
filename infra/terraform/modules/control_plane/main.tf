@@ -101,7 +101,7 @@ resource "aws_lb_target_group" "service" {
     healthy_threshold   = 2
     interval            = 30
     matcher             = "200-399"
-    path                = "/"
+    path                = "/healthz"
     protocol            = "HTTP"
     timeout             = 5
     unhealthy_threshold = 3
