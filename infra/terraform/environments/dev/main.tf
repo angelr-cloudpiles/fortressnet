@@ -97,6 +97,10 @@ module "control_plane" {
   api_keys_table_name          = module.data_plane.api_keys_table_name
   idp_connections_table_name   = module.data_plane.idp_connections_table_name
   profiles_table_name          = module.data_plane.profiles_table_name
+  origins_table_name           = module.data_plane.origins_table_name
+  origin_pools_table_name      = module.data_plane.origin_pools_table_name
+  certificates_table_name      = module.data_plane.certificates_table_name
+  waf_change_sets_table_name   = module.data_plane.waf_change_sets_table_name
   cognito_user_pool_id         = module.identity.user_pool_id
   cognito_app_client_id        = module.identity.app_client_id
 }

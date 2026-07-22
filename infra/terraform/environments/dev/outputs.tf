@@ -36,6 +36,14 @@ output "tenant_tables" {
     domains           = module.data_plane.domains_table_name
     entitlements      = module.data_plane.entitlements_table_name
     security_policies = module.data_plane.security_policies_table_name
+    users             = module.data_plane.users_table_name
+    api_keys          = module.data_plane.api_keys_table_name
+    idp_connections   = module.data_plane.idp_connections_table_name
+    profiles          = module.data_plane.profiles_table_name
+    origins           = module.data_plane.origins_table_name
+    origin_pools      = module.data_plane.origin_pools_table_name
+    certificates      = module.data_plane.certificates_table_name
+    waf_change_sets   = module.data_plane.waf_change_sets_table_name
   }
 }
 

@@ -3,7 +3,7 @@ domain_name      = "fortressnet.app"
 hosted_zone_name = "fortressnet.app"
 app_subdomain    = "app"
 
-app_image_tag = "secure-20260722-004"
+app_image_tag = "secure-20260722-onboarding-001"
 
 desired_count           = 2
 enable_nat_gateway      = true

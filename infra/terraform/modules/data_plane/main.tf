@@ -553,6 +553,206 @@ resource "aws_dynamodb_table" "profiles" {
   }
 }
 
+resource "aws_dynamodb_table" "origins" {
+  name         = "${var.name}-origins"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "origin_id"
+
+  attribute {
+    name = "origin_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "domain_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  global_secondary_index {
+    name            = "domain_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "domain_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "origin_pools" {
+  name         = "${var.name}-origin-pools"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pool_id"
+
+  attribute {
+    name = "pool_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "domain_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  global_secondary_index {
+    name            = "domain_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "domain_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "certificates" {
+  name         = "${var.name}-certificates"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "certificate_id"
+
+  attribute {
+    name = "certificate_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "domain_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  global_secondary_index {
+    name            = "domain_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "domain_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "waf_change_sets" {
+  name         = "${var.name}-waf-change-sets"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "change_set_id"
+
+  attribute {
+    name = "change_set_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "policy_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  global_secondary_index {
+    name            = "policy_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "policy_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 

@@ -15,6 +15,7 @@ import {
   Globe2,
   Home,
   KeyRound,
+  Layers3,
   Link2,
   LockKeyhole,
   MoreHorizontal,
@@ -31,7 +32,9 @@ import "./styles.css";
 
 const navItems = [
   { id: "overview", label: "Overview", icon: Home },
+  { id: "onboarding", label: "Onboarding", icon: CheckCircle2 },
   { id: "domains", label: "Domains", icon: Globe2 },
+  { id: "origins", label: "Origins", icon: Layers3 },
   { id: "policies", label: "Policies", icon: Shield },
   { id: "access", label: "Access", icon: Users },
   { id: "idp", label: "External IdP", icon: Link2 },
@@ -52,7 +55,11 @@ const emptyState = {
   users: [],
   api_keys: [],
   idp_connections: [],
-  profiles: []
+  profiles: [],
+  origins: [],
+  origin_pools: [],
+  certificates: [],
+  waf_change_sets: []
 };
 
 function App() {
@@ -125,6 +132,16 @@ function App() {
               setStatus={setStatus}
             />
           )}
+          {active === "onboarding" && (
+            <OnboardingScreen
+              token={token}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
           {active === "domains" && (
             <DomainsScreen
               token={token}
@@ -133,6 +150,13 @@ function App() {
               setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
+            />
+          )}
+          {active === "origins" && (
+            <OriginsScreen
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
             />
           )}
           {active === "policies" && (
@@ -397,6 +421,39 @@ function EmptyTable({ columns, message }) {
   );
 }
 
+function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const origins = filterByTenant(state.origins, selectedTenantId);
+  const certificates = filterByTenant(state.certificates, selectedTenantId);
+  const latestDomain = domains[0] || null;
+
+  return (
+    <div className="screen">
+      <div className="dashboard-grid onboarding-grid">
+        <Panel title="New Protected Site" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+          <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+        </Panel>
+        <Panel title="Go-Live Checklist">
+          <div className="setup-steps vertical">
+            {[
+              ["Tenant selected", selectedTenantId ? "Ready" : "Required"],
+              ["Domain record", latestDomain ? latestDomain.status : "Pending"],
+              ["Primary origin", origins.length ? origins[0].status : "Pending"],
+              ["Certificate", certificates.length ? certificates[0].status : "Pending"],
+              ["WAF policy", filterByTenant(state.waf_change_sets, selectedTenantId).length ? "Compiled" : "Pending"]
+            ].map(([step, value], index) => (
+              <div key={step} className={index === 0 && !latestDomain ? "current" : ""}><span>{index + 1}</span>{step}<small>{value}</small></div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+      <Panel title="DNS Instructions">
+        <DomainInstructions domain={latestDomain} />
+      </Panel>
+    </div>
+  );
+}
+
 function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   return (
     <div className="screen two-column">
@@ -404,7 +461,29 @@ function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
         <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
       </Panel>
       <Panel title="Domain Inventory">
-        <DomainTable domains={filterByTenant(state.domains, selectedTenantId)} />
+        <DomainTable domains={filterByTenant(state.domains, selectedTenantId)} token={token} onVerified={onCreated} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
+function OriginsScreen({ state, selectedTenantId, setSelectedTenantId }) {
+  const origins = filterByTenant(state.origins, selectedTenantId);
+  const pools = filterByTenant(state.origin_pools, selectedTenantId);
+  const certificates = filterByTenant(state.certificates, selectedTenantId);
+
+  return (
+    <div className="screen">
+      <div className="dashboard-grid">
+        <Panel title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+          <OriginTable origins={origins} />
+        </Panel>
+        <Panel title="Origin Pools">
+          <OriginPoolTable pools={pools} />
+        </Panel>
+      </div>
+      <Panel title="TLS Certificates">
+        <CertificateTable certificates={certificates} />
       </Panel>
     </div>
   );
@@ -412,26 +491,33 @@ function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
 
 function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const policies = filterByTenant(state.policies, selectedTenantId);
+  const changeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
 
   return (
-    <div className="screen split-detail">
-      <Panel title="Policies" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-        {policies.length ? (
-          <div className="policy-list">
-            {policies.map((policy) => (
-              <button key={policy.policy_id} className="selected">
-                <Shield size={18} />
-                <span><strong>{policy.name}</strong><small>{policy.scope}</small></span>
-                <em>{policy.mode}</em>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <EmptyState icon={Shield} title="No tenant policies yet" body="Create a tenant policy to scope WAF and rate-limit behavior." />
-        )}
-      </Panel>
-      <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> Managed defaults</button>}>
-        <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+    <div className="screen">
+      <div className="split-detail">
+        <Panel title="Policies" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+          {policies.length ? (
+            <div className="policy-list">
+              {policies.map((policy) => (
+                <div key={policy.policy_id} className="policy-item">
+                  <Shield size={18} />
+                  <span><strong>{policy.name}</strong><small>{policy.scope} · {policy.status}</small></span>
+                  <em>{policy.mode}</em>
+                  <button className="secondary compact" onClick={() => compilePolicy(policy.policy_id, token, setStatus, onCreated)}>Compile</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Shield} title="No tenant policies yet" body="Create a tenant policy to scope WAF and rate-limit behavior." />
+          )}
+        </Panel>
+        <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> Managed defaults</button>}>
+          <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+        </Panel>
+      </div>
+      <Panel title="WAF Change Sets">
+        <WafChangeSetTable changeSets={changeSets} />
       </Panel>
     </div>
   );
@@ -843,16 +929,19 @@ function ApiKeyCreateForm({ token, platform, tenants, selectedTenantId, onCreate
 function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
   const [domainName, setDomainName] = useState("");
   const [originUrl, setOriginUrl] = useState("");
+  const [healthPath, setHealthPath] = useState("/");
 
   const submit = async (event) => {
     event.preventDefault();
-    await createResource("/api/domains", token, {
+    await createResource("/api/domain-onboarding", token, {
       tenant_id: selectedTenantId,
       domain_name: domainName,
-      origin_url: originUrl
-    }, "Domain onboarding created.", setStatus, () => {
+      origin_url: originUrl,
+      health_path: healthPath
+    }, "Domain onboarding package created.", setStatus, () => {
       setDomainName("");
       setOriginUrl("");
+      setHealthPath("/");
       onCreated();
     });
   };
@@ -865,7 +954,8 @@ function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
     <form className="form-grid" onSubmit={submit}>
       <label htmlFor="protected-domain">Protected domain<input id="protected-domain" value={domainName} onChange={(event) => setDomainName(event.target.value)} placeholder="www.customer.com" /></label>
       <label htmlFor="origin-url">Origin URL<input id="origin-url" value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://origin.customer.com" /></label>
-      <button className="primary" disabled={!token || !selectedTenantId || !domainName}><Plus size={16} /> Add domain</button>
+      <label htmlFor="health-path">Health path<input id="health-path" value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/health" /></label>
+      <button className="primary" disabled={!token || !selectedTenantId || !domainName || !originUrl}><Plus size={16} /> Start onboarding</button>
     </form>
   );
 }
@@ -901,14 +991,14 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   );
 }
 
-function DomainTable({ domains }) {
+function DomainTable({ domains, token = "", onVerified = null, setStatus = null }) {
   if (!domains.length) {
     return <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "DNS"]} message="No protected domains are configured." />;
   }
 
   return (
     <table className="data-table">
-      <thead><tr><th>Domain</th><th>Status</th><th>Requests</th><th>Blocked</th><th>WAF Matches</th><th>DNS</th></tr></thead>
+      <thead><tr><th>Domain</th><th>Status</th><th>Requests</th><th>Blocked</th><th>DNS</th><th>Action</th></tr></thead>
       <tbody>
         {domains.map((domain) => (
           <tr key={domain.domain_id}>
@@ -916,8 +1006,122 @@ function DomainTable({ domains }) {
             <td><span className="health pending">{domain.status}</span></td>
             <td>{domain.requests || 0}</td>
             <td>{domain.blocked || 0}</td>
-            <td>{domain.waf_matches || 0}</td>
-            <td>{domain.verification_name}</td>
+            <td><small>{domain.verification_name}</small></td>
+            <td><button className="secondary compact" disabled={!token} onClick={() => verifyDomainDns(domain.domain_id, token, setStatus, onVerified)}>Check DNS</button></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function DomainInstructions({ domain }) {
+  if (!domain) {
+    return <EmptyState icon={Globe2} title="No onboarding started" body="Create a protected site to receive DNS ownership and CNAME instructions." />;
+  }
+
+  return (
+    <div className="instructions-grid">
+      <div>
+        <strong>Ownership TXT</strong>
+        <code>{domain.verification_name}</code>
+        <code>{domain.verification_value}</code>
+      </div>
+      <div>
+        <strong>Traffic CNAME</strong>
+        <code>{domain.domain_name}</code>
+        <code>{domain.cname_target}</code>
+      </div>
+      <div>
+        <strong>Current step</strong>
+        <span className="health pending">{domain.onboarding_step || domain.status}</span>
+      </div>
+    </div>
+  );
+}
+
+function OriginTable({ origins }) {
+  if (!origins.length) {
+    return <EmptyTable columns={["Name", "Origin", "Health", "Path"]} message="No origins are configured." />;
+  }
+
+  return (
+    <table className="data-table">
+      <thead><tr><th>Name</th><th>Origin</th><th>Health</th><th>Path</th></tr></thead>
+      <tbody>
+        {origins.map((origin) => (
+          <tr key={origin.origin_id}>
+            <td>{origin.name}</td>
+            <td><small>{origin.origin_url}</small></td>
+            <td><span className="health pending">{origin.status}</span></td>
+            <td>{origin.health_path}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function OriginPoolTable({ pools }) {
+  if (!pools.length) {
+    return <EmptyTable columns={["Pool", "Strategy", "Origins", "Status"]} message="No origin pools are configured." />;
+  }
+
+  return (
+    <table className="data-table">
+      <thead><tr><th>Pool</th><th>Strategy</th><th>Origins</th><th>Status</th></tr></thead>
+      <tbody>
+        {pools.map((pool) => (
+          <tr key={pool.pool_id}>
+            <td>{pool.name}</td>
+            <td>{pool.strategy}</td>
+            <td>{(pool.origin_ids || []).length}</td>
+            <td><span className="health pending">{pool.status}</span></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function CertificateTable({ certificates }) {
+  if (!certificates.length) {
+    return <EmptyTable columns={["Domain", "Provider", "Region", "Status"]} message="No certificate requests are tracked." />;
+  }
+
+  return (
+    <table className="data-table">
+      <thead><tr><th>Domain</th><th>Provider</th><th>Region</th><th>Status</th></tr></thead>
+      <tbody>
+        {certificates.map((certificate) => (
+          <tr key={certificate.certificate_id}>
+            <td>{certificate.domain_name}</td>
+            <td>{certificate.provider}</td>
+            <td>{certificate.region}</td>
+            <td><span className="health pending">{certificate.status}</span></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function WafChangeSetTable({ changeSets }) {
+  if (!changeSets.length) {
+    return <EmptyTable columns={["Created", "Policy", "Mode", "Status", "Rules"]} message="No WAF change sets have been compiled." />;
+  }
+
+  return (
+    <table className="data-table">
+      <thead><tr><th>Created</th><th>Policy</th><th>Mode</th><th>Status</th><th>Rules</th></tr></thead>
+      <tbody>
+        {changeSets.map((changeSet) => (
+          <tr key={changeSet.change_set_id}>
+            <td>{changeSet.created_at}</td>
+            <td><code>{changeSet.policy_id}</code></td>
+            <td>{changeSet.mode}</td>
+            <td><span className="health pending">{changeSet.status}</span></td>
+            <td>{(changeSet.rules || []).length}</td>
           </tr>
         ))}
       </tbody>
@@ -1000,6 +1204,26 @@ async function createResource(path, token, payload, successMessage, setStatus, o
     });
     setStatus({ type: "success", message: successMessage });
     onSuccess();
+  } catch (error) {
+    setStatus({ type: "error", message: error.message });
+  }
+}
+
+async function verifyDomainDns(domainId, token, setStatus, onVerified) {
+  try {
+    const data = await apiRequest(`/api/domains/${domainId}/verify-dns`, token, { method: "PATCH" });
+    setStatus?.({ type: data.verified ? "success" : "warning", message: data.verified ? "DNS ownership verified." : "DNS record not found yet." });
+    onVerified?.();
+  } catch (error) {
+    setStatus?.({ type: "error", message: error.message });
+  }
+}
+
+async function compilePolicy(policyId, token, setStatus, onCreated) {
+  try {
+    await apiRequest(`/api/policies/${policyId}/compile`, token, { method: "POST" });
+    setStatus({ type: "success", message: "WAF change set compiled and waiting for approval." });
+    onCreated();
   } catch (error) {
     setStatus({ type: "error", message: error.message });
   }

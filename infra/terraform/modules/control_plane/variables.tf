@@ -129,6 +129,26 @@ variable "profiles_table_name" {
   type        = string
 }
 
+variable "origins_table_name" {
+  description = "Origins table name."
+  type        = string
+}
+
+variable "origin_pools_table_name" {
+  description = "Origin pools table name."
+  type        = string
+}
+
+variable "certificates_table_name" {
+  description = "Certificates table name."
+  type        = string
+}
+
+variable "waf_change_sets_table_name" {
+  description = "WAF change sets table name."
+  type        = string
+}
+
 variable "cognito_user_pool_id" {
   description = "Cognito user pool ID."
   type        = string

@@ -78,6 +78,26 @@ output "profiles_table_name" {
   value       = aws_dynamodb_table.profiles.name
 }
 
+output "origins_table_name" {
+  description = "Origins table name."
+  value       = aws_dynamodb_table.origins.name
+}
+
+output "origin_pools_table_name" {
+  description = "Origin pools table name."
+  value       = aws_dynamodb_table.origin_pools.name
+}
+
+output "certificates_table_name" {
+  description = "Certificates table name."
+  value       = aws_dynamodb_table.certificates.name
+}
+
+output "waf_change_sets_table_name" {
+  description = "WAF change sets table name."
+  value       = aws_dynamodb_table.waf_change_sets.name
+}
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket

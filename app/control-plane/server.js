@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import dns from "node:dns/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -22,16 +23,20 @@ const tables = {
   users: process.env.USERS_TABLE,
   apiKeys: process.env.API_KEYS_TABLE,
   idpConnections: process.env.IDP_CONNECTIONS_TABLE,
-  profiles: process.env.PROFILES_TABLE
+  profiles: process.env.PROFILES_TABLE,
+  origins: process.env.ORIGINS_TABLE,
+  originPools: process.env.ORIGIN_POOLS_TABLE,
+  certificates: process.env.CERTIFICATES_TABLE,
+  wafChangeSets: process.env.WAF_CHANGE_SETS_TABLE
 };
 
 const roleScopes = {
   platform_owner: ["*"],
-  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "identity:read", "identity:write", "billing:read", "profile:write"],
-  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "events:read", "reports:read", "profile:write"],
-  security_analyst: ["tenant:read", "domain:read", "policy:read", "events:read", "reports:read", "profile:write"],
+  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "identity:read", "identity:write", "billing:read", "profile:write"],
+  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "events:read", "reports:read", "profile:write"],
+  security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write"],
   billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
-  read_only: ["tenant:read", "domain:read", "policy:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
+  read_only: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
 };
 
 const allowedScopes = Array.from(new Set(Object.values(roleScopes).flat())).filter((scope) => scope !== "*").sort();
@@ -64,7 +69,7 @@ app.use("/api", requireManagementAccess);
 
 app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles] = await Promise.all([
+    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.domains),
       scanTable(tables.policies),
@@ -72,7 +77,11 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
       scanTable(tables.users),
       scanTable(tables.apiKeys),
       scanTable(tables.idpConnections),
-      scanTable(tables.profiles)
+      scanTable(tables.profiles),
+      scanTable(tables.origins),
+      scanTable(tables.originPools),
+      scanTable(tables.certificates),
+      scanTable(tables.wafChangeSets)
     ]);
 
     res.json({
@@ -83,8 +92,101 @@ app.get("/api/management/state", requireScope("tenant:read"), async (_req, res, 
       users: sortByDate(users),
       api_keys: sortByDate(apiKeys).map(publicApiKey),
       idp_connections: sortByDate(idpConnections),
-      profiles: sortByDate(profiles)
+      profiles: sortByDate(profiles),
+      origins: sortByDate(origins),
+      origin_pools: sortByDate(originPools),
+      certificates: sortByDate(certificates),
+      waf_change_sets: sortByDate(wafChangeSets)
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const tenantId = clean(body.tenant_id);
+    const domainName = normalizeDomain(body.domain_name);
+    const originUrl = normalizeOriginUrl(body.origin_url);
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!domainName) return res.status(400).json({ error: "valid_domain_required" });
+    if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
+    if (!tables.origins || !tables.originPools || !tables.certificates) return res.status(503).json({ error: "onboarding_tables_not_configured" });
+
+    const now = new Date().toISOString();
+    const verification = crypto.randomBytes(16).toString("hex");
+    const domain = {
+      domain_id: `dom_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_name: domainName,
+      origin_url: originUrl.href,
+      dns_mode: clean(body.dns_mode) || "cname",
+      status: "pending_dns",
+      verification_type: "TXT",
+      verification_name: `_fortressnet-verify.${domainName}`,
+      verification_value: `fn-${verification}`,
+      cname_target: `${tenantId.replaceAll("_", "-")}.edge.fortressnet.app`,
+      requests: 0,
+      blocked: 0,
+      waf_matches: 0,
+      latency_p95_ms: null,
+      onboarding_step: "dns_verification",
+      created_at: now,
+      updated_at: now
+    };
+
+    const origin = {
+      origin_id: `org_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_id: domain.domain_id,
+      name: clean(body.origin_name) || "primary",
+      origin_url: originUrl.href,
+      hostname: originUrl.hostname,
+      protocol: originUrl.protocol.replace(":", ""),
+      port: originUrl.port || (originUrl.protocol === "https:" ? "443" : "80"),
+      host_header: clean(body.host_header) || originUrl.hostname,
+      health_path: clean(body.health_path) || "/",
+      timeout_seconds: Number(body.timeout_seconds || 10),
+      status: "pending_health_check",
+      created_at: now,
+      updated_at: now
+    };
+
+    const pool = {
+      pool_id: `pool_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_id: domain.domain_id,
+      name: "primary-pool",
+      origin_ids: [origin.origin_id],
+      strategy: "priority",
+      failover_enabled: false,
+      status: "pending_health_check",
+      created_at: now,
+      updated_at: now
+    };
+
+    const certificate = {
+      certificate_id: `cert_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_id: domain.domain_id,
+      domain_name: domainName,
+      provider: "aws_acm",
+      region: "us-east-1",
+      status: "pending_dns_validation",
+      requested_at: now,
+      created_at: now,
+      updated_at: now
+    };
+
+    await Promise.all([
+      putUnique(tables.domains, domain, "domain_id"),
+      putUnique(tables.origins, origin, "origin_id"),
+      putUnique(tables.originPools, pool, "pool_id"),
+      putUnique(tables.certificates, certificate, "certificate_id")
+    ]);
+    await audit("domain_onboarding.created", tenantId, { domain, origin, pool, certificate }, req.actor);
+    res.status(201).json({ domain, origin, origin_pool: pool, certificate, next_step: "create_dns_txt_record" });
   } catch (error) {
     next(error);
   }
@@ -183,6 +285,112 @@ app.get("/api/domains", requireScope("domain:read"), async (req, res, next) => {
   }
 });
 
+app.patch("/api/domains/:domainId/verify-dns", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const domainId = clean(req.params.domainId);
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    const current = await getById(tables.domains, { domain_id: domainId });
+    if (!current) return res.status(404).json({ error: "domain_not_found" });
+
+    let records = [];
+    let verified = false;
+    let error = "";
+    try {
+      records = await dns.resolveTxt(current.verification_name);
+      verified = records.flat().includes(current.verification_value);
+    } catch (lookupError) {
+      error = lookupError?.code || "dns_lookup_failed";
+    }
+
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.domains,
+      Key: { domain_id: domainId },
+      UpdateExpression: "SET #status = :status, onboarding_step = :step, dns_last_checked_at = :checked, dns_last_error = :error, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": verified ? "verified_pending_certificate" : "pending_dns",
+        ":step": verified ? "certificate_validation" : "dns_verification",
+        ":checked": now,
+        ":error": verified ? "" : error,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+
+    await audit("domain.dns_checked", current.tenant_id, { domain_id: domainId, verified, error }, req.actor);
+    res.json({ domain: result.Attributes, verified, records });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.query.tenant_id);
+    const origins = tenantId ? await queryByTenant(tables.origins, tenantId) : await scanTable(tables.origins);
+    res.json({ origins: sortByDate(origins) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const tenantId = clean(body.tenant_id);
+    const domainId = clean(body.domain_id);
+    const originUrl = normalizeOriginUrl(body.origin_url);
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
+
+    const now = new Date().toISOString();
+    const origin = {
+      origin_id: `org_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_id: domainId,
+      name: clean(body.name) || "origin",
+      origin_url: originUrl.href,
+      hostname: originUrl.hostname,
+      protocol: originUrl.protocol.replace(":", ""),
+      port: originUrl.port || (originUrl.protocol === "https:" ? "443" : "80"),
+      host_header: clean(body.host_header) || originUrl.hostname,
+      health_path: clean(body.health_path) || "/",
+      timeout_seconds: Number(body.timeout_seconds || 10),
+      status: "pending_health_check",
+      created_at: now,
+      updated_at: now
+    };
+
+    await putUnique(tables.origins, origin, "origin_id");
+    await audit("origin.created", tenantId, origin, req.actor);
+    res.status(201).json({ origin });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.query.tenant_id);
+    const pools = tenantId ? await queryByTenant(tables.originPools, tenantId) : await scanTable(tables.originPools);
+    res.json({ origin_pools: sortByDate(pools) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.query.tenant_id);
+    const certificates = tenantId ? await queryByTenant(tables.certificates, tenantId) : await scanTable(tables.certificates);
+    res.json({ certificates: sortByDate(certificates) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/policies", requireScope("policy:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -228,6 +436,61 @@ app.get("/api/policies", requireScope("policy:read"), async (req, res, next) => 
       ExpressionAttributeValues: { ":tenant_id": tenantId }
     }));
     res.json({ policies: sortByDate(result.Items || []) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/policies/:policyId/compile", requireScope("policy:write"), async (req, res, next) => {
+  try {
+    const policyId = clean(req.params.policyId);
+    if (!policyId) return res.status(400).json({ error: "policy_id_required" });
+    if (!tables.wafChangeSets) return res.status(503).json({ error: "waf_change_sets_table_not_configured" });
+    const policy = await getById(tables.policies, { policy_id: policyId });
+    if (!policy) return res.status(404).json({ error: "policy_not_found" });
+
+    const now = new Date().toISOString();
+    const rules = compileWafRules(policy);
+    const changeSet = {
+      change_set_id: `wcs_${crypto.randomUUID()}`,
+      tenant_id: policy.tenant_id,
+      policy_id: policy.policy_id,
+      policy_version: crypto.createHash("sha256").update(JSON.stringify(policy)).digest("hex").slice(0, 12),
+      target_scope: policy.scope || "all_domains",
+      mode: policy.mode || "managed_defaults",
+      status: "pending_approval",
+      provider: "aws_wafv2",
+      rules,
+      summary: `${rules.length} AWS WAF rules compiled in approval mode`,
+      created_by: req.actor?.subject || "bootstrap",
+      created_at: now,
+      updated_at: now
+    };
+
+    await putUnique(tables.wafChangeSets, changeSet, "change_set_id");
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.policies,
+      Key: { policy_id: policyId },
+      UpdateExpression: "SET #status = :status, last_compiled_at = :compiled, updated_at = :updated",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": "compiled_pending_approval",
+        ":compiled": now,
+        ":updated": now
+      }
+    }));
+    await audit("policy.compiled", policy.tenant_id, changeSet, req.actor);
+    res.status(201).json({ waf_change_set: changeSet });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/waf-change-sets", requireScope("policy:read"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.query.tenant_id);
+    const changeSets = tenantId ? await queryByTenant(tables.wafChangeSets, tenantId) : await scanTable(tables.wafChangeSets);
+    res.json({ waf_change_sets: sortByDate(changeSets) });
   } catch (error) {
     next(error);
   }
@@ -641,6 +904,21 @@ async function queryByTenant(TableName, tenantId) {
   return result.Items || [];
 }
 
+async function getById(TableName, Key) {
+  if (!TableName || !Key) return null;
+  const result = await dynamo.send(new GetCommand({ TableName, Key }));
+  return result.Item || null;
+}
+
+async function putUnique(TableName, Item, keyName) {
+  if (!TableName) throw new Error("table_not_configured");
+  await dynamo.send(new PutCommand({
+    TableName,
+    Item,
+    ConditionExpression: `attribute_not_exists(${keyName})`
+  }));
+}
+
 async function audit(action, tenantId, payload, actor = null) {
   try {
     const bucket = process.env.AUDIT_LOG_BUCKET;
@@ -692,6 +970,83 @@ function normalizeDomain(value) {
   const domain = clean(value).toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return "";
   return domain;
+}
+
+function normalizeOriginUrl(value) {
+  try {
+    const url = new URL(clean(value));
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const host = url.hostname.toLowerCase();
+    if (!host || host === "localhost" || host.endsWith(".local")) return null;
+    if (isPrivateIpv4(host)) return null;
+    url.hash = "";
+    url.search = "";
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function isPrivateIpv4(host) {
+  const parts = host.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    a >= 224
+  );
+}
+
+function compileWafRules(policy) {
+  const action = ["block", "emergency_lockdown"].includes(policy.mode) ? "BLOCK" : "COUNT";
+  const managedOverride = action === "BLOCK" ? "none" : "count";
+  const baseRules = [
+    {
+      name: "AWS-AWSManagedRulesCommonRuleSet",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesCommonRuleSet",
+      override_action: managedOverride
+    },
+    {
+      name: "AWS-AWSManagedRulesKnownBadInputsRuleSet",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesKnownBadInputsRuleSet",
+      override_action: managedOverride
+    },
+    {
+      name: "AWS-AWSManagedRulesSQLiRuleSet",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesSQLiRuleSet",
+      override_action: managedOverride
+    },
+    {
+      name: "FortressNetRateLimit",
+      type: "rate_based_rule",
+      aggregate_key_type: "IP",
+      limit: Number(policy.rate_limit || 2000),
+      evaluation_window_sec: 300,
+      action
+    }
+  ];
+
+  if (policy.mode === "emergency_lockdown") {
+    baseRules.push({
+      name: "FortressNetEmergencyLockdown",
+      type: "custom_rule",
+      expression: "allowlist_required",
+      action: "BLOCK"
+    });
+  }
+
+  return baseRules;
 }
 
 function slugify(value) {

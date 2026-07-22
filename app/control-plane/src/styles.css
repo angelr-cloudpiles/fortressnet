@@ -959,6 +959,53 @@ a {
   background: var(--blue);
 }
 
+.setup-steps small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.onboarding-grid {
+  grid-template-columns: minmax(0, .9fr) minmax(360px, .7fr);
+}
+
+.instructions-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1.1fr .7fr;
+  gap: 12px;
+  padding: 16px;
+}
+
+.instructions-grid > div {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.instructions-grid strong {
+  color: #475467;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.instructions-grid code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.secondary.compact {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .dns-box {
   display: grid;
   gap: 8px;
@@ -1002,6 +1049,18 @@ code {
 .policy-list button.selected {
   border-color: #9fc6ff;
   background: #f7fbff;
+}
+
+.policy-item {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
 }
 
 .policy-list strong {
