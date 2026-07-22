@@ -340,8 +340,12 @@ resource "aws_dynamodb_table" "domains" {
 
   global_secondary_index {
     name            = "tenant_id-index"
-    hash_key        = "tenant_id"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
   }
 
   server_side_encryption {
@@ -391,8 +395,12 @@ resource "aws_dynamodb_table" "security_policies" {
 
   global_secondary_index {
     name            = "tenant_id-index"
-    hash_key        = "tenant_id"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
   }
 
   server_side_encryption {
@@ -427,14 +435,22 @@ resource "aws_dynamodb_table" "users" {
 
   global_secondary_index {
     name            = "tenant_id-index"
-    hash_key        = "tenant_id"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
   }
 
   global_secondary_index {
     name            = "email-index"
-    hash_key        = "email"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "email"
+      key_type       = "HASH"
+    }
   }
 
   server_side_encryption {
@@ -464,8 +480,12 @@ resource "aws_dynamodb_table" "api_keys" {
 
   global_secondary_index {
     name            = "tenant_id-index"
-    hash_key        = "tenant_id"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
   }
 
   server_side_encryption {
@@ -495,8 +515,12 @@ resource "aws_dynamodb_table" "idp_connections" {
 
   global_secondary_index {
     name            = "tenant_id-index"
-    hash_key        = "tenant_id"
     projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
   }
 
   server_side_encryption {
