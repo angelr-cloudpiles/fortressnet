@@ -31,26 +31,27 @@ module "identity" {
 module "control_plane" {
   source = "../../modules/control_plane"
 
-  name                       = local.name
-  vpc_id                     = module.network.vpc_id
-  public_subnet_ids          = module.network.public_subnet_ids
-  private_subnet_ids         = module.network.private_subnet_ids
-  app_image                  = "${aws_ecr_repository.control_plane.repository_url}:${var.app_image_tag}"
-  container_port             = var.app_container_port
-  desired_count              = var.desired_count
-  database_secret_arn        = module.data_plane.database_secret_arn
-  database_secret_version    = module.data_plane.database_secret_version_id
-  database_host              = module.data_plane.database_address
-  database_port              = module.data_plane.database_port
-  database_security_group_id = module.data_plane.database_security_group_id
-  platform_config_secret     = module.data_plane.platform_config_secret_arn
-  platform_kms_key_arn       = module.data_plane.kms_key_arn
-  log_bucket_name            = module.data_plane.audit_logs_bucket_name
-  tenants_table_name         = module.data_plane.tenants_table_name
-  domains_table_name         = module.data_plane.domains_table_name
-  entitlements_table_name    = module.data_plane.entitlements_table_name
-  cognito_user_pool_id       = module.identity.user_pool_id
-  cognito_app_client_id      = module.identity.app_client_id
+  name                         = local.name
+  vpc_id                       = module.network.vpc_id
+  public_subnet_ids            = module.network.public_subnet_ids
+  private_subnet_ids           = module.network.private_subnet_ids
+  app_image                    = "${aws_ecr_repository.control_plane.repository_url}:${var.app_image_tag}"
+  container_port               = var.app_container_port
+  desired_count                = var.desired_count
+  database_secret_arn          = module.data_plane.database_secret_arn
+  database_secret_version      = module.data_plane.database_secret_version_id
+  database_host                = module.data_plane.database_address
+  database_port                = module.data_plane.database_port
+  database_security_group_id   = module.data_plane.database_security_group_id
+  platform_config_secret       = module.data_plane.platform_config_secret_arn
+  platform_kms_key_arn         = module.data_plane.kms_key_arn
+  log_bucket_name              = module.data_plane.audit_logs_bucket_name
+  tenants_table_name           = module.data_plane.tenants_table_name
+  domains_table_name           = module.data_plane.domains_table_name
+  entitlements_table_name      = module.data_plane.entitlements_table_name
+  security_policies_table_name = module.data_plane.security_policies_table_name
+  cognito_user_pool_id         = module.identity.user_pool_id
+  cognito_app_client_id        = module.identity.app_client_id
 }
 
 module "edge" {

@@ -113,7 +113,22 @@ The `dev` environment is deployed in AWS account `422128689549` using profile `f
 - Site URL: `https://fortressnet.app`
 - App URL: `https://app.fortressnet.app`
 - Region: `us-east-1`
-- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:clean-20260722-001`
+- Control plane image: `422128689549.dkr.ecr.us-east-1.amazonaws.com/fortressnet/control-plane:manage-20260722-001`
 - Terraform backend: `s3://fortressnet-terraform-state-422128689549-us-east-1/fortressnet/dev/terraform.tfstate`
 
-Application code, CI/CD pipelines, and tenant provisioning service logic are expected to grow as separate workstreams.
+## Management Access
+
+The deployed control plane includes a bootstrap-protected management API for the first operational stage. Retrieve the token from Secrets Manager and paste it in `Settings -> Management Access`:
+
+```bash
+aws secretsmanager get-secret-value \
+  --profile fortressnet \
+  --region us-east-1 \
+  --secret-id fortressnet-dev/platform-config \
+  --query SecretString \
+  --output text
+```
+
+The JSON field is `management_bootstrap_token`. Treat it as a secret. Cognito is provisioned and will replace this bootstrap flow once the hosted login is wired into the frontend.
+
+Application code, CI/CD pipelines, marketplace fulfillment, AI event analysis, and automated tenant edge provisioning are expected to grow as separate workstreams.

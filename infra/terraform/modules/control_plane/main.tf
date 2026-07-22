@@ -8,6 +8,8 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 
 locals {
   secretsmanager_service = "secretsmanager.${data.aws_region.current.region}.amazonaws.com"
+  s3_service             = "s3.${data.aws_region.current.region}.amazonaws.com"
+  dynamodb_service       = "dynamodb.${data.aws_region.current.region}.amazonaws.com"
 }
 
 resource "aws_cloudwatch_log_group" "service" {
@@ -219,7 +221,9 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.tenants_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.entitlements_table_name}",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*"
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*"
         ]
       },
       {
@@ -251,6 +255,23 @@ resource "aws_iam_role_policy" "task" {
         Condition = {
           StringEquals = {
             "kms:ViaService" = local.secretsmanager_service
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = var.platform_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              local.dynamodb_service,
+              local.s3_service
+            ]
           }
         }
       }
@@ -285,6 +306,10 @@ resource "aws_ecs_task_definition" "this" {
           value = var.name
         },
         {
+          name  = "AWS_REGION"
+          value = data.aws_region.current.region
+        },
+        {
           name  = "TENANTS_TABLE"
           value = var.tenants_table_name
         },
@@ -295,6 +320,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "ENTITLEMENTS_TABLE"
           value = var.entitlements_table_name
+        },
+        {
+          name  = "SECURITY_POLICIES_TABLE"
+          value = var.security_policies_table_name
         },
         {
           name  = "COGNITO_USER_POOL_ID"

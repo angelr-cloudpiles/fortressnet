@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -39,51 +39,115 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
-const metrics = [
-  { label: "Protected Requests", value: "0", delta: "Waiting for traffic", trend: "neutral", color: "blue" },
-  { label: "Blocked Requests", value: "0", delta: "No security events", trend: "neutral", color: "red" },
-  { label: "WAF Matches", value: "0", delta: "Rules ready", trend: "neutral", color: "orange" },
-  { label: "Bot Score Avg", value: "-", delta: "No requests yet", trend: "neutral", color: "green" },
-  { label: "Latency p95", value: "-", delta: "No edge samples", trend: "neutral", color: "blue" },
-  { label: "Est. Monthly Cost", value: "$0", delta: "Usage metering idle", trend: "neutral", color: "green" }
-];
-
-const setupSteps = [
-  "Create or select tenant",
-  "Add first protected domain",
-  "Verify DNS ownership",
-  "Attach security profile",
-  "Activate edge CNAME"
-];
+const emptyState = {
+  tenants: [],
+  domains: [],
+  policies: [],
+  entitlements: []
+};
 
 function App() {
   const [active, setActive] = useState("overview");
   const [range, setRange] = useState("24H");
   const [environment, setEnvironment] = useState("Production");
+  const [platform, setPlatform] = useState(null);
+  const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_admin_token") || "");
+  const [state, setState] = useState(emptyState);
+  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [status, setStatus] = useState({ type: "idle", message: "" });
   const pageTitle = navItems.find((item) => item.id === active)?.label ?? "Overview";
+
+  const selectedTenant = useMemo(
+    () => state.tenants.find((tenant) => tenant.tenant_id === selectedTenantId) || null,
+    [state.tenants, selectedTenantId]
+  );
+
+  useEffect(() => {
+    fetch("/api/platform")
+      .then((response) => response.json())
+      .then(setPlatform)
+      .catch(() => setPlatform({ management_ready: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    loadState(token, setState, setStatus, setSelectedTenantId);
+  }, [token]);
+
+  const persistToken = (value) => {
+    const clean = value.trim();
+    setToken(clean);
+    if (clean) {
+      sessionStorage.setItem("fortressnet_admin_token", clean);
+      loadState(clean, setState, setStatus, setSelectedTenantId);
+    } else {
+      sessionStorage.removeItem("fortressnet_admin_token");
+      setState(emptyState);
+      setSelectedTenantId("");
+    }
+  };
+
+  const reload = () => {
+    if (!token) {
+      setStatus({ type: "warning", message: "Management token required." });
+      return;
+    }
+    loadState(token, setState, setStatus, setSelectedTenantId);
+  };
 
   return (
     <div className="app-shell">
-      <Sidebar active={active} onNavigate={setActive} />
+      <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} />
       <main className="main">
         <Topbar environment={environment} setEnvironment={setEnvironment} />
         <section className="content">
-          <PageHeader active={active} pageTitle={pageTitle} />
-          {active === "overview" && <Overview range={range} setRange={setRange} onNavigate={setActive} />}
-          {active === "domains" && <DomainsScreen />}
-          {active === "policies" && <PoliciesScreen />}
+          <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} />
+          {status.message && <StatusBanner status={status} />}
+          {active === "overview" && (
+            <Overview
+              range={range}
+              setRange={setRange}
+              token={token}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onNavigate={setActive}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
+          {active === "domains" && (
+            <DomainsScreen
+              token={token}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
+          {active === "policies" && (
+            <PoliciesScreen
+              token={token}
+              state={state}
+              selectedTenantId={selectedTenantId}
+              setSelectedTenantId={setSelectedTenantId}
+              onCreated={reload}
+              setStatus={setStatus}
+            />
+          )}
           {active === "events" && <EventsScreen />}
           {active === "ai" && <AiScreen />}
           {active === "reports" && <ReportsScreen />}
-          {active === "billing" && <BillingScreen />}
-          {active === "settings" && <SettingsScreen />}
+          {active === "billing" && <BillingScreen state={state} />}
+          {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
         </section>
       </main>
     </div>
   );
 }
 
-function Sidebar({ active, onNavigate }) {
+function Sidebar({ active, onNavigate, selectedTenant }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -93,7 +157,7 @@ function Sidebar({ active, onNavigate }) {
       <div className="tenant-label">Tenant</div>
       <button className="tenant-button">
         <Users size={16} />
-        <span>No tenant selected</span>
+        <span>{selectedTenant?.name || "No tenant selected"}</span>
         <ChevronDown size={15} />
       </button>
       <nav className="nav">
@@ -140,18 +204,18 @@ function Topbar({ environment, setEnvironment }) {
       <button className="icon-button"><Bell size={18} /></button>
       <div className="user">
         <span>FN</span>
-        <div><strong>Console</strong><small>Not signed in</small></div>
+        <div><strong>Console</strong><small>Management mode</small></div>
         <ChevronDown size={15} />
       </div>
     </header>
   );
 }
 
-function PageHeader({ active, pageTitle }) {
+function PageHeader({ active, pageTitle, onNavigate, onReload }) {
   const title = active === "overview" ? "FortressNet Console" : pageTitle;
   const subtitle = active === "overview"
-    ? "SaaS multi-tenant edge security platform - no customer data loaded"
-    : "Clean deployment - connect a tenant to start collecting data";
+    ? "SaaS multi-tenant edge security control plane"
+    : "Manage tenants, domains, policies and platform readiness";
 
   return (
     <div className="page-header">
@@ -160,17 +224,20 @@ function PageHeader({ active, pageTitle }) {
         <p>{subtitle}</p>
       </div>
       <div className="header-actions">
-        <button className="secondary"><Plus size={16} /> Create tenant</button>
-        <button className="secondary"><RefreshCw size={16} /> Sync</button>
+        <button className="secondary" onClick={() => onNavigate("overview")}><Plus size={16} /> Create tenant</button>
+        <button className="secondary" onClick={onReload}><RefreshCw size={16} /> Sync</button>
         <button className="icon-button bordered"><MoreHorizontal size={18} /></button>
       </div>
     </div>
   );
 }
 
-function Overview({ range, setRange, onNavigate }) {
+function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreated, setStatus }) {
+  const metrics = buildMetrics(state);
+
   return (
     <div className="screen">
+      {!token && <AccessRequired onNavigate={onNavigate} />}
       <div className="metric-grid">
         {metrics.map((metric) => <MetricCard key={metric.label} metric={metric} />)}
       </div>
@@ -178,24 +245,24 @@ function Overview({ range, setRange, onNavigate }) {
         <Panel className="traffic-panel" title="Edge Traffic" action={<Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} />}>
           <EmptyChart />
         </Panel>
-        <Panel title="Threat Distribution" action={<button className="tiny">No tenant <ChevronDown size={14} /></button>}>
-          <EmptyState icon={Shield} title="No threats recorded" body="Threat data appears after a tenant activates its first protected domain." />
+        <Panel title="Tenant Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+          <TenantCreateForm token={token} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
-        <Panel title="Active Incidents" count="0">
-          <EmptyState icon={CheckCircle2} title="No active incidents" body="Incident detection is ready and will stay empty until real traffic is inspected." />
+        <Panel title="Platform Readiness" count={state.tenants.length}>
+          <ReadinessList token={token} state={state} />
         </Panel>
       </div>
       <div className="table-grid">
         <Panel title="Recent Security Events" action={<button className="link-button">View event stream <ChevronRight size={14} /></button>}>
           <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
         </Panel>
-        <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Add first domain <ChevronRight size={14} /></button>}>
-          <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "Latency p95"]} message="No protected domains are configured." />
+        <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Manage domains <ChevronRight size={14} /></button>}>
+          <DomainTable domains={state.domains} />
         </Panel>
       </div>
       <Panel title="Onboarding">
         <div className="setup-steps">
-          {setupSteps.map((step, index) => (
+          {["Create tenant", "Add protected domain", "Verify DNS ownership", "Attach security profile", "Activate edge CNAME"].map((step, index) => (
             <div key={step} className={index === 0 ? "current" : ""}><span>{index + 1}</span>{step}</div>
           ))}
         </div>
@@ -288,35 +355,41 @@ function EmptyTable({ columns, message }) {
   );
 }
 
-function DomainsScreen() {
+function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   return (
     <div className="screen two-column">
-      <Panel title="Domain Onboarding" action={<button className="primary"><Plus size={16} /> Add domain</button>}>
-        <div className="setup-steps vertical">
-          {setupSteps.slice(1).map((step, index) => (
-            <div key={step} className={index === 0 ? "current" : ""}><span>{index + 1}</span>{step}</div>
-          ))}
-        </div>
+      <Panel title="Domain Onboarding" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
       </Panel>
       <Panel title="Domain Inventory">
-        <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "Latency p95"]} message="No protected domains are configured." />
+        <DomainTable domains={filterByTenant(state.domains, selectedTenantId)} />
       </Panel>
     </div>
   );
 }
 
-function PoliciesScreen() {
+function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const policies = filterByTenant(state.policies, selectedTenantId);
+
   return (
     <div className="screen split-detail">
-      <Panel title="Policies" action={<button className="primary"><Plus size={16} /> New policy</button>}>
-        <EmptyState icon={Shield} title="No tenant policies yet" body="Managed AWS WAF defaults are provisioned. Tenant-specific policies appear after domain onboarding." />
+      <Panel title="Policies" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {policies.length ? (
+          <div className="policy-list">
+            {policies.map((policy) => (
+              <button key={policy.policy_id} className="selected">
+                <Shield size={18} />
+                <span><strong>{policy.name}</strong><small>{policy.scope}</small></span>
+                <em>{policy.mode}</em>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <EmptyState icon={Shield} title="No tenant policies yet" body="Create a tenant policy to scope WAF and rate-limit behavior." />
+        )}
       </Panel>
-      <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> View template</button>}>
-        <div className="policy-editor">
-          <div><label>Mode</label><input value="No tenant selected" readOnly /></div>
-          <div><label>Scope</label><input value="Not configured" readOnly /></div>
-          <pre>{`tenant_id: pending\nscope: no_domains\nenforcement: managed_defaults\napproval_required: true`}</pre>
-        </div>
+      <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> Managed defaults</button>}>
+        <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
@@ -363,12 +436,12 @@ function ReportsScreen() {
   );
 }
 
-function BillingScreen() {
+function BillingScreen({ state }) {
   return (
     <div className="screen billing-grid">
       <Panel title="Current Plan">
         <div className="plan-box">
-          <span>No subscription selected</span>
+          <span>{state.entitlements.length ? "Entitlement connected" : "No subscription selected"}</span>
           <strong>$0 / month</strong>
           <p>Billing starts when a tenant subscription or AWS Marketplace entitlement is connected.</p>
         </div>
@@ -389,19 +462,242 @@ function BillingScreen() {
   );
 }
 
-function SettingsScreen() {
+function SettingsScreen({ platform, token, onTokenSave }) {
+  const [draftToken, setDraftToken] = useState(token);
+
   return (
     <div className="screen settings-grid">
+      <Panel title="Management Access">
+        <div className="management-card">
+          <KeyRound size={22} />
+          <div>
+            <h3>Bootstrap admin token</h3>
+            <p>Used for initial tenant and domain management until Cognito login is wired into the console.</p>
+          </div>
+          <div className="token-input">
+            <input value={draftToken} type="password" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
+            <button className="primary" onClick={() => onTokenSave(draftToken)}>Save</button>
+          </div>
+        </div>
+      </Panel>
       <Panel title="Platform Security">
         <div className="settings-list">
           <div><KeyRound size={18} /><span>KMS key</span><strong>Provisioned</strong></div>
-          <div><LockKeyhole size={18} /><span>Authentication</span><strong>Cognito ready</strong></div>
-          <div><Activity size={18} /><span>Audit logs</span><strong>Enabled</strong></div>
-          <div><Globe2 size={18} /><span>DNS</span><strong>app.fortressnet.app active</strong></div>
+          <div><LockKeyhole size={18} /><span>Authentication</span><strong>{platform?.cognito_user_pool_id ? "Cognito ready" : "Pending"}</strong></div>
+          <div><Activity size={18} /><span>Management API</span><strong>{platform?.management_ready ? "Protected" : "Pending token"}</strong></div>
+          <div><Globe2 size={18} /><span>DNS</span><strong>fortressnet.app active</strong></div>
         </div>
       </Panel>
     </div>
   );
+}
+
+function TenantCreateForm({ token, onCreated, setStatus }) {
+  const [name, setName] = useState("");
+  const [plan, setPlan] = useState("pilot");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/tenants", token, { name, plan }, "Tenant created.", setStatus, () => {
+      setName("");
+      onCreated();
+    });
+  };
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label>Tenant name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
+      <label>Plan<select value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
+      <button className="primary" disabled={!token || !name}><Plus size={16} /> Create tenant</button>
+    </form>
+  );
+}
+
+function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
+  const [domainName, setDomainName] = useState("");
+  const [originUrl, setOriginUrl] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/domains", token, {
+      tenant_id: selectedTenantId,
+      domain_name: domainName,
+      origin_url: originUrl
+    }, "Domain onboarding created.", setStatus, () => {
+      setDomainName("");
+      setOriginUrl("");
+      onCreated();
+    });
+  };
+
+  if (!tenants.length) {
+    return <EmptyState icon={Users} title="Create a tenant first" body="Domains must be attached to a tenant before DNS verification can start." />;
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label>Protected domain<input value={domainName} onChange={(event) => setDomainName(event.target.value)} placeholder="www.customer.com" /></label>
+      <label>Origin URL<input value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://origin.customer.com" /></label>
+      <button className="primary" disabled={!token || !selectedTenantId || !domainName}><Plus size={16} /> Add domain</button>
+    </form>
+  );
+}
+
+function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
+  const [name, setName] = useState("");
+  const [mode, setMode] = useState("managed_defaults");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/policies", token, {
+      tenant_id: selectedTenantId,
+      name,
+      mode,
+      scope: "all_domains"
+    }, "Policy draft created.", setStatus, () => {
+      setName("");
+      onCreated();
+    });
+  };
+
+  if (!tenants.length) {
+    return <EmptyState icon={Users} title="Create a tenant first" body="Tenant-scoped policies become available after tenant creation." />;
+  }
+
+  return (
+    <form className="policy-editor" onSubmit={submit}>
+      <div><label>Policy name</label><input value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
+      <div><label>Mode</label><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="managed_defaults">Managed defaults</option><option value="count">Count only</option><option value="block">Block</option></select></div>
+      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\napproval_required: true`}</pre>
+      <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Create policy</button>
+    </form>
+  );
+}
+
+function DomainTable({ domains }) {
+  if (!domains.length) {
+    return <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "DNS"]} message="No protected domains are configured." />;
+  }
+
+  return (
+    <table className="data-table">
+      <thead><tr><th>Domain</th><th>Status</th><th>Requests</th><th>Blocked</th><th>WAF Matches</th><th>DNS</th></tr></thead>
+      <tbody>
+        {domains.map((domain) => (
+          <tr key={domain.domain_id}>
+            <td>{domain.domain_name}</td>
+            <td><span className="health pending">{domain.status}</span></td>
+            <td>{domain.requests || 0}</td>
+            <td>{domain.blocked || 0}</td>
+            <td>{domain.waf_matches || 0}</td>
+            <td>{domain.verification_name}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId }) {
+  if (!tenants.length) return <span className="mode-readonly">No tenants</span>;
+
+  return (
+    <select className="compact-select" value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>
+      {tenants.map((tenant) => <option key={tenant.tenant_id} value={tenant.tenant_id}>{tenant.name}</option>)}
+    </select>
+  );
+}
+
+function ReadinessList({ token, state }) {
+  const items = [
+    ["Management token", token ? "Configured" : "Required"],
+    ["Tenants", String(state.tenants.length)],
+    ["Domains", String(state.domains.length)],
+    ["Policies", String(state.policies.length)]
+  ];
+
+  return (
+    <div className="settings-list compact">
+      {items.map(([label, value]) => (
+        <div key={label}><CheckCircle2 size={18} /><span>{label}</span><strong>{value}</strong></div>
+      ))}
+    </div>
+  );
+}
+
+function AccessRequired({ onNavigate }) {
+  return (
+    <div className="access-banner">
+      <KeyRound size={20} />
+      <span>Management API is protected. Add the bootstrap admin token in Settings to manage tenants, domains and policies.</span>
+      <button className="secondary" onClick={() => onNavigate("settings")}>Open settings</button>
+    </div>
+  );
+}
+
+function StatusBanner({ status }) {
+  return <div className={`status-banner ${status.type}`}>{status.message}</div>;
+}
+
+function buildMetrics(state) {
+  const requests = sum(state.domains, "requests");
+  const blocked = sum(state.domains, "blocked");
+  const wafMatches = sum(state.domains, "waf_matches");
+  return [
+    { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue" },
+    { label: "Protected Domains", value: String(state.domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green" },
+    { label: "Policies", value: String(state.policies.length), delta: "Tenant-scoped drafts", trend: "neutral", color: "orange" },
+    { label: "Protected Requests", value: String(requests), delta: "Waiting for traffic", trend: "neutral", color: "blue" },
+    { label: "Blocked Requests", value: String(blocked), delta: "No security events", trend: "neutral", color: "red" },
+    { label: "WAF Matches", value: String(wafMatches), delta: "Rules ready", trend: "neutral", color: "orange" }
+  ];
+}
+
+async function loadState(token, setState, setStatus, setSelectedTenantId) {
+  try {
+    const data = await apiRequest("/api/management/state", token);
+    setState({ ...emptyState, ...data });
+    setSelectedTenantId((current) => current || data.tenants?.[0]?.tenant_id || "");
+    setStatus({ type: "success", message: "Management state loaded." });
+  } catch (error) {
+    setStatus({ type: "error", message: error.message });
+  }
+}
+
+async function createResource(path, token, payload, successMessage, setStatus, onSuccess) {
+  try {
+    await apiRequest(path, token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setStatus({ type: "success", message: successMessage });
+    onSuccess();
+  } catch (error) {
+    setStatus({ type: "error", message: error.message });
+  }
+}
+
+async function apiRequest(path, token, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`);
+  return data;
+}
+
+function filterByTenant(items, selectedTenantId) {
+  if (!selectedTenantId) return items;
+  return items.filter((item) => item.tenant_id === selectedTenantId);
+}
+
+function sum(items, key) {
+  return items.reduce((total, item) => total + Number(item[key] || 0), 0);
 }
 
 createRoot(document.getElementById("root")).render(<App />);

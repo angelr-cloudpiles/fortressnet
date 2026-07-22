@@ -88,6 +88,11 @@ variable "entitlements_table_name" {
   type        = string
 }
 
+variable "security_policies_table_name" {
+  description = "Security policies table name."
+  type        = string
+}
+
 variable "cognito_user_pool_id" {
   description = "Cognito user pool ID."
   type        = string

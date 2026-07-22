@@ -32,9 +32,10 @@ output "database_secret_arn" {
 output "tenant_tables" {
   description = "Tenant metadata table names."
   value = {
-    tenants      = module.data_plane.tenants_table_name
-    domains      = module.data_plane.domains_table_name
-    entitlements = module.data_plane.entitlements_table_name
+    tenants           = module.data_plane.tenants_table_name
+    domains           = module.data_plane.domains_table_name
+    entitlements      = module.data_plane.entitlements_table_name
+    security_policies = module.data_plane.security_policies_table_name
   }
 }
 

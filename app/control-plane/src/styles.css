@@ -1065,6 +1065,101 @@ code {
   font-weight: 760;
 }
 
+.access-banner,
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #f7fbff;
+  border: 1px solid #bfdbfe;
+  border-radius: 7px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.access-banner span {
+  flex: 1;
+}
+
+.status-banner.success {
+  color: #067647;
+  background: #f5fbf8;
+  border-color: #b9dbc9;
+}
+
+.status-banner.warning {
+  color: #b54708;
+  background: #fffbeb;
+  border-color: #fedf89;
+}
+
+.status-banner.error {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: #fecdd3;
+}
+
+.form-grid,
+.management-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.form-grid label,
+.token-input {
+  display: grid;
+  gap: 7px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.form-grid input,
+.form-grid select,
+.token-input input,
+.compact-select {
+  height: 38px;
+  padding: 0 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+}
+
+.compact-select {
+  max-width: 190px;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.management-card {
+  grid-template-columns: 28px minmax(220px, 1fr) minmax(280px, .8fr);
+  align-items: center;
+}
+
+.management-card svg {
+  color: var(--blue);
+}
+
+.management-card h3 {
+  margin: 0 0 5px;
+  font-size: 15px;
+}
+
+.management-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-list.compact {
+  padding-top: 16px;
+}
+
 .findings-grid,
 .report-grid,
 .billing-grid {
@@ -1335,7 +1430,8 @@ code {
   }
 
   .threats,
-  .ai-recommendation {
+  .ai-recommendation,
+  .management-card {
     grid-template-columns: 1fr;
   }
 

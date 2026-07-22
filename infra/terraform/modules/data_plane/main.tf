@@ -112,6 +112,11 @@ resource "random_password" "database" {
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
+resource "random_password" "management_bootstrap_token" {
+  length  = 40
+  special = false
+}
+
 resource "random_id" "final_snapshot" {
   byte_length = 4
 
@@ -146,9 +151,10 @@ resource "aws_secretsmanager_secret_version" "platform_config" {
   secret_id = aws_secretsmanager_secret.platform_config.id
 
   secret_string = jsonencode({
-    ai_analyst_mode = "read_only"
-    billing_mode    = "saas"
-    shield_advanced = false
+    ai_analyst_mode            = "read_only"
+    billing_mode               = "saas"
+    management_bootstrap_token = random_password.management_bootstrap_token.result
+    shield_advanced            = false
   })
 }
 
