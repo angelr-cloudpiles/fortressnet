@@ -1,5 +1,9 @@
 data "aws_region" "current" {}
 
+locals {
+  application_domain_urls = distinct(concat([var.domain_url], var.additional_domain_urls))
+}
+
 resource "aws_cognito_user_pool" "this" {
   name = "FortressNet"
 
@@ -89,9 +93,9 @@ resource "aws_cognito_user_pool_client" "web" {
 
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
-  allowed_oauth_scopes                 = ["email", "openid", "profile"]
-  callback_urls                        = ["${var.domain_url}/auth/callback"]
-  logout_urls                          = ["${var.domain_url}/logout"]
+  allowed_oauth_scopes                 = ["aws.cognito.signin.user.admin", "email", "openid", "profile"]
+  callback_urls                        = [for url in local.application_domain_urls : "${url}/auth/callback"]
+  logout_urls                          = [for url in local.application_domain_urls : "${url}/logout"]
   supported_identity_providers         = ["COGNITO"]
 
   explicit_auth_flows = [

@@ -8,7 +8,7 @@ import express from "express";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
 import { CloudFrontClient, CreateDistributionCommand, GetDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
-import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, UpdateUserPoolClientCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, GetDNSSECCommand, Route53Client } from "@aws-sdk/client-route-53";
@@ -32,6 +32,9 @@ const cognito = new CognitoIdentityProviderClient({ region });
 const route53 = new Route53Client({ region });
 const cognitoVerifier = process.env.COGNITO_USER_POOL_ID && process.env.COGNITO_APP_CLIENT_ID
   ? CognitoJwtVerifier.create({ userPoolId: process.env.COGNITO_USER_POOL_ID, tokenUse: "id", clientId: process.env.COGNITO_APP_CLIENT_ID })
+  : null;
+const cognitoAccessVerifier = process.env.COGNITO_USER_POOL_ID && process.env.COGNITO_APP_CLIENT_ID
+  ? CognitoJwtVerifier.create({ userPoolId: process.env.COGNITO_USER_POOL_ID, tokenUse: "access", clientId: process.env.COGNITO_APP_CLIENT_ID })
   : null;
 
 const tables = {
@@ -1376,6 +1379,10 @@ app.put("/api/profile", requireScope("profile:write"), async (req, res, next) =>
   try {
     const body = req.body || {};
     const profileId = actorProfileId(req.actor);
+    const existing = await dynamo.send(new GetCommand({
+      TableName: tables.profiles,
+      Key: { profile_id: profileId }
+    }));
     const now = new Date().toISOString();
     const profile = {
       profile_id: profileId,
@@ -1385,7 +1392,9 @@ app.put("/api/profile", requireScope("profile:write"), async (req, res, next) =>
       locale: clean(body.locale) || "en-US",
       notification_email: body.notification_email !== false,
       notification_security: body.notification_security !== false,
-      created_at: clean(body.created_at) || now,
+      mfa_enrolled_at: existing.Item?.mfa_enrolled_at || "",
+      mfa_issuer: existing.Item?.mfa_issuer || "",
+      created_at: existing.Item?.created_at || now,
       updated_at: now
     };
 
@@ -1395,6 +1404,49 @@ app.put("/api/profile", requireScope("profile:write"), async (req, res, next) =>
     }));
     await audit("profile.updated", "platform", profile, req.actor);
     res.json({ profile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/profile/mfa/totp", requireScope("profile:write"), async (req, res, next) => {
+  try {
+    const accessToken = clean(req.body?.access_token);
+    await requireActorAccessToken(req.actor, accessToken);
+    const result = await cognito.send(new AssociateSoftwareTokenCommand({ AccessToken: accessToken }));
+    if (!result.SecretCode) throw httpError(502, "cognito_totp_secret_unavailable");
+    await audit("profile.mfa_enrollment_started", req.actor.tenant_id, { method: "totp", issuer: "FortressNet" }, req.actor);
+    res.json({ secret_code: result.SecretCode, issuer: "FortressNet" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/profile/mfa/totp/verify", requireScope("profile:write"), async (req, res, next) => {
+  try {
+    const accessToken = clean(req.body?.access_token);
+    const code = clean(req.body?.code);
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: "totp_code_invalid" });
+    await requireActorAccessToken(req.actor, accessToken);
+    const verification = await cognito.send(new VerifySoftwareTokenCommand({
+      AccessToken: accessToken,
+      UserCode: code,
+      FriendlyDeviceName: "FortressNet"
+    }));
+    if (verification.Status !== "SUCCESS") return res.status(400).json({ error: "totp_verification_failed" });
+    await cognito.send(new SetUserMFAPreferenceCommand({
+      AccessToken: accessToken,
+      SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true }
+    }));
+    const now = new Date().toISOString();
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.profiles,
+      Key: { profile_id: actorProfileId(req.actor) },
+      UpdateExpression: "SET mfa_enrolled_at = :now, mfa_issuer = :issuer, updated_at = :now",
+      ExpressionAttributeValues: { ":now": now, ":issuer": "FortressNet" }
+    }));
+    await audit("profile.mfa_enrolled", req.actor.tenant_id, { method: "totp", issuer: "FortressNet" }, req.actor);
+    res.json({ status: "enabled", issuer: "FortressNet", enrolled_at: now });
   } catch (error) {
     next(error);
   }
@@ -1530,6 +1582,18 @@ async function authenticateCognitoToken(token) {
     scopes: Array.from(new Set(permittedRoles.flatMap((role) => roleScopes[role] || []))),
     email
   };
+}
+
+async function requireActorAccessToken(actor, accessToken) {
+  if (actor?.type !== "cognito" || !accessToken || !cognitoAccessVerifier) throw httpError(403, "cognito_session_required");
+  let claims;
+  try {
+    claims = await cognitoAccessVerifier.verify(accessToken);
+  } catch {
+    throw httpError(401, "cognito_access_token_invalid");
+  }
+  if (clean(claims.sub) !== clean(actor.subject)) throw httpError(403, "cognito_session_subject_mismatch");
+  return claims;
 }
 
 function rolesFromCognitoGroups(groups) {

@@ -13,6 +13,12 @@ variable "domain_url" {
   type        = string
 }
 
+variable "additional_domain_urls" {
+  description = "Additional production HTTPS origins allowed as OAuth callbacks and logout URLs."
+  type        = list(string)
+  default     = []
+}
+
 variable "temporary_password_validity_days" {
   description = "Temporary password validity period."
   type        = number

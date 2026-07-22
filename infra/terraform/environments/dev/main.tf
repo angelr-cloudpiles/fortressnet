@@ -23,9 +23,10 @@ module "data_plane" {
 module "identity" {
   source = "../../modules/identity"
 
-  name       = local.name
-  app_fqdn   = local.app_fqdn
-  domain_url = "https://${local.app_fqdn}"
+  name                   = local.name
+  app_fqdn               = local.app_fqdn
+  domain_url             = "https://${local.app_fqdn}"
+  additional_domain_urls = ["https://${var.domain_name}"]
 }
 
 resource "random_password" "origin_verify_header" {

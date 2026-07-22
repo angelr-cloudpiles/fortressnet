@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -74,6 +75,7 @@ function App() {
   const [environment, setEnvironment] = useState("Production");
   const [platform, setPlatform] = useState(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || "");
+  const [accessToken, setAccessToken] = useState(() => sessionStorage.getItem("fortressnet_access_token") || "");
   const [authMode, setAuthMode] = useState(() => sessionStorage.getItem("fortressnet_auth_mode") || "");
   const [state, setState] = useState(emptyState);
   const [selectedTenantId, setSelectedTenantId] = useState("");
@@ -100,11 +102,13 @@ function App() {
   useEffect(() => {
     if (!platform || window.location.pathname !== "/auth/callback") return;
     completeCognitoCallback(platform)
-      .then((idToken) => {
-        sessionStorage.setItem("fortressnet_auth_token", idToken);
+      .then((tokens) => {
+        sessionStorage.setItem("fortressnet_auth_token", tokens.id_token);
+        sessionStorage.setItem("fortressnet_access_token", tokens.access_token);
         sessionStorage.setItem("fortressnet_auth_mode", "cognito");
         setAuthMode("cognito");
-        setToken(idToken);
+        setToken(tokens.id_token);
+        setAccessToken(tokens.access_token);
         window.history.replaceState({}, "", "/");
         setStatus({ type: "success", message: "Cognito session established." });
       })
@@ -119,12 +123,16 @@ function App() {
     setToken(clean);
     if (clean) {
       sessionStorage.setItem("fortressnet_admin_token", clean);
+      sessionStorage.removeItem("fortressnet_auth_token");
+      sessionStorage.removeItem("fortressnet_access_token");
       sessionStorage.setItem("fortressnet_auth_mode", "bootstrap");
       setAuthMode("bootstrap");
+      setAccessToken("");
       loadState(clean, setState, setStatus, setSelectedTenantId);
     } else {
       sessionStorage.removeItem("fortressnet_admin_token");
       sessionStorage.removeItem("fortressnet_auth_token");
+      sessionStorage.removeItem("fortressnet_access_token");
       sessionStorage.removeItem("fortressnet_auth_mode");
       setAuthMode("");
       setState(emptyState);
@@ -144,9 +152,11 @@ function App() {
   const signOut = () => {
     sessionStorage.removeItem("fortressnet_admin_token");
     sessionStorage.removeItem("fortressnet_auth_token");
+    sessionStorage.removeItem("fortressnet_access_token");
     sessionStorage.removeItem("fortressnet_auth_mode");
     setAuthMode("");
     setToken("");
+    setAccessToken("");
     setState(emptyState);
     setSelectedTenantId("");
     if (platform?.cognito_hosted_ui_url && platform?.cognito_app_client_id) {
@@ -255,7 +265,7 @@ function App() {
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
-          {active === "profile" && <ProfileScreen token={token} setStatus={setStatus} />}
+          {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
         </section>
       </main>
@@ -861,7 +871,7 @@ function SettingsScreen({ platform, token, onTokenSave }) {
   );
 }
 
-function ProfileScreen({ token, setStatus }) {
+function ProfileScreen({ token, accessToken, authMode, setStatus }) {
   const [profile, setProfile] = useState({
     display_name: "",
     email: "",
@@ -870,6 +880,9 @@ function ProfileScreen({ token, setStatus }) {
     notification_email: true,
     notification_security: true
   });
+  const [totpSecret, setTotpSecret] = useState("");
+  const [totpQrCode, setTotpQrCode] = useState("");
+  const [totpCode, setTotpCode] = useState("");
 
   useEffect(() => {
     if (!token) return;
@@ -888,6 +901,47 @@ function ProfileScreen({ token, setStatus }) {
       });
       setProfile(data.profile);
       setStatus({ type: "success", message: "Profile updated." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+
+  const beginTotpEnrollment = async () => {
+    if (authMode !== "cognito" || !accessToken) {
+      setStatus({ type: "error", message: "Sign in with Cognito before configuring multi-factor authentication." });
+      return;
+    }
+    try {
+      const data = await apiRequest("/api/profile/mfa/totp", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_token: accessToken })
+      });
+      const account = profile.email || "FortressNet user";
+      const uri = `otpauth://totp/${encodeURIComponent(`FortressNet:${account}`)}?secret=${encodeURIComponent(data.secret_code)}&issuer=FortressNet&algorithm=SHA1&digits=6&period=30`;
+      const qrCode = await QRCode.toDataURL(uri, { errorCorrectionLevel: "M", margin: 1, width: 224 });
+      setTotpSecret(data.secret_code);
+      setTotpQrCode(qrCode);
+      setTotpCode("");
+      setStatus({ type: "success", message: "Authenticator enrollment started. Scan the FortressNet QR code and enter the code to confirm." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+
+  const verifyTotpEnrollment = async (event) => {
+    event.preventDefault();
+    try {
+      await apiRequest("/api/profile/mfa/totp/verify", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_token: accessToken, code: totpCode })
+      });
+      setTotpSecret("");
+      setTotpQrCode("");
+      setTotpCode("");
+      setProfile((current) => ({ ...current, mfa_enrolled_at: new Date().toISOString() }));
+      setStatus({ type: "success", message: "FortressNet authenticator verified and enabled." });
     } catch (error) {
       setStatus({ type: "error", message: error.message });
     }
@@ -912,6 +966,22 @@ function ProfileScreen({ token, setStatus }) {
           <div><LockKeyhole size={18} /><span>Profile storage</span><strong>DynamoDB</strong></div>
           <div><Bell size={18} /><span>Notification preference</span><strong>{profile.notification_security === false ? "Limited" : "Security on"}</strong></div>
         </div>
+      </Panel>
+      <Panel title="Multi-Factor Authentication">
+        <div className="settings-list">
+          <div><LockKeyhole size={18} /><span>Authenticator</span><strong>{profile.mfa_enrolled_at ? "Enabled" : "Not configured"}</strong></div>
+          <div><Shield size={18} /><span>Issuer</span><strong>FortressNet</strong></div>
+        </div>
+        {!totpQrCode ? (
+          <button className="primary" type="button" disabled={!token || authMode !== "cognito" || !accessToken} onClick={beginTotpEnrollment}><KeyRound size={16} /> Configure authenticator</button>
+        ) : (
+          <form className="form-grid" onSubmit={verifyTotpEnrollment}>
+            <img className="totp-qr" src={totpQrCode} alt="FortressNet authenticator QR code" />
+            <label htmlFor="totp-secret">Manual key<input id="totp-secret" value={totpSecret} readOnly /></label>
+            <label htmlFor="totp-code">Verification code<input id="totp-code" inputMode="numeric" autoComplete="one-time-code" maxLength="6" value={totpCode} onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, ""))} required /></label>
+            <button className="primary" type="submit" disabled={totpCode.length !== 6 || !accessToken}><CheckCircle2 size={16} /> Verify authenticator</button>
+          </form>
+        )}
       </Panel>
     </div>
   );
@@ -1493,7 +1563,7 @@ async function startCognitoLogin(platform) {
   const loginUrl = new URL(`${platform.cognito_hosted_ui_url}/login`);
   loginUrl.searchParams.set("client_id", platform.cognito_app_client_id);
   loginUrl.searchParams.set("response_type", "code");
-  loginUrl.searchParams.set("scope", "openid email profile");
+  loginUrl.searchParams.set("scope", "openid email profile aws.cognito.signin.user.admin");
   loginUrl.searchParams.set("redirect_uri", `${window.location.origin}/auth/callback`);
   loginUrl.searchParams.set("state", state);
   loginUrl.searchParams.set("code_challenge_method", "S256");
@@ -1522,8 +1592,8 @@ async function completeCognitoCallback(platform) {
     })
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.id_token) throw new Error(payload.error_description || "Cognito token exchange failed.");
-  return payload.id_token;
+  if (!response.ok || !payload.id_token || !payload.access_token) throw new Error(payload.error_description || "Cognito token exchange failed.");
+  return payload;
 }
 
 function base64Url(bytes) {

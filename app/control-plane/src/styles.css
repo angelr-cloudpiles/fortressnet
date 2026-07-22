@@ -1353,6 +1353,15 @@ code {
   padding: 10px 16px 16px;
 }
 
+.totp-qr {
+  width: 224px;
+  height: 224px;
+  max-width: 100%;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  padding: 8px;
+}
+
 .settings-list div {
   height: 56px;
   display: grid;
