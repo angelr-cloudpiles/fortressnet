@@ -1442,12 +1442,24 @@ a {
   background: var(--green);
 }
 
+.two-column,
+.split-detail {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+
 .two-column {
-  grid-template-columns: .9fr 1.35fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
 }
 
 .split-detail {
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+}
+
+.two-column > .panel,
+.split-detail > .panel {
+  align-self: start;
 }
 
 .onboarding {
