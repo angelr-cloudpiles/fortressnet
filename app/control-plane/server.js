@@ -780,7 +780,7 @@ app.post("/api/edge-deployments/:deploymentId/approve", requireScope("edge:appro
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
     tenantForActor(req.actor, deployment.tenant_id);
     if (deployment.status !== "pending_approval") return res.status(409).json({ error: "edge_deployment_not_pending_approval" });
-    if (!isPlatformActor(req.actor) && deployment.requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    if (deployment.requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
     const result = await dynamo.send(new UpdateCommand({
       TableName: tables.edgeDeployments,
@@ -872,7 +872,7 @@ app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireSco
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
     tenantForActor(req.actor, deployment.tenant_id);
     if (deployment.origin_update_status !== "pending_approval") return res.status(409).json({ error: "origin_update_not_pending" });
-    if (!isPlatformActor(req.actor) && deployment.origin_update_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    if (deployment.origin_update_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
     const updated = { ...deployment, origin_update_status: "approved", origin_update_approved_by: req.actor?.subject || "unknown", origin_update_approved_at: now, updated_at: now };
     await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
@@ -1338,7 +1338,7 @@ app.post("/api/ztna/applications/:applicationId/verified-access-approve", requir
     if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
     tenantForActor(req.actor, application.tenant_id);
     if (application.verified_access_status !== "pending_approval") return res.status(409).json({ error: "verified_access_request_not_pending" });
-    if (!isPlatformActor(req.actor) && application.verified_access_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    if (application.verified_access_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
     const updated = { ...application, verified_access_status: "approved", verified_access_approved_by: req.actor?.subject || "unknown", verified_access_approved_at: now, updated_at: now };
     await dynamo.send(new PutCommand({ TableName: tables.ztnaApplications, Item: updated }));
@@ -1581,7 +1581,7 @@ app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("edge:approve
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
     tenantForActor(req.actor, changeSet.tenant_id);
     if (changeSet.status !== "pending_approval") return res.status(409).json({ error: "waf_change_set_not_pending_approval" });
-    if (!isPlatformActor(req.actor) && changeSet.created_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    if (changeSet.created_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
     const result = await dynamo.send(new UpdateCommand({
       TableName: tables.wafChangeSets,

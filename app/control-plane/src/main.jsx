@@ -796,6 +796,8 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const latestCertificate = certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id);
   const latestDeployment = deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id);
   const tenantWafChangeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
+  const tenantApprovers = filterByTenant(state.users, selectedTenantId)
+    .filter((user) => (user.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)));
   const appliedWafChangeSet = tenantWafChangeSets
     .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied");
   const pendingWafChangeSet = tenantWafChangeSets
@@ -853,6 +855,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
             origin={primaryOrigin}
             certificate={latestCertificate}
             deployment={latestDeployment}
+            approvers={tenantApprovers}
             pendingWafChangeSet={pendingWafChangeSet}
             appliedWafChangeSet={appliedWafChangeSet}
             onCreated={onCreated}
@@ -873,7 +876,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   );
 }
 
-function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, pendingWafChangeSet, appliedWafChangeSet, onCreated, setStatus, onNavigate }) {
+function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, pendingWafChangeSet, appliedWafChangeSet, onCreated, setStatus, onNavigate }) {
   let title = "Create or select a tenant";
   let detail = "Select the customer tenant before creating a protected site.";
   let action = null;
@@ -908,8 +911,21 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
     detail = "The origin and certificate are ready. Request the protected CloudFront edge; the request will enter the approval workflow before provisioning.";
     action = { label: "Request edge", icon: Plus, run: () => edgeAction(`/api/domains/${domain.domain_id}/edge-deployment-request`, "POST", token, setStatus, onCreated, "Edge deployment requested.") };
   } else if (deployment?.status === "pending_approval") {
-    title = "Approve the edge deployment";
-    detail = "A second authorized operator must approve this change before the edge can be provisioned.";
+    const activeApprover = approvers.find((user) => user.status === "active");
+    const invitedApprover = approvers.find((user) => user.status === "invited");
+    if (!approvers.length) {
+      title = "Invite an independent approver";
+      detail = "This edge request needs a different tenant administrator or security administrator. Invite that operator from Access; FortressNet sends the Cognito invitation and keeps this request pending until they review it.";
+      action = { label: "Invite approver", icon: Users, run: () => onNavigate("access") };
+    } else if (!activeApprover && invitedApprover) {
+      title = "Wait for the approver to activate";
+      detail = "The independent approver has been invited. They must complete the Cognito invitation, sign in, and configure MFA before they can approve this edge request.";
+      action = { label: "Review invitation", icon: Users, run: () => onNavigate("access") };
+    } else {
+      title = "Approve the edge deployment";
+      detail = "A different active tenant administrator or security administrator must review and approve this change. The requester cannot approve their own edge deployment.";
+      action = { label: "Approve edge", icon: CheckCircle2, run: () => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onCreated, "Edge deployment approved.") };
+    }
   } else if (deployment?.status === "approved") {
     title = "Provision the edge";
     detail = "The deployment has been approved. Provisioning creates the protected edge and its baseline security controls.";
@@ -2228,7 +2244,7 @@ function EdgeDeploymentTable({ token, domains, deployments, onChanged, setStatus
 
 function EdgeAction({ domain, deployment, token, onChanged, setStatus }) {
   if (!deployment) return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/edge-deployment-request`, "POST", token, setStatus, onChanged, "Edge deployment requested.")}>Request edge</button>;
-  if (deployment.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onChanged, "Edge deployment approved.")}>Approve</button>;
+  if (deployment.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onChanged, "Edge deployment approved.")}>Review & approve</button>;
   if (deployment.status === "approved") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/provision`, "POST", token, setStatus, onChanged, "Edge provisioning started.")}>Provision</button>;
   if (deployment.status === "provisioning") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onChanged, "Edge status refreshed.")}>Refresh</button>;
   if (deployment.status === "ready_for_cutover") return <span className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onChanged, "Traffic DNS checked.")}>Check DNS</button></span>;
@@ -2381,8 +2397,18 @@ async function edgeAction(path, method, token, setStatus, onChanged, successMess
     setStatus?.({ type: "success", message: successMessage });
     onChanged?.();
   } catch (error) {
-    setStatus?.({ type: "error", message: error.message });
+    setStatus?.({ type: "error", message: friendlyWorkflowError(error.message) });
   }
+}
+
+function friendlyWorkflowError(message) {
+  if (message === "separation_of_duties_required") {
+    return "A different active tenant administrator or security administrator must approve this request. Invite an approver from Access, then have them sign in and review the edge deployment.";
+  }
+  if (message === "mfa_enrollment_required") {
+    return "Multi-factor authentication must be configured before this security-sensitive action can be completed.";
+  }
+  return message;
 }
 
 async function loadOperationalData(path, token, key, setValue, setStatus) {
