@@ -699,7 +699,7 @@ app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
     if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
     const domain = await getById(tables.domains, { domain_id: domainId });
     if (!domain || domain.tenant_id !== tenantId) return res.status(404).json({ error: "domain_not_found" });
-    await assertOriginConfigurationEditable(tenantId, domainId);
+    await assertOriginConfigurationEditable(tenantId, domainId, { allowRemediationOrigin: true });
     if (originUrl.hostname === domain.domain_name) return res.status(400).json({ error: "origin_matches_protected_domain" });
 
     const now = new Date().toISOString();
@@ -3165,11 +3165,20 @@ async function updateCloudFrontOriginPool(deployment, pool, origins) {
   await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
 }
 
-async function assertOriginConfigurationEditable(tenantId, domainId) {
+async function assertOriginConfigurationEditable(tenantId, domainId, { allowRemediationOrigin = false } = {}) {
   const deployments = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domainId);
-  if (deployments.some((deployment) => deployment.tenant_id === tenantId && !["failed", "rolled_back"].includes(deployment.status))) {
-    throw httpError(409, "origin_configuration_locked_after_edge_request");
+  const locked = deployments.some((deployment) => deployment.tenant_id === tenantId && !["failed", "rolled_back"].includes(deployment.status));
+  if (!locked) return;
+
+  if (allowRemediationOrigin) {
+    const domain = await getById(tables.domains, { domain_id: domainId });
+    const canRemediate = domain?.tenant_id === tenantId
+      && domain.status === "edge_validation_failed"
+      && deployments.some((deployment) => deployment.tenant_id === tenantId && deployment.status === "ready_for_cutover");
+    if (canRemediate) return;
   }
+
+  throw httpError(409, "origin_configuration_locked_after_edge_request");
 }
 
 async function validateOriginPoolConfiguration(tenantId, domainId, body) {

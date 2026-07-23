@@ -113,6 +113,8 @@ Cada tenant recibe una baseline en modo `monitor` con `AWSManagedRulesCommonRule
 
 El hostname publico protegido nunca puede ser usado como origen. Antes de marcar el cutover como activo, FortressNet confirma tanto el CNAME como una respuesta correcta a traves del edge. El origen debe tener un hostname HTTPS separado que permanezca apuntando a la aplicacion cuando el hostname publico se redirige a CloudFront.
 
+Si esa comprobacion devuelve un error, el dominio queda en `origin_remediation`, no como activo. El asistente de remediacion solicita el hostname HTTPS alternativo, verifica su health path, crea un cambio de origen pendiente de aprobacion de un segundo administrador del tenant y solo entonces actualiza CloudFront. Tras la propagacion, vuelve a validar el trafico publico.
+
 Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; el correo temporal lo entrega Cognito. La cuenta se activa al completar el primer login. El token de bootstrap queda solo como recuperacion controlada de plataforma.
 
 La configuracion TOTP se inicia en el perfil de FortressNet despues del primer login. El backend comprueba que el access token pertenezca al mismo sujeto del ID token y llama a `AssociateSoftwareToken`, `VerifySoftwareToken` y `SetUserMFAPreference`. El QR se genera en el navegador con el emisor `FortressNet`; el secreto no se persiste y los eventos de auditoria registran unicamente el inicio y la confirmacion de la operacion. Cognito Managed Login no ofrece una configuracion de emisor para su QR nativo, por lo que el portal no usa ese QR para el alta con marca FortressNet.

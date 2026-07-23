@@ -341,6 +341,7 @@ function App() {
           {active === "origins" && (
             <OriginsScreen
               token={token}
+              platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
@@ -956,9 +957,15 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
     detail = "AWS is creating the protected edge. Refresh the deployment status before changing traffic DNS.";
     action = { label: "Refresh edge", icon: RefreshCw, run: () => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onCreated, "Edge status refreshed.") };
   } else if (domain?.status === "edge_validation_failed") {
-    title = "Fix the private origin endpoint";
-    detail = "The traffic CNAME is detected, but the protected hostname returned an error through the edge. Configure a dedicated HTTPS origin hostname that does not resolve back to the protected hostname, then update the origin through the approved change workflow.";
-    action = { label: "Open origins", icon: Layers3, run: () => onNavigate("origins") };
+    if (deployment?.origin_update_status === "applied") {
+      title = "Revalidate protected traffic";
+      detail = "CloudFront received the replacement origin. Once propagation finishes, check the protected hostname through the edge before marking the site active.";
+      action = { label: "Check traffic DNS", icon: RefreshCw, run: () => edgeAction(`/api/domains/${domain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onCreated, "Protected traffic checked.") };
+    } else {
+      title = "Fix the private origin endpoint";
+      detail = "The traffic CNAME is detected, but the protected hostname returned an error through the edge. Configure a dedicated HTTPS origin hostname that does not resolve back to the protected hostname, then update the origin through the approved change workflow.";
+      action = { label: "Open remediation assistant", icon: Layers3, run: () => onNavigate("origins") };
+    }
   } else if (deployment && !appliedWafChangeSet) {
     title = "Apply the WAF policy";
     if (!pendingWafChangeSet) {
@@ -1219,14 +1226,25 @@ function ApiShieldScreen({ token, state, selectedTenantId, setSelectedTenantId, 
   );
 }
 
-function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function OriginsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
   const domains = filterByTenant(state.domains, selectedTenantId);
+  const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
 
   return (
     <div className="screen">
+      <OriginRemediationAssistant
+        token={token}
+        platform={platform}
+        domains={domains}
+        origins={origins}
+        deployments={deployments}
+        selectedTenantId={selectedTenantId}
+        onChanged={onCreated}
+        setStatus={setStatus}
+      />
       <div className="two-column">
         <Panel id="origins-inventory" title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
@@ -1888,6 +1906,75 @@ function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   );
 }
 
+function OriginRemediationAssistant({ token, platform, domains, origins, deployments, selectedTenantId, onChanged, setStatus }) {
+  const remediationDomains = domains.filter((domain) => domain.status === "edge_validation_failed");
+  const [domainId, setDomainId] = useState("");
+  const [originUrl, setOriginUrl] = useState("");
+  const [healthPath, setHealthPath] = useState("/");
+
+  useEffect(() => {
+    if (!remediationDomains.some((domain) => domain.domain_id === domainId)) setDomainId(remediationDomains[0]?.domain_id || "");
+  }, [remediationDomains, domainId]);
+
+  const domain = remediationDomains.find((item) => item.domain_id === domainId) || null;
+  const deployment = deployments.find((item) => item.domain_id === domainId) || null;
+  const requestedByActor = deployment?.origin_update_requested_by === platform?.actor?.subject;
+  const canApprove = tenantApprovalEligible(platform, selectedTenantId);
+  const canRequest = Boolean(deployment && !["pending_approval", "approved"].includes(deployment.origin_update_status));
+
+  const requestRemediation = async (event) => {
+    event.preventDefault();
+    try {
+      const created = await apiRequest("/api/origins", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenant_id: selectedTenantId,
+          domain_id: domain.domain_id,
+          name: "remediation-origin",
+          origin_url: originUrl,
+          health_path: healthPath
+        })
+      });
+      const checked = await apiRequest(`/api/origins/${created.origin.origin_id}/health-check`, token, { method: "PATCH" });
+      if (checked.origin?.status !== "healthy") throw new Error("replacement_origin_unhealthy");
+      await apiRequest(`/api/edge-deployments/${deployment.deployment_id}/origin-update-request`, token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ origin_ids: [created.origin.origin_id], strategy: "priority", failover_enabled: false })
+      });
+      setOriginUrl("");
+      setHealthPath("/");
+      setStatus({ type: "success", message: "Replacement origin is healthy. An independent tenant administrator must approve the CloudFront update." });
+      onChanged();
+    } catch (error) {
+      setStatus({ type: "error", message: friendlyWorkflowError(error.message) });
+      onChanged();
+    }
+  };
+
+  if (!remediationDomains.length) return null;
+
+  return (
+    <Panel title="Origin Remediation Assistant">
+      <div className="assistant-banner warning">
+        <Activity size={20} />
+        <div><strong>Protected traffic is failing through the edge</strong><span>Configure a dedicated HTTPS hostname for the origin. It must continue to reach the application while the public hostname remains a CNAME to FortressNet.</span></div>
+      </div>
+      <form className="form-grid" onSubmit={requestRemediation}>
+        <label htmlFor="remediation-domain">Protected domain<select id="remediation-domain" value={domainId} onChange={(event) => setDomainId(event.target.value)}>{remediationDomains.map((item) => <option key={item.domain_id} value={item.domain_id}>{item.domain_name}</option>)}</select></label>
+        <label htmlFor="remediation-origin-url">Replacement HTTPS origin<input id="remediation-origin-url" type="url" value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://origin.customer.com" /></label>
+        <label htmlFor="remediation-health-path">Health path<input id="remediation-health-path" value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/" /></label>
+        <div className="form-help">Create the origin DNS record and its TLS certificate before submitting. FortressNet checks the origin first, then opens an approval request without changing live traffic.</div>
+        <button className="primary" disabled={!token || !domain || !deployment || !originUrl || !canRequest}><Activity size={16} /> Validate and request update</button>
+      </form>
+      {deployment?.origin_update_status === "pending_approval" && <div className="assistant-banner warning"><Users size={20} /><div><strong>Tenant approval required</strong><span>{requestedByActor ? "A different tenant administrator or security administrator must approve this origin update." : canApprove ? "Review the healthy replacement origin, then approve its CloudFront update." : "A tenant administrator or security administrator for this tenant must approve this change."}</span></div>{canApprove && !requestedByActor && <button className="secondary compact" onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-update-approve`, "POST", token, setStatus, onChanged, "Origin update approved.")}>Approve update</button>}</div>}
+      {deployment?.origin_update_status === "approved" && <div className="assistant-banner warning"><Activity size={20} /><div><strong>Apply the approved origin change</strong><span>CloudFront will update the edge configuration. After it is deployed, return to Onboarding and check traffic DNS again.</span></div><button className="primary compact" onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-update-apply`, "POST", token, setStatus, onChanged, "Origin update submitted to CloudFront.")}>Apply update</button></div>}
+      {deployment?.origin_update_status === "applied" && <div className="assistant-banner success"><CheckCircle2 size={20} /><div><strong>Origin change submitted</strong><span>Wait for CloudFront propagation, then use Check DNS in Onboarding to validate the protected hostname.</span></div></div>}
+    </Panel>
+  );
+}
+
 function OriginCreateForm({ token, tenants, domains, selectedTenantId, onCreated, setStatus }) {
   const [domainId, setDomainId] = useState("");
   const [name, setName] = useState("");
@@ -2437,6 +2524,9 @@ function friendlyWorkflowError(message) {
   if (message === "origin_matches_protected_domain") {
     return "The origin cannot use the protected hostname. Create or provide a separate HTTPS origin hostname that stays pointed at the application after the public hostname is switched to FortressNet.";
   }
+  if (message === "replacement_origin_unhealthy") {
+    return "FortressNet could not reach the replacement origin health path. Verify its DNS, TLS certificate, firewall rules and health path before requesting the CloudFront update.";
+  }
   return message;
 }
 
@@ -2543,7 +2633,7 @@ function tenantApprovalEligible(platform, tenantId) {
   return Boolean(
     tenantId &&
     !platform?.is_platform_actor &&
-    actor?.tenant_id === tenantId &&
+    (actor?.tenant_id === tenantId || actor?.tenant_ids?.includes(tenantId)) &&
     (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
   );
 }
