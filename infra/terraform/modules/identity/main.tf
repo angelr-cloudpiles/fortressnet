@@ -85,6 +85,44 @@ resource "aws_cognito_user_pool_domain" "this" {
   user_pool_id = aws_cognito_user_pool.this.id
 }
 
+# The Cognito Hosted UI remains the authentication authority, but it must not
+# look like an unrelated AWS page when a customer is asked to authenticate.
+resource "aws_cognito_user_pool_ui_customization" "fortressnet" {
+  user_pool_id = aws_cognito_user_pool.this.id
+  client_id    = aws_cognito_user_pool_client.web.id
+
+  css = <<-CSS
+    .background-customizable { background: #07182a !important; }
+    .banner-customizable {
+      min-height: 76px !important;
+      padding: 22px 30px !important;
+      background: #07182a url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iNDQiIHZpZXdCb3g9IjAgMCAyNjAgNDQiPjxyZWN0IHdpZHRoPSI0NCIgaGVpZ2h0PSI0NCIgcng9IjgiIGZpbGw9IiMxNzY5ZTAiLz48cGF0aCBkPSJNMTMgMzFWMTNoMTh2NkgyMHY0aDl2NmgtOXYyeiIgZmlsbD0id2hpdGUiLz48dGV4dCB4PSI1OCIgeT0iMjkiIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjIyIiBmb250LXdlaWdodD0iNzAwIiBsZXR0ZXItc3BhY2luZz0iMS4yIiBmaWxsPSJ3aGl0ZSI+Rk9SVFJFU1NORVQ8L3RleHQ+PC9zdmc+") no-repeat 30px center !important;
+      border-bottom: 1px solid rgba(184, 204, 229, .22) !important;
+      color: #ffffff !important;
+      font-weight: 760 !important;
+      letter-spacing: .02em !important;
+    }
+    .label-customizable { color: #344054 !important; font-weight: 650 !important; }
+    .redirect-customizable { color: #344054 !important; font-weight: 650 !important; }
+    .textDescription-customizable { color: #667085 !important; }
+    .inputField-customizable {
+      height: 44px !important;
+      border: 1px solid #cfd8e6 !important;
+      border-radius: 6px !important;
+      box-shadow: none !important;
+    }
+    .submitButton-customizable {
+      height: 44px !important;
+      background: #1769e0 !important;
+      border: 1px solid #1769e0 !important;
+      border-radius: 6px !important;
+      box-shadow: none !important;
+      font-weight: 700 !important;
+    }
+    .errorMessage-customizable { color: #b42318 !important; }
+  CSS
+}
+
 resource "aws_cognito_user_pool_client" "web" {
   name         = "${var.name}-web"
   user_pool_id = aws_cognito_user_pool.this.id

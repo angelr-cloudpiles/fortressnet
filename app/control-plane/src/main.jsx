@@ -801,19 +801,34 @@ function TrafficChart({ events, series, loading, error, range }) {
   if (error) return <EmptyState icon={Activity} title="Event metrics are unavailable" body="The console could not retrieve the selected tenant's WAF telemetry. Refresh the panel or confirm Events read access." />;
   if (!events.length) return <EmptyState icon={Activity} title="No observed edge traffic" body={`No WAF events were recorded for this tenant in the selected ${range} window. This dashboard does not generate sample traffic.`} />;
 
-  const max = Math.max(...series.flatMap((bucket) => [bucket.total, bucket.allowed, bucket.blocked]), 1);
-  const pointString = (key) => series.map((bucket, index) => `${45 + (index / Math.max(series.length - 1, 1)) * 660},${250 - (bucket[key] / max) * 190}`).join(" ");
-  const labels = [0, Math.floor((series.length - 1) / 2), series.length - 1].map((index) => ({ index, label: series[index]?.label || "" }));
+  const max = Math.max(...series.map((bucket) => bucket.total), 1);
+  const plot = { left: 50, right: 700, top: 26, bottom: 232 };
+  const plotWidth = plot.right - plot.left;
+  const plotHeight = plot.bottom - plot.top;
+  const barWidth = Math.max(8, Math.min(28, (plotWidth / Math.max(series.length, 1)) * 0.56));
+  const xFor = (index) => plot.left + ((index + 0.5) / Math.max(series.length, 1)) * plotWidth;
+  const yFor = (value) => plot.bottom - (Math.max(0, value) / max) * plotHeight;
+  const totalPoints = series.map((bucket, index) => `${xFor(index)},${yFor(bucket.total)}`).join(" ");
+  const labels = [0, Math.floor((series.length - 1) / 3), Math.floor(((series.length - 1) * 2) / 3), series.length - 1]
+    .filter((index, position, values) => values.indexOf(index) === position)
+    .map((index) => ({ index, label: series[index]?.label || "" }));
+  const allowed = events.filter((event) => event.action === "ALLOW").length;
+  const blocked = events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length;
   return (
     <div className="chart-wrap">
       <div className="legend"><span className="legend-blue"></span>Total <span className="legend-green"></span>Allowed <span className="legend-red"></span>Blocked</div>
+      <div className="traffic-summary"><span><strong>{events.length}</strong> requests</span><span className="allowed"><strong>{allowed}</strong> allowed</span><span className="blocked"><strong>{blocked}</strong> blocked or challenged</span></div>
       <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="none">
-        {[0, 1, 2, 3, 4].map((i) => <line key={i} x1="45" x2="705" y1={40 + i * 52} y2={40 + i * 52} />)}
-        <text x="8" y="44">{max}</text><text x="8" y="148">{Math.round(max / 2)}</text><text x="25" y="254">0</text>
-        <polyline points={pointString("total")} className="stroke-blue traffic-line" fill="none" />
-        <polyline points={pointString("allowed")} className="stroke-green traffic-line" fill="none" />
-        <polyline points={pointString("blocked")} className="stroke-red traffic-line" fill="none" />
-        {labels.map(({ index, label }) => <text key={`${label}-${index}`} x={45 + (index / Math.max(series.length - 1, 1)) * 660} y="284">{label}</text>)}
+        {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <g key={fraction}><line x1={plot.left} x2={plot.right} y1={plot.bottom - fraction * plotHeight} y2={plot.bottom - fraction * plotHeight} /><text x="36" y={plot.bottom - fraction * plotHeight + 4} textAnchor="end">{Math.round(max * fraction)}</text></g>)}
+        {series.map((bucket, index) => {
+          const x = xFor(index) - barWidth / 2;
+          const allowedHeight = Math.max(0, (bucket.allowed / max) * plotHeight);
+          const blockedHeight = Math.max(0, (bucket.blocked / max) * plotHeight);
+          return <g key={bucket.start}><rect className="traffic-bar allowed" x={x} y={plot.bottom - allowedHeight} width={barWidth} height={allowedHeight} rx="2" /><rect className="traffic-bar blocked" x={x} y={plot.bottom - allowedHeight - blockedHeight} width={barWidth} height={blockedHeight} rx="2" /></g>;
+        })}
+        <polyline points={totalPoints} className="traffic-total-line" fill="none" />
+        {series.map((bucket, index) => <circle key={`point-${bucket.start}`} cx={xFor(index)} cy={yFor(bucket.total)} r="3" className="traffic-total-point" />)}
+        {labels.map(({ index, label }) => <text key={`${label}-${index}`} x={xFor(index)} y="270" textAnchor={index === 0 ? "start" : index === series.length - 1 ? "end" : "middle"}>{label}</text>)}
       </svg>
     </div>
   );
@@ -2644,7 +2659,7 @@ function overviewRangeHours(range) {
 }
 
 function buildTrafficSeries(events, rangeHours) {
-  const bucketCount = 12;
+  const bucketCount = rangeHours <= 24 ? 12 : rangeHours <= 24 * 7 ? 14 : 15;
   const end = Date.now();
   const start = end - rangeHours * 60 * 60 * 1000;
   const bucketDuration = (end - start) / bucketCount;
