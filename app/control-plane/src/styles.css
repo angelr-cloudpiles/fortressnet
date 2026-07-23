@@ -582,6 +582,53 @@ kbd {
   align-items: center;
 }
 
+.header-overflow {
+  position: relative;
+}
+
+.header-action-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 184px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 14px 30px rgba(16, 24, 40, 0.16);
+}
+
+.header-action-menu button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.header-action-menu button:hover {
+  background: #f2f6fb;
+}
+
+.spin {
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .primary {
   color: #fff;
   background: var(--blue);

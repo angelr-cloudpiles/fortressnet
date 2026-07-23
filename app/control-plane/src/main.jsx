@@ -221,12 +221,13 @@ function App() {
     }
   };
 
-  const reload = () => {
+  const reload = async () => {
     if (!token) {
       setStatus({ type: "warning", message: "Management token required." });
       return;
     }
-    loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+    setStatus({ type: "idle", message: "Synchronizing console data..." });
+    await loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
   };
 
   const signIn = () => startCognitoLogin(authConfig).catch((error) => setStatus({ type: "error", message: error.message }));
@@ -506,10 +507,25 @@ function Topbar({ authenticated, authMode, onSignIn, onSignOut, onOpenProfile, o
 }
 
 function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant }) {
+  const [syncing, setSyncing] = useState(false);
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const title = active === "overview" ? "FortressNet Console" : pageTitle;
   const subtitle = active === "overview"
     ? "SaaS multi-tenant edge security control plane"
     : "Manage tenants, domains, policies and platform readiness";
+  const sync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await onReload();
+    } finally {
+      setSyncing(false);
+    }
+  };
+  const navigate = (target) => {
+    setQuickActionsOpen(false);
+    onNavigate(target);
+  };
 
   return (
     <div className="page-header">
@@ -519,8 +535,18 @@ function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant })
       </div>
       <div className="header-actions">
         <button className="secondary" onClick={onCreateTenant}><Plus size={16} /> Create tenant</button>
-        <button className="secondary" onClick={onReload}><RefreshCw size={16} /> Sync</button>
-        <button className="icon-button bordered" title="Open onboarding" onClick={() => onNavigate("onboarding")}><MoreHorizontal size={18} /></button>
+        <button className="secondary" disabled={syncing} aria-busy={syncing} onClick={sync}><RefreshCw className={syncing ? "spin" : ""} size={16} /> {syncing ? "Syncing" : "Sync"}</button>
+        <div className="header-overflow">
+          <button className="icon-button bordered" title="More actions" aria-label="More actions" aria-expanded={quickActionsOpen} aria-haspopup="menu" onClick={() => setQuickActionsOpen((current) => !current)}><MoreHorizontal size={18} /></button>
+          {quickActionsOpen && (
+            <div className="header-action-menu" role="menu">
+              <button role="menuitem" onClick={() => navigate("onboarding")}><CheckCircle2 size={16} /> Onboarding</button>
+              <button role="menuitem" onClick={() => navigate("domains")}><Globe2 size={16} /> Domains</button>
+              <button role="menuitem" onClick={() => navigate("policies")}><Shield size={16} /> Policies</button>
+              <button role="menuitem" onClick={() => navigate("events")}><ClipboardList size={16} /> Security events</button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
