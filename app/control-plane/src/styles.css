@@ -850,6 +850,8 @@ kbd {
 .metric-card {
   min-height: 144px;
   padding: 17px 16px 12px;
+  display: flex;
+  flex-direction: column;
 }
 
 .metric-label {
@@ -904,6 +906,31 @@ kbd {
   background: var(--line-soft);
 }
 
+.metric-link,
+.panel-footer-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--blue);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.metric-link {
+  justify-content: flex-start;
+  margin-top: auto;
+  padding: 12px 0 0;
+}
+
+.metric-link:hover,
+.panel-footer-link:hover {
+  color: #125fc9;
+  text-decoration: underline;
+}
+
 .dashboard-panel-actions {
   display: flex;
   align-items: center;
@@ -921,7 +948,7 @@ kbd {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(520px, 1.55fr) minmax(300px, .9fr) minmax(290px, .95fr);
+  grid-template-columns: minmax(0, 2.1fr) minmax(300px, .9fr);
   gap: 14px;
 }
 
@@ -950,6 +977,19 @@ kbd {
   margin: 0;
   font-size: 15px;
   letter-spacing: -0.01em;
+}
+
+.panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 44px;
+  padding: 0 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.panel-footer-link {
+  min-height: 43px;
+  padding: 0;
 }
 
 .count {

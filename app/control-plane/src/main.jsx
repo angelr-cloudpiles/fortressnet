@@ -316,11 +316,8 @@ function App() {
               setRange={setRange}
               token={token}
               state={state}
-              platform={platform}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onNavigate={setActive}
-              onCreateTenant={openTenantCreate}
             />
           )}
           {active === "onboarding" && (
@@ -684,7 +681,7 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
   );
 }
 
-function Overview({ range, setRange, token, state, platform, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
+function Overview({ range, setRange, token, state, selectedTenantId, onNavigate }) {
   const [events, setEvents] = useState([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState("");
@@ -717,24 +714,21 @@ function Overview({ range, setRange, token, state, platform, selectedTenantId, s
     <div className="screen">
       {!token && <AccessRequired onNavigate={onNavigate} />}
       <div className="metric-grid">
-        {metrics.map((metric) => <MetricCard key={metric.label} metric={metric} />)}
+        {metrics.map((metric) => <MetricCard key={metric.label} metric={metric} onNavigate={onNavigate} />)}
       </div>
       <div className="dashboard-grid">
-        <Panel className="traffic-panel" title="Edge Traffic" action={<div className="dashboard-panel-actions"><Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} /><button className="secondary compact" disabled={eventsLoading} onClick={loadEvents}><RefreshCw size={14} /> Refresh</button></div>}>
+        <Panel className="traffic-panel" title="Edge Traffic" action={<div className="dashboard-panel-actions"><Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} /><button className="secondary compact" disabled={eventsLoading} onClick={loadEvents}><RefreshCw size={14} /> Refresh</button></div>} footer={<PanelLink label="Open security events" onClick={() => onNavigate("events")} />}>
           <TrafficChart events={events} series={trafficSeries} loading={eventsLoading} error={eventsError} range={range} />
         </Panel>
-        <Panel title={selectedTenantId ? "Tenant context" : "Global account view"} action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} includeGlobal={platform?.is_platform_actor} />}>
-          <div className="tenant-registration-action"><strong>{selectedTenantId ? state.tenants.find((tenant) => tenant.tenant_id === selectedTenantId)?.name || "Tenant" : "All customer tenants"}</strong><p>{selectedTenantId ? `${visibleDomains.length} protected domain${visibleDomains.length === 1 ? "" : "s"} in this workspace.` : `${state.customers.length} customer account${state.customers.length === 1 ? "" : "s"} and ${state.tenants.length} tenant${state.tenants.length === 1 ? "" : "s"} in scope.`}</p><div className="button-pair"><button className="secondary compact" onClick={() => onNavigate("domains")}>Open domains</button>{platform?.is_platform_actor && <button className="primary compact" disabled={!token} onClick={onCreateTenant}><Plus size={15} /> Create tenant</button>}</div></div>
-        </Panel>
-        <Panel title="Operational coverage">
+        <Panel title="Operational coverage" footer={<PanelLink label="Open onboarding" onClick={() => onNavigate("onboarding")} />}>
           <OperationalCoverage state={state} selectedTenantId={selectedTenantId} />
         </Panel>
       </div>
       <div className="table-grid">
-        <Panel title="Recent Security Events" action={<button className="link-button" onClick={() => onNavigate("events")}>View event stream <ChevronRight size={14} /></button>}>
+        <Panel title="Recent Security Events" footer={<PanelLink label="Open security events" onClick={() => onNavigate("events")} />}>
           <OverviewEventsTable events={events.slice(0, 6)} domains={visibleDomains} loading={eventsLoading} error={eventsError} />
         </Panel>
-        <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Manage domains <ChevronRight size={14} /></button>}>
+        <Panel title="Domain Health" footer={<PanelLink label="Manage domains" onClick={() => onNavigate("domains")} />}>
           <DomainTable domains={visibleDomains} eventStatsByDomain={eventStatsByDomain} />
         </Panel>
       </div>
@@ -750,7 +744,7 @@ function OperationalCoverage({ state, selectedTenantId }) {
   return <div className="settings-list compact"><div><CheckCircle2 size={18} /><span>Active protected domains</span><strong>{active}/{domains.length}</strong></div><div><Shield size={18} /><span>Security policies</span><strong>{policies}</strong></div><div><Activity size={18} /><span>Go-live actions pending</span><strong>{pending}</strong></div></div>;
 }
 
-function MetricCard({ metric }) {
+function MetricCard({ metric, onNavigate }) {
   return (
     <article className="metric-card">
       <div className="metric-label">
@@ -760,6 +754,7 @@ function MetricCard({ metric }) {
       <div className="metric-value">{metric.value}</div>
       <div className={`metric-delta ${metric.trend}`}>{metric.delta}</div>
       {metric.series ? <SparkLine color={metric.color} values={metric.series} /> : <div className="metric-context-line" />}
+      <button className="metric-link" onClick={() => onNavigate(metric.route)}>{metric.linkLabel}<ChevronRight size={14} /></button>
     </article>
   );
 }
@@ -774,7 +769,7 @@ function SparkLine({ color = "blue", values = [] }) {
   );
 }
 
-function Panel({ id, title, count, action, className = "", children }) {
+function Panel({ id, title, count, action, footer, className = "", children }) {
   return (
     <section id={id} className={`panel ${className}`} tabIndex={id ? -1 : undefined}>
       <div className="panel-header">
@@ -782,8 +777,13 @@ function Panel({ id, title, count, action, className = "", children }) {
         {action}
       </div>
       {children}
+      {footer && <div className="panel-footer">{footer}</div>}
     </section>
   );
+}
+
+function PanelLink({ label, onClick }) {
+  return <button className="panel-footer-link" onClick={onClick}>{label}<ChevronRight size={14} /></button>;
 }
 
 function Segmented({ value, setValue, options }) {
@@ -2703,12 +2703,12 @@ function buildMetrics(state, events = [], trafficSeries = [], domains = state.do
   const blocked = events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length;
   const wafMatches = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action").length;
   return [
-    { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue" },
-    { label: "Protected Domains", value: String(domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green" },
-    { label: "Policies", value: String(state.policies.length), delta: "Tenant-scoped drafts", trend: "neutral", color: "orange" },
-    { label: "Protected Requests", value: String(requests), delta: requests ? "Observed WAF requests" : "No observed traffic", trend: requests ? "good" : "neutral", color: "blue", series: trafficSeries.map((bucket) => bucket.total) },
-    { label: "Blocked Requests", value: String(blocked), delta: blocked ? "WAF interventions" : "No interventions observed", trend: blocked ? "risk" : "good", color: "red", series: trafficSeries.map((bucket) => bucket.blocked) },
-    { label: "WAF Matches", value: String(wafMatches), delta: wafMatches ? "Managed or custom rule matches" : "No rule matches observed", trend: wafMatches ? "risk" : "neutral", color: "orange", series: trafficSeries.map((bucket) => bucket.matches) }
+    { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue", route: "onboarding", linkLabel: "Manage tenants" },
+    { label: "Protected Domains", value: String(domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green", route: "domains", linkLabel: "Manage domains" },
+    { label: "Policies", value: String(state.policies.length), delta: "Tenant-scoped drafts", trend: "neutral", color: "orange", route: "policies", linkLabel: "Open policies" },
+    { label: "Protected Requests", value: String(requests), delta: requests ? "Observed WAF requests" : "No observed traffic", trend: requests ? "good" : "neutral", color: "blue", series: trafficSeries.map((bucket) => bucket.total), route: "events", linkLabel: "Open events" },
+    { label: "Blocked Requests", value: String(blocked), delta: blocked ? "WAF interventions" : "No interventions observed", trend: blocked ? "risk" : "good", color: "red", series: trafficSeries.map((bucket) => bucket.blocked), route: "events", linkLabel: "Review blocks" },
+    { label: "WAF Matches", value: String(wafMatches), delta: wafMatches ? "Managed or custom rule matches" : "No rule matches observed", trend: wafMatches ? "risk" : "neutral", color: "orange", series: trafficSeries.map((bucket) => bucket.matches), route: "policies", linkLabel: "Review WAF policy" }
   ];
 }
 
