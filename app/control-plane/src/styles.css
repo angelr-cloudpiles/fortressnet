@@ -1332,12 +1332,25 @@ a {
 }
 
 .setup-steps .current {
-  border-color: #9fc6ff;
-  background: #f7fbff;
+  border-color: #f1bd78;
+  background: #fff8ed;
 }
 
 .setup-steps .current span {
-  background: var(--blue);
+  background: #d97706;
+}
+
+.setup-steps .done {
+  border-color: #b9dbc9;
+  background: #f5fbf8;
+}
+
+.setup-steps .done span {
+  background: var(--green);
+}
+
+.setup-steps .done small {
+  color: #087443;
 }
 
 .setup-steps small {

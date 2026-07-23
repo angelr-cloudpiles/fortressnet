@@ -95,6 +95,15 @@ const tenantCountryOptions = [
   ["AR", "Argentina"], ["AU", "Australia"], ["BR", "Brazil"], ["CA", "Canada"], ["CL", "Chile"], ["CO", "Colombia"], ["DE", "Germany"], ["ES", "Spain"], ["FR", "France"], ["GB", "United Kingdom"], ["IE", "Ireland"], ["IT", "Italy"], ["JP", "Japan"], ["MX", "Mexico"], ["NL", "Netherlands"], ["PE", "Peru"], ["PT", "Portugal"], ["SG", "Singapore"], ["US", "United States"], ["UY", "Uruguay"]
 ];
 
+const verifiedDomainStatuses = new Set([
+  "verified_pending_certificate",
+  "certificate_validation",
+  "certificate_issued_pending_edge",
+  "edge_provisioning",
+  "pending_traffic_dns",
+  "active"
+]);
+
 const emptyState = {
   tenants: [],
   domains: [],
@@ -624,7 +633,19 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const certificates = filterByTenant(state.certificates, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   const latestDomain = domains[0] || null;
+  const domainOrigins = origins.filter((origin) => origin.domain_id === latestDomain?.domain_id);
+  const primaryOrigin = domainOrigins[0] || null;
   const latestCertificate = certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id);
+  const appliedWafChangeSet = filterByTenant(state.waf_change_sets, selectedTenantId)
+    .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied");
+  const checklist = [
+    { step: "Tenant selected", value: selectedTenantId ? "Ready" : "Required", done: Boolean(selectedTenantId) },
+    { step: "Domain ownership", value: latestDomain?.status || "Pending", done: verifiedDomainStatuses.has(latestDomain?.status) },
+    { step: "Primary origin", value: primaryOrigin?.status || "Pending", done: primaryOrigin?.status === "healthy" },
+    { step: "Certificate", value: latestCertificate?.status || "Pending", done: latestCertificate?.status === "ISSUED" },
+    { step: "WAF policy", value: appliedWafChangeSet ? "Applied" : "Pending", done: Boolean(appliedWafChangeSet) }
+  ];
+  const currentStepIndex = checklist.findIndex((item) => !item.done);
   const verifyOwnership = () => {
     if (latestDomain) verifyDomainDns(latestDomain.domain_id, token, setStatus, onCreated);
   };
@@ -637,14 +658,8 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
         </Panel>
         <Panel title="Go-Live Checklist">
           <div className="setup-steps vertical">
-            {[
-              ["Tenant selected", selectedTenantId ? "Ready" : "Required"],
-              ["Domain record", latestDomain ? latestDomain.status : "Pending"],
-              ["Primary origin", origins.length ? origins[0].status : "Pending"],
-              ["Certificate", certificates.length ? certificates[0].status : "Pending"],
-              ["WAF policy", filterByTenant(state.waf_change_sets, selectedTenantId).length ? "Compiled" : "Pending"]
-            ].map(([step, value], index) => (
-              <div key={step} className={index === 0 && !latestDomain ? "current" : ""}><span>{index + 1}</span>{step}<small>{value}</small></div>
+            {checklist.map(({ step, value, done }, index) => (
+              <div key={step} className={done ? "done" : index === currentStepIndex ? "current" : "pending"}><span>{index + 1}</span>{step}<small>{value}</small></div>
             ))}
           </div>
         </Panel>
