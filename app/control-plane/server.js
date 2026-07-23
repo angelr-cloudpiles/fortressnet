@@ -3403,14 +3403,33 @@ async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
 
 function clientSecurityResponseHeadersPolicyConfig(name, domainName, token) {
   const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
+  const apexDomain = domainName.replace(/^www\./i, "");
+  const enforcedCsp = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'self'",
+    "form-action 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    `img-src 'self' data: https://${apexDomain}`,
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "upgrade-insecure-requests"
+  ].join("; ");
   return {
     Name: name,
     Comment: `FortressNet baseline browser security controls for ${domainName}`,
-    // The enforced directives are deliberately non-disruptive for existing
-    // sites. The stricter Report-Only policy supplies the evidence needed to
-    // tune a tenant-specific CSP before allowing it to block content.
+    // Keep the production baseline compatible with common WordPress themes
+    // while constraining executable content to the protected origin. The
+    // Report-Only policy remains intentionally stricter so tenant operators
+    // can remove the legacy inline allowances with evidence.
     SecurityHeadersConfig: {
-      ContentSecurityPolicy: { ContentSecurityPolicy: "base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'", Override: true },
+      ContentSecurityPolicy: {
+        ContentSecurityPolicy: enforcedCsp,
+        Override: true
+      },
       ContentTypeOptions: { Override: true },
       FrameOptions: { FrameOption: "SAMEORIGIN", Override: true },
       ReferrerPolicy: { ReferrerPolicy: "strict-origin-when-cross-origin", Override: true },

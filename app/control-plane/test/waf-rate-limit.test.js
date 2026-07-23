@@ -138,6 +138,8 @@ test("creates the AWS managed WAF baseline in monitor mode", () => {
 test("builds an enforcing browser baseline while retaining CSP telemetry", () => {
   const policy = clientSecurityResponseHeadersPolicyConfig("fn-test", "www.example.test", "report-token");
   assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("object-src 'none'"), true);
+  assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("default-src 'self'"), true);
+  assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("script-src 'self' 'unsafe-inline'"), true);
   assert.equal(policy.SecurityHeadersConfig.ContentTypeOptions.Override, true);
   assert.equal(policy.SecurityHeadersConfig.StrictTransportSecurity.AccessControlMaxAgeSec, 31536000);
   assert.equal(policy.CustomHeadersConfig.Items.some((item) => item.Header === "Content-Security-Policy-Report-Only"), true);

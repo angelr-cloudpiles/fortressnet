@@ -46,6 +46,8 @@ test("creates enforced browser controls with CSP telemetry", () => {
 
   assert.equal(policy.SecurityHeadersConfig.ContentTypeOptions.Override, true);
   assert.equal(policy.SecurityHeadersConfig.StrictTransportSecurity.AccessControlMaxAgeSec, 31536000);
+  assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("default-src 'self'"), true);
+  assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("script-src 'self' 'unsafe-inline'"), true);
   assert.deepEqual(policy.CustomHeadersConfig.Items[0], {
     Header: "Content-Security-Policy-Report-Only",
     Value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri https://app.fortressnet.app/api/client-security/reports/client-token",
