@@ -104,6 +104,27 @@ const verifiedDomainStatuses = new Set([
   "active"
 ]);
 
+const workflowStatusLabels = {
+  pending_dns: "Awaiting ownership TXT",
+  verified_pending_certificate: "Ownership verified",
+  certificate_validation: "Certificate validation in progress",
+  pending_ownership_verification: "Preparing certificate validation",
+  pending_dns_validation: "Awaiting ACM DNS record",
+  PENDING_VALIDATION: "Awaiting ACM validation",
+  ISSUED: "Issued",
+  FAILED: "Failed",
+  certificate_issued_pending_edge: "Certificate issued",
+  pending_health_check: "Health check required",
+  healthy: "Healthy",
+  pending_approval: "Approval required",
+  approved: "Approved",
+  provisioning: "Provisioning",
+  ready_for_cutover: "Ready for traffic DNS",
+  pending_traffic_dns: "Awaiting traffic DNS",
+  active: "Active",
+  applied: "Applied"
+};
+
 const emptyState = {
   tenants: [],
   domains: [],
@@ -288,6 +309,7 @@ function App() {
               setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
+              onNavigate={setActive}
             />
           )}
           {active === "domains" && (
@@ -627,7 +649,7 @@ function EmptyTable({ columns, message }) {
   );
 }
 
-function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const origins = filterByTenant(state.origins, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
@@ -636,14 +658,21 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const domainOrigins = origins.filter((origin) => origin.domain_id === latestDomain?.domain_id);
   const primaryOrigin = domainOrigins[0] || null;
   const latestCertificate = certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id);
-  const appliedWafChangeSet = filterByTenant(state.waf_change_sets, selectedTenantId)
+  const latestDeployment = deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id);
+  const tenantWafChangeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
+  const appliedWafChangeSet = tenantWafChangeSets
     .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied");
+  const pendingWafChangeSet = tenantWafChangeSets
+    .find((changeSet) => changeSet.status !== "applied" && (!changeSet.domain_id || changeSet.domain_id === latestDomain?.domain_id));
+  const edgeReadyForCutover = ["ready_for_cutover", "active"].includes(latestDeployment?.status);
   const checklist = [
     { step: "Tenant selected", value: selectedTenantId ? "Ready" : "Required", done: Boolean(selectedTenantId) },
-    { step: "Domain ownership", value: latestDomain?.status || "Pending", done: verifiedDomainStatuses.has(latestDomain?.status) },
-    { step: "Primary origin", value: primaryOrigin?.status || "Pending", done: primaryOrigin?.status === "healthy" },
-    { step: "Certificate", value: latestCertificate?.status || "Pending", done: latestCertificate?.status === "ISSUED" },
-    { step: "WAF policy", value: appliedWafChangeSet ? "Applied" : "Pending", done: Boolean(appliedWafChangeSet) }
+    { step: "Domain ownership", value: humanizeWorkflowStatus(latestDomain?.status), done: verifiedDomainStatuses.has(latestDomain?.status) },
+    { step: "Primary origin", value: humanizeWorkflowStatus(primaryOrigin?.status), done: primaryOrigin?.status === "healthy" },
+    { step: "Certificate", value: humanizeWorkflowStatus(latestCertificate?.status), done: latestCertificate?.status === "ISSUED" },
+    { step: "Edge deployment", value: humanizeWorkflowStatus(latestDeployment?.status, "Not requested"), done: edgeReadyForCutover },
+    { step: "WAF policy", value: appliedWafChangeSet ? "Applied" : humanizeWorkflowStatus(pendingWafChangeSet?.status, "Policy required"), done: Boolean(appliedWafChangeSet) },
+    { step: "Traffic DNS", value: humanizeWorkflowStatus(latestDomain?.status, "Pending"), done: latestDomain?.status === "active" }
   ];
   const currentStepIndex = checklist.findIndex((item) => !item.done);
   const verifyOwnership = () => {
@@ -656,7 +685,20 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
         <Panel title="New Protected Site" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
           <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
-        <Panel title="Go-Live Checklist">
+        <Panel title="Go-Live Assistant">
+          <OnboardingGuidance
+            token={token}
+            selectedTenantId={selectedTenantId}
+            domain={latestDomain}
+            origin={primaryOrigin}
+            certificate={latestCertificate}
+            deployment={latestDeployment}
+            pendingWafChangeSet={pendingWafChangeSet}
+            appliedWafChangeSet={appliedWafChangeSet}
+            onCreated={onCreated}
+            setStatus={setStatus}
+            onNavigate={onNavigate}
+          />
           <div className="setup-steps vertical">
             {checklist.map(({ step, value, done }, index) => (
               <div key={step} className={done ? "done" : index === currentStepIndex ? "current" : "pending"}><span>{index + 1}</span>{step}<small>{value}</small></div>
@@ -665,8 +707,85 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
         </Panel>
       </div>
       <Panel title="DNS Instructions" action={latestDomain && <button className="primary compact" disabled={!token} onClick={verifyOwnership}><RefreshCw size={15} /> Check DNS</button>}>
-        <DomainInstructions domain={latestDomain} certificate={latestCertificate} deployment={deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id)} />
+        <DomainInstructions domain={latestDomain} certificate={latestCertificate} deployment={latestDeployment} />
       </Panel>
+    </div>
+  );
+}
+
+function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, pendingWafChangeSet, appliedWafChangeSet, onCreated, setStatus, onNavigate }) {
+  let title = "Create or select a tenant";
+  let detail = "Select the customer tenant before creating a protected site.";
+  let action = null;
+
+  if (selectedTenantId && !domain) {
+    title = "Register the protected site";
+    detail = "Enter the public domain, origin URL, and health path, then start onboarding.";
+  } else if (domain && !verifiedDomainStatuses.has(domain.status)) {
+    title = "Verify domain ownership";
+    detail = "Publish the ownership TXT record shown below in the domain DNS zone, then run the verification.";
+    action = { label: "Check DNS", icon: RefreshCw, run: () => verifyDomainDns(domain.domain_id, token, setStatus, onCreated) };
+  } else if (domain && (!origin || origin.status !== "healthy")) {
+    title = "Confirm the primary origin";
+    detail = "Ensure the origin is publicly reachable on its configured health path, then run a health check.";
+    action = origin ? { label: "Check origin", icon: Activity, run: () => originHealthCheck(origin.origin_id, token, setStatus, onCreated) } : { label: "Open origins", icon: Layers3, run: () => onNavigate("origins") };
+  } else if (domain && certificate?.status !== "ISSUED") {
+    const hasValidationRecord = Boolean(certificate?.validation_records?.length);
+    const hasCertificateRequest = Boolean(certificate?.certificate_arn);
+    title = "Validate the TLS certificate";
+    detail = !hasCertificateRequest
+      ? "Domain ownership is verified, but no ACM certificate request is registered yet. Retry the request to obtain the validation CNAME."
+      : hasValidationRecord
+      ? "Create the ACM validation CNAME shown below. Keep it in DNS while the certificate is in use, then refresh the certificate status."
+      : "AWS is preparing the ACM validation CNAME. Refresh the certificate status to retrieve the record, then publish it in the domain DNS zone.";
+    action = hasCertificateRequest
+      ? { label: "Refresh certificate", icon: RefreshCw, run: () => refreshCertificate(certificate.certificate_id, token, setStatus, onCreated) }
+      : { label: "Retry certificate request", icon: RefreshCw, run: () => verifyDomainDns(domain.domain_id, token, setStatus, onCreated) };
+  } else if (domain && !deployment) {
+    title = "Request the edge deployment";
+    detail = "The origin and certificate are ready. Request the protected CloudFront edge; the request will enter the approval workflow before provisioning.";
+    action = { label: "Request edge", icon: Plus, run: () => edgeAction(`/api/domains/${domain.domain_id}/edge-deployment-request`, "POST", token, setStatus, onCreated, "Edge deployment requested.") };
+  } else if (deployment?.status === "pending_approval") {
+    title = "Approve the edge deployment";
+    detail = "A second authorized operator must approve this change before the edge can be provisioned.";
+  } else if (deployment?.status === "approved") {
+    title = "Provision the edge";
+    detail = "The deployment has been approved. Provisioning creates the protected edge and its baseline security controls.";
+    action = { label: "Provision edge", icon: Activity, run: () => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/provision`, "POST", token, setStatus, onCreated, "Edge provisioning started.") };
+  } else if (deployment?.status === "provisioning") {
+    title = "Check edge provisioning";
+    detail = "AWS is creating the protected edge. Refresh the deployment status before changing traffic DNS.";
+    action = { label: "Refresh edge", icon: RefreshCw, run: () => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onCreated, "Edge status refreshed.") };
+  } else if (deployment && !appliedWafChangeSet) {
+    title = "Apply the WAF policy";
+    if (!pendingWafChangeSet) {
+      detail = "Create and compile a tenant WAF policy, then return here to apply it to this protected edge before traffic cutover.";
+      action = { label: "Open policies", icon: Shield, run: () => onNavigate("policies") };
+    } else if (pendingWafChangeSet.status === "pending_approval") {
+      detail = "The WAF change set requires approval before it can be applied to this edge.";
+      action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "WAF change set approved.") };
+    } else if (pendingWafChangeSet.status === "approved") {
+      detail = "The WAF change set is approved and ready to be applied to this edge.";
+      action = { label: "Apply WAF", icon: Shield, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/apply`, "POST", token, setStatus, onCreated, "WAF change set applied.", { domain_id: domain.domain_id }) };
+    } else {
+      detail = "Complete the pending WAF change set before changing traffic DNS.";
+      action = { label: "Open policies", icon: Shield, run: () => onNavigate("policies") };
+    }
+  } else if (deployment && domain.status !== "active") {
+    title = "Switch traffic to FortressNet";
+    detail = "Replace the public CNAME for the protected hostname with the traffic target shown below, then verify the DNS cutover.";
+    action = { label: "Check traffic DNS", icon: RefreshCw, run: () => edgeAction(`/api/domains/${domain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onCreated, "Traffic DNS checked.") };
+  } else if (domain?.status === "active") {
+    title = "Protection is active";
+    detail = "The protected hostname is serving through FortressNet with the configured origin, certificate, edge, and WAF policy.";
+  }
+
+  const ActionIcon = action?.icon;
+  return (
+    <div className="onboarding-guidance">
+      <Activity size={19} />
+      <div><strong>Next action: {title}</strong><span>{detail}</span></div>
+      {action && <button className="primary compact" disabled={!token} onClick={action.run}>{ActionIcon && <ActionIcon size={15} />}{action.label}</button>}
     </div>
   );
 }
@@ -1780,13 +1899,15 @@ function DomainInstructions({ domain, certificate, deployment }) {
     return <EmptyState icon={Globe2} title="No onboarding started" body="Create a protected site to receive DNS ownership and CNAME instructions." />;
   }
 
+  const ownershipPending = !verifiedDomainStatuses.has(domain.status);
+
   return (
     <div className="instructions-grid">
-      <div>
+      {ownershipPending && <div>
         <strong>Ownership TXT</strong>
         <code>{domain.verification_name}</code>
         <code>{domain.verification_value}</code>
-      </div>
+      </div>}
       {certificate?.validation_records?.map((record) => (
         <div key={record.name}>
           <strong>ACM validation CNAME</strong>
@@ -1803,7 +1924,7 @@ function DomainInstructions({ domain, certificate, deployment }) {
       )}
       <div>
         <strong>Current step</strong>
-        <span className="health pending">{domain.onboarding_step || domain.status}</span>
+        <span className="health pending">{humanizeWorkflowStatus(domain.onboarding_step || domain.status)}</span>
         {domain.dns_last_checked_at && <small>Last DNS check: {new Date(domain.dns_last_checked_at).toLocaleString()}</small>}
         {domain.dns_last_error && <small className="danger-text">{domain.dns_last_error}</small>}
       </div>
@@ -2167,6 +2288,11 @@ function base64Url(bytes) {
 function filterByTenant(items, selectedTenantId) {
   if (!selectedTenantId) return items;
   return items.filter((item) => item.tenant_id === selectedTenantId);
+}
+
+function humanizeWorkflowStatus(status, fallback = "Pending") {
+  if (!status) return fallback;
+  return workflowStatusLabels[status] || String(status).replaceAll("_", " ");
 }
 
 function sum(items, key) {

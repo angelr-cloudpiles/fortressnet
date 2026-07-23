@@ -1307,6 +1307,41 @@ a {
   grid-template-columns: 1fr;
 }
 
+.onboarding-guidance {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 16px 0;
+  padding: 13px 14px;
+  color: #9a5410;
+  background: #fff8ed;
+  border: 1px solid #f1bd78;
+  border-radius: 6px;
+}
+
+.onboarding-guidance > svg {
+  color: #d97706;
+}
+
+.onboarding-guidance strong,
+.onboarding-guidance span {
+  display: block;
+}
+
+.onboarding-guidance strong {
+  color: #8a4b08;
+  font-size: 13px;
+}
+
+.onboarding-guidance span {
+  margin-top: 4px;
+  color: #7a5a32;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
 .setup-steps div {
   min-height: 96px;
   padding: 14px;
@@ -1942,6 +1977,15 @@ code {
   .setup-steps,
   .policy-editor {
     grid-template-columns: 1fr;
+  }
+
+  .onboarding-guidance {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .onboarding-guidance button {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .modal-backdrop {
