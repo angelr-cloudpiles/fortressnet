@@ -1367,6 +1367,45 @@ a {
   border-radius: 6px;
 }
 
+.workflow-assistant {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 13px 14px;
+  color: #1f4d7a;
+  background: #f3f8fe;
+  border: 1px solid #b9d5f3;
+  border-radius: 6px;
+}
+
+.workflow-assistant > svg {
+  color: #1769aa;
+}
+
+.workflow-assistant strong,
+.workflow-assistant span {
+  display: block;
+}
+
+.workflow-assistant strong {
+  color: #174a78;
+  font-size: 13px;
+}
+
+.workflow-assistant span {
+  margin-top: 4px;
+  color: #42627f;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.workflow-assistant .secondary {
+  white-space: nowrap;
+}
+
 .onboarding-guidance > svg {
   color: #d97706;
 }
@@ -2085,6 +2124,15 @@ code {
 
   .onboarding-guidance {
     grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .workflow-assistant {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .workflow-assistant button {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .onboarding-guidance button {

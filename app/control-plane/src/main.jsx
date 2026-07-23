@@ -291,6 +291,13 @@ function App() {
         <section className="content">
           <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} onCreateTenant={openTenantCreate} />
           {status.message && <StatusBanner status={status} />}
+          {active !== "onboarding" && <WorkflowAssistant
+            active={active}
+            state={state}
+            selectedTenantId={selectedTenantId}
+            onNavigate={setActive}
+            onCreateTenant={openTenantCreate}
+          />}
           {active === "overview" && (
             <Overview
               range={range}
@@ -430,7 +437,7 @@ function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId
         <span>FortressNet</span>
       </div>
       <div className="tenant-label">Tenant</div>
-      <button className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
+      <button id="tenant-switcher" className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
         <Users size={16} />
         <span>{selectedTenant?.name || "No tenant selected"}</span>
         <ChevronDown size={15} />
@@ -553,6 +560,108 @@ function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant })
   );
 }
 
+function focusGuidedTarget(targetId) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  window.setTimeout(() => target.focus?.({ preventScroll: true }), 220);
+}
+
+function activateGuidedTarget(targetId) {
+  focusGuidedTarget(targetId);
+  window.setTimeout(() => document.getElementById(targetId)?.click(), 250);
+}
+
+function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCreateTenant }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const origins = filterByTenant(state.origins, selectedTenantId);
+  const policies = filterByTenant(state.policies, selectedTenantId);
+  const apiKeys = filterByTenant(state.api_keys, selectedTenantId);
+  const idpConnections = filterByTenant(state.idp_connections, selectedTenantId);
+  const ztnaApplications = filterByTenant(state.ztna_applications, selectedTenantId);
+  const dnsZones = filterByTenant(state.dns_zones, selectedTenantId);
+  const verifiedDomain = domains.find((domain) => verifiedDomainStatuses.has(domain.status));
+  const incompleteDomain = domains.find((domain) => domain.status !== "active");
+  const activeIdp = idpConnections.find((connection) => connection.status === "active");
+  const requiresTenant = !["overview", "profile", "settings"].includes(active);
+  let guidance = null;
+
+  if (requiresTenant && !selectedTenantId) {
+    guidance = {
+      title: "Select a tenant context",
+      detail: state.tenants.length
+        ? "Use the tenant selector in the sidebar before changing a tenant resource. FortressNet keeps configuration and data isolated per tenant."
+        : "Register the customer first. Tenant identity, contacts and commercial scope are required before any protected resource can be created.",
+      action: state.tenants.length ? { label: "Open overview", run: () => onNavigate("overview") } : { label: "Create tenant", run: onCreateTenant }
+    };
+  } else {
+    const byScreen = {
+      overview: !state.tenants.length
+        ? { title: "Register your first tenant", detail: "Start with the customer organization, operational contacts and expected service scope. The registration assistant saves only the submitted tenant data.", action: { label: "Create tenant", run: onCreateTenant } }
+        : !selectedTenantId
+        ? { title: "Choose a tenant context", detail: "Select the customer in the tenant switcher before reviewing its domains, security posture or billing data.", action: { label: "Select tenant", run: () => activateGuidedTarget("tenant-switcher") } }
+        : !domains.length
+        ? { title: "Protect the first site", detail: "The selected tenant is ready. Add its public domain, origin URL and health path to begin the guided go-live process.", action: { label: "Start onboarding", run: () => onNavigate("onboarding") } }
+        : incompleteDomain
+        ? { title: "Continue the protected-site rollout", detail: `${incompleteDomain.domain_name} still has a go-live step pending. The onboarding assistant shows the exact record or approval required.`, action: { label: "Continue onboarding", run: () => onNavigate("onboarding") } }
+        : { title: "Review live protection", detail: "All selected domains are active. Review operational events and reports before making policy changes.", action: { label: "Open security events", run: () => onNavigate("events") } },
+      domains: !domains.length
+        ? { title: "Add a protected domain", detail: "Enter the public hostname, origin URL and health path. FortressNet will generate the ownership verification record after you submit the form.", action: { label: "Open guided onboarding", run: () => onNavigate("onboarding") } }
+        : incompleteDomain
+        ? { title: "Finish domain go-live", detail: `${incompleteDomain.domain_name} is not active yet. Continue in onboarding to see the current DNS, certificate, edge or traffic step.`, action: { label: "Continue onboarding", run: () => onNavigate("onboarding") } }
+        : { title: "Manage an active domain", detail: "The protected domain is live. Use DNS & TLS to review its DNS posture before changing routing or security policy.", action: { label: "Review DNS posture", run: () => onNavigate("dns") } },
+      dns: !verifiedDomain
+        ? { title: "Verify ownership before DNS management", detail: "DNS posture and managed-zone workflows are enabled only after the protected domain ownership record has been verified.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        : !dnsZones.length
+        ? { title: "Choose the DNS operating model", detail: "For each verified domain, choose Guided for external DNS instructions or Delegate Route 53 when FortressNet will manage the hosted zone. Neither option changes DNS until you confirm its workflow.", action: { label: "View DNS choices", run: () => focusGuidedTarget("dns-management") } }
+        : { title: "Check DNS and TLS posture", detail: "Run a posture check for the selected domain to review DNSSEC, CAA and possible origin exposure using observed DNS data.", action: { label: "Open posture checks", run: () => focusGuidedTarget("dns-management") } },
+      dmarc: !verifiedDomain
+        ? { title: "Verify a domain before email protection", detail: "DMARC records are generated only for domains whose ownership has been verified in the tenant context.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        : { title: "Start in monitor mode", detail: "Generate a DMARC policy with p=none first, publish the resulting TXT record, then review aggregate reports before moving to quarantine or reject.", action: { label: "Configure DMARC", run: () => focusGuidedTarget("dmarc-policy") } },
+      origins: !domains.length
+        ? { title: "Register the protected site first", detail: "Origins are linked to an existing tenant domain so their health checks and failover settings cannot cross tenant boundaries.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        : !origins.length
+        ? { title: "Add a backup origin", detail: "The initial origin is created with domain onboarding. Add an additional healthy origin only when you need a separately managed failover target.", action: { label: "Add origin", run: () => focusGuidedTarget("origin-url") } }
+        : { title: "Validate origin resilience", detail: "Review the health of each registered origin, then create a pool only when the failover order and targets are ready to be operated.", action: { label: "Review origin health", run: () => focusGuidedTarget("origins-inventory") } },
+      policies: !policies.length
+        ? { title: "Create a monitor-first policy", detail: "Define the policy scope and rate limits in monitor mode. Compilation and approval remain separate controls before any edge enforcement is applied.", action: { label: "Create policy", run: () => focusGuidedTarget("policy-name") } }
+        : { title: "Compile and review policy changes", detail: "A saved policy is not active at the edge until its change set is compiled, reviewed and applied through the approval workflow.", action: { label: "Review change sets", run: () => focusGuidedTarget("waf-change-sets") } },
+      "api-shield": { title: "Discover before enforcing", detail: "Discover real API paths from WAF events or import an OpenAPI document. Schema enforcement always starts with observation and requires a later review.", action: { label: "Import OpenAPI schema", run: () => focusGuidedTarget("api-schema-name") } },
+      access: { title: "Grant the minimum access needed", detail: "Invite a user with a tenant role first. Assign granular scopes deliberately and require MFA for privileged operational access.", action: { label: "Invite user", run: () => focusGuidedTarget("user-email") } },
+      idp: !idpConnections.length
+        ? { title: "Connect the customer identity provider", detail: "Choose OIDC or SAML, provide the provider metadata and save the connection in the selected tenant. Credentials remain tenant-scoped.", action: { label: "Add IdP", run: () => focusGuidedTarget("idp-name") } }
+        : { title: "Use the IdP for Zero Trust", detail: "The tenant has an identity-provider connection. Confirm its status and then use it when registering private applications.", action: { label: "Open Zero Trust", run: () => onNavigate("ztna") } },
+      ztna: !activeIdp
+        ? { title: "Activate an external IdP first", detail: "Private access needs an active tenant identity provider so authentication and device posture decisions are tied to a verified identity source.", action: { label: "Configure IdP", run: () => onNavigate("idp") } }
+        : !ztnaApplications.length
+        ? { title: "Register the first private application", detail: "Provide the private hostname and protocol, select the active IdP, then decide whether device posture is required before registering the access endpoint.", action: { label: "Register application", run: () => focusGuidedTarget("ztna-name") } }
+        : { title: "Review private access posture", detail: "Confirm every private application has the intended identity source and device posture requirement before it is made available to users.", action: { label: "Review applications", run: () => focusGuidedTarget("ztna-applications") } },
+      "api-keys": !apiKeys.length
+        ? { title: "Create a least-privilege API key", detail: "Name the integration and select only the tenant scopes it needs. The secret is displayed once after creation, so store it in an approved secret manager.", action: { label: "Create API key", run: () => focusGuidedTarget("api-key-name") } }
+        : { title: "Review automation access", detail: "API keys are tenant-scoped. Confirm their scopes and last-used time regularly, and rotate integrations that no longer need access.", action: { label: "Review API keys", run: () => focusGuidedTarget("api-keys-inventory") } },
+      events: { title: "Review observed security activity", detail: "Refresh the event stream to inspect real tenant WAF activity. Events are read-only here; policy changes stay in the approved policy workflow.", action: { label: "Refresh events", run: () => activateGuidedTarget("events-refresh") } },
+      ai: { title: "Analyze without automatic enforcement", detail: "The AI analyst reads real tenant WAF events and returns recommendations. It never changes traffic behavior or applies a policy without the normal review flow.", action: { label: "Run analysis", run: () => activateGuidedTarget("ai-analyze") } },
+      reports: { title: "Generate a current security view", detail: "Refresh this report after the edge has collected events. Empty results mean no observed data is available, not that synthetic activity was generated.", action: { label: "Refresh report", run: () => activateGuidedTarget("reports-refresh") } },
+      billing: { title: "Confirm tenant limits and usage", detail: "Review the selected tenant's observed usage and entitlement before changing plan limits. Marketplace metering is enabled only after AWS fulfillment identifies the customer.", action: { label: "Review billing", run: () => focusGuidedTarget("billing-plan") } },
+      profile: { title: "Secure your operator profile", detail: "Set your timezone and notification preferences, then enable the FortressNet authenticator when signed in through Cognito.", action: { label: "Edit profile", run: () => focusGuidedTarget("profile-name") } },
+      settings: { title: "Review the platform security baseline", detail: "This screen reports platform controls. Tenant security configuration remains in the tenant-scoped modules to preserve isolation and auditability.", action: { label: "Review platform security", run: () => focusGuidedTarget("platform-security") } }
+    };
+    guidance = byScreen[active] || null;
+  }
+
+  if (!guidance) return null;
+  return (
+    <aside className="workflow-assistant" aria-label="Guided next step">
+      <Sparkles size={19} />
+      <div>
+        <strong>Next step: {guidance.title}</strong>
+        <span>{guidance.detail}</span>
+      </div>
+      {guidance.action && <button className="secondary compact" type="button" onClick={guidance.action.run}>{guidance.action.label}<ChevronRight size={15} /></button>}
+    </aside>
+  );
+}
+
 function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
   const metrics = buildMetrics(state);
 
@@ -614,9 +723,9 @@ function SparkLine({ color = "blue" }) {
   );
 }
 
-function Panel({ title, count, action, className = "", children }) {
+function Panel({ id, title, count, action, className = "", children }) {
   return (
-    <section className={`panel ${className}`}>
+    <section id={id} className={`panel ${className}`} tabIndex={id ? -1 : undefined}>
       <div className="panel-header">
         <h2>{title} {count !== undefined && <span className="count">{count}</span>}</h2>
         {action}
@@ -896,7 +1005,7 @@ function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
   };
   return (
     <div className="screen">
-      <Panel title="DNS Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="dns-management" title="DNS Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         {domains.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Mode</th><th>DNSSEC</th><th>Action</th></tr></thead><tbody>{domains.map((domain) => {
           const zone = zones.find((item) => item.domain_id === domain.domain_id);
           return <tr key={domain.domain_id}><td>{domain.domain_name}</td><td>{zone?.mode || "External DNS"}</td><td>{zone?.dnssec_status || "Check posture"}</td><td><span className="button-pair">{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "external_guided")}>Guided</button>}{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "route53_delegated")}>Delegate Route 53</button>}<button className="secondary compact" disabled={!token} onClick={() => checkPosture(domain.domain_id)}>Posture</button></span></td></tr>;
@@ -916,7 +1025,7 @@ function DmarcScreen({ token, state, selectedTenantId, setSelectedTenantId, setS
   const [policy, setPolicy] = useState("none");
   const [alignment, setAlignment] = useState("r");
   const [percentage, setPercentage] = useState("100");
-  const domains = filterByTenant(state.domains, selectedTenantId).filter((domain) => ["verified", "certificate_pending", "edge_ready", "active"].includes(domain.status));
+  const domains = filterByTenant(state.domains, selectedTenantId).filter((domain) => verifiedDomainStatuses.has(domain.status));
   const load = async () => {
     if (!token) return;
     const query = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
@@ -1053,7 +1162,7 @@ function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   return (
     <div className="screen">
       <div className="two-column">
-        <Panel title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <Panel id="origins-inventory" title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
         <Panel title="Add Origin">
@@ -1102,7 +1211,7 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
           <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
       </div>
-      <Panel title="WAF Change Sets">
+      <Panel id="waf-change-sets" title="WAF Change Sets">
         <WafChangeSetTable changeSets={changeSets} domains={filterByTenant(state.domains, selectedTenantId)} token={token} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
@@ -1202,7 +1311,7 @@ function ZtnaScreen({ token, state, selectedTenantId, setSelectedTenantId, onCre
 
   return (
     <div className="screen">
-      <Panel title="Private Applications" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="ztna-applications" title="Private Applications" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         {applications.length ? <table className="data-table"><thead><tr><th>Application</th><th>Protocol</th><th>Private target</th><th>Identity</th><th>Posture</th><th>Status</th></tr></thead><tbody>{applications.map((application) => <tr key={application.application_id}><td>{application.name}</td><td>{application.protocol.toUpperCase()}</td><td>{application.private_hostname}</td><td>{application.idp_connection_id ? "External IdP" : "Pending"}</td><td>{application.device_posture_required ? "Required" : "Optional"}</td><td><span className="health pending">{application.status}</span></td></tr>)}</tbody></table> : <EmptyState icon={LockKeyhole} title="No private applications" body="Register an application before creating its access endpoint." />}
       </Panel>
       <Panel title="Register Private Application">
@@ -1230,7 +1339,7 @@ function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTe
 
   return (
     <div className="screen split-detail">
-      <Panel title="API Keys" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="api-keys-inventory" title="API Keys" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         {newKey && (
           <div className="secret-once">
             <strong>Copy this key now. It will not be shown again.</strong>
@@ -1268,7 +1377,7 @@ function EventsScreen({ token, selectedTenantId, setStatus }) {
   const load = () => loadOperationalData(`/api/events${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "events", setEvents, setStatus);
   return (
     <div className="screen">
-      <Panel title="Security Event Stream" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+      <Panel id="security-events" title="Security Event Stream" action={<button id="events-refresh" className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
         {events.length ? <SecurityEventTable events={events} /> : <EmptyTable columns={["Time", "Rule", "Method", "Path", "Country", "Action"]} message="No security events have been collected from tenant WAF logs." />}
       </Panel>
     </div>
@@ -1288,7 +1397,7 @@ function AiScreen({ token, selectedTenantId, setStatus }) {
   };
   return (
     <div className="screen ai-screen">
-      <Panel title="AI Security Analyst" action={<button className="secondary compact" disabled={!token || !selectedTenantId} onClick={analyze}><Sparkles size={15} /> Analyze</button>}>
+      <Panel id="ai-analysis" title="AI Security Analyst" action={<button id="ai-analyze" className="secondary compact" disabled={!token || !selectedTenantId} onClick={analyze}><Sparkles size={15} /> Analyze</button>}>
         {findings.length ? <table className="data-table"><thead><tr><th>Severity</th><th>Finding</th><th>Evidence</th><th>Recommendation</th></tr></thead><tbody>{findings.map((finding) => <tr key={finding.finding_id}><td><span className="health pending">{finding.severity}</span></td><td>{finding.summary}</td><td>{finding.evidence_count}</td><td>{finding.recommendation}</td></tr>)}</tbody></table> : <EmptyState icon={Sparkles} title="AI Analyst is ready" body="Findings appear only after analysis of real tenant WAF events." />}
       </Panel>
       <Panel title="Recommended Change Request">
@@ -1303,7 +1412,7 @@ function ReportsScreen({ token, selectedTenantId, setStatus }) {
   const load = () => loadOperationalData(`/api/reports${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "reports", setReports, setStatus);
   return (
     <div className="screen">
-      <Panel title="Security Report" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+      <Panel id="security-report" title="Security Report" action={<button id="reports-refresh" className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
         <div className="report-grid">
           {(reports.length ? reports : [{ report_id: "empty", source: "Waiting for tenant WAF logs", total_events: 0, blocked_events: 0, allowed_events: 0 }]).map((report) => (
             <div className="report-card" key={report.report_id}><BarChart3 size={32} /><p>{report.source}</p><strong>{report.total_events} events</strong><small>{report.blocked_events} blocked · {report.allowed_events} allowed</small></div>
@@ -1354,7 +1463,7 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
 
   return (
     <div className="screen billing-grid">
-      <Panel title="Current Plan" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="billing-plan" title="Current Plan" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         <div className="plan-box">
           {summary ? <><span>{summary.entitlement.plan_label} · {summary.entitlement.billing_status}</span><strong>{summary.entitlement.source}</strong><p>Limits are enforced by the control plane. Marketplace metering is enabled only after product fulfillment identifies the customer.</p></> : <><span>No tenant selected</span><p>Select a tenant to view its real entitlement and observed usage.</p></>}
         </div>
@@ -1380,7 +1489,7 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
 function SettingsScreen({ platform, token, authMode }) {
   return (
     <div className="screen settings-grid">
-      <Panel title="Platform Security">
+      <Panel id="platform-security" title="Platform Security">
         <div className="settings-list">
           <div><KeyRound size={18} /><span>KMS key</span><strong>Provisioned</strong></div>
           <div><LockKeyhole size={18} /><span>Authentication</span><strong>Session required</strong></div>
