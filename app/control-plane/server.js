@@ -3102,18 +3102,8 @@ async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
   const name = `fn-csp-${deployment.deployment_id}`.slice(0, 128);
   const existing = await findResponseHeadersPolicy(name);
   if (existing?.Id) return existing.Id;
-  const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
   const response = await cloudfront.send(new CreateResponseHeadersPolicyCommand({
-    ResponseHeadersPolicyConfig: {
-      Name: name,
-      Comment: `FortressNet report-only client security telemetry for ${domain.domain_name}`,
-      SecurityHeadersConfig: {
-        ContentSecurityPolicy: {
-          ContentSecurityPolicy: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri ${reportUri}`,
-          Override: false
-        }
-      }
-    }
+    ResponseHeadersPolicyConfig: clientSecurityResponseHeadersPolicyConfig(name, domain.domain_name, token)
   })).catch((error) => {
     if (error?.name === "ResponseHeadersPolicyAlreadyExists") return null;
     throw error;
@@ -3126,6 +3116,24 @@ async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
   const policyId = response.ResponseHeadersPolicy?.Id;
   if (!policyId) throw httpError(502, "client_security_policy_create_failed");
   return policyId;
+}
+
+function clientSecurityResponseHeadersPolicyConfig(name, domainName, token) {
+  const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
+  return {
+    Name: name,
+    Comment: `FortressNet report-only client security telemetry for ${domainName}`,
+    // CloudFront only models an enforcing CSP as a security header. Use an
+    // explicit Report-Only header so unknown customer apps remain functional.
+    CustomHeadersConfig: {
+      Quantity: 1,
+      Items: [{
+        Header: "Content-Security-Policy-Report-Only",
+        Value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri ${reportUri}`,
+        Override: true
+      }]
+    }
+  };
 }
 
 async function findResponseHeadersPolicy(name) {
@@ -4353,4 +4361,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

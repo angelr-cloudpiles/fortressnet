@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cloudFrontDistributionConfig, normalizeOriginUrl } from "../server.js";
+import { clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, normalizeOriginUrl } from "../server.js";
 
 const deployment = {
   deployment_id: "edge_test",
@@ -39,4 +39,15 @@ test("keeps a single-origin pool direct", () => {
 test("rejects origin URLs with invalid TCP ports", () => {
   assert.equal(normalizeOriginUrl("https://origin.example.com:0"), null);
   assert.equal(normalizeOriginUrl("https://origin.example.com:8443").port, "8443");
+});
+
+test("creates client-side CSP telemetry in report-only mode", () => {
+  const policy = clientSecurityResponseHeadersPolicyConfig("fn-csp-test", "www.example.com", "client-token");
+
+  assert.equal(policy.SecurityHeadersConfig, undefined);
+  assert.deepEqual(policy.CustomHeadersConfig.Items, [{
+    Header: "Content-Security-Policy-Report-Only",
+    Value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri https://app.fortressnet.app/api/client-security/reports/client-token",
+    Override: true
+  }]);
 });
