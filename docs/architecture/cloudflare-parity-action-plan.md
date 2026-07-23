@@ -135,7 +135,7 @@ Criterios de aceptacion:
 - El modo `monitor` registra eventos sin bloquear.
 - El modo `block` se puede activar solo con confirmacion.
 
-Estado implementado: los change sets se compilan, requieren aprobacion separada, se aplican contra un dominio seleccionado de forma explicita y conservan reglas previas para rollback. El rate limit se configura por IP en ventanas de cinco minutos y puede acotarse por prefijo de path, uno o mas metodos HTTP y los paises soportados en la consola; el compilador lo traduce a `ScopeDownStatement` de AWS WAF. Los tipos compilados en esta fase son managed rule groups y rate-based rules; ASN, headers, allow/block lists, custom rules y despliegue gradual siguen pendientes.
+Estado implementado: los change sets se compilan, requieren aprobacion separada, se aplican contra un dominio seleccionado de forma explicita y conservan reglas previas para rollback. El rate limit se configura por IP en ventanas de cinco minutos y puede acotarse por prefijo de path, uno o mas metodos HTTP y los paises soportados en la consola; el compilador lo traduce a `ScopeDownStatement` de AWS WAF. La politica permite activar explicitamente los grupos gestionados de reputacion de IP y anonymous IP, bloquear ASN y valores exactos de una cabecera, y gestionar listas de CIDR IPv4/IPv6 permitidos o bloqueados. Al aplicar un change set las listas se materializan como IP sets de AWS WAF con tags de tenant; el rollback restaura las reglas previas y elimina esos IP sets. Estos controles quedan en `COUNT` durante monitor y solo bloquean despues de una observacion de 24 horas. Quedan pendientes el despliegue porcentual, excepciones por regla gestionada y reglas logicas arbitrarias.
 
 ### Epica 4. Security Events Reales
 
@@ -160,7 +160,7 @@ Criterios de aceptacion:
 - Los contadores salen de logs reales o muestran estado vacio.
 - Cada evento puede rastrearse hasta fuente y timestamp.
 
-Estado implementado: cada edge crea un log group WAF cifrado con KMS y retencion de 365 dias. La consola consulta esos logs, hashea la IP antes de responder y construye reportes reales bajo demanda. La ingesta S3/Athena para historial masivo sigue pendiente.
+Estado implementado: cada edge crea un log group WAF cifrado con KMS y retencion de 365 dias. La consola consulta esos logs, hashea la IP antes de responder y construye reportes reales bajo demanda. El security lake tiene ahora un catalogo Glue y workgroup Athena sobre los eventos inmutables de auditoria del control plane almacenados en S3, con partition projection por fecha y resultados aislados en el bucket de reportes. La ingesta S3/Athena de los logs WAF de alto volumen sigue como siguiente incremento: no se declara completada hasta migrar el destino de logging sin perder la vista actual de eventos.
 
 Actualizacion de operacion: existe una alarma CloudWatch sobre bloqueos WAF de la plataforma, enlazada al topic SNS existente. El analista read-only usa eventos WAF reales para generar hallazgos persistidos y recomendaciones revisables; no escribe reglas ni cambia enforcement.
 
@@ -440,6 +440,8 @@ Criterios de aceptacion:
 - Cada recomendacion incluye evidencia, impacto y rollback.
 
 ## Fase 8: SASE/ZTNA Continuidad
+
+Estado implementado: el control plane cuenta con un catalogo multitenant cifrado y con PITR para aplicaciones privadas. Una aplicacion ZTNA registra protocolo, hostname privado, IdP activo opcional y requisito de postura de dispositivo; nace en estado `design` y no puede exponer ni enrutar trafico. El siguiente paso de enforcement requiere que el tenant aporte una aplicacion privada y un IdP verificable: entonces se crea un endpoint de AWS Verified Access con una politica Cedar por aplicacion. No se aprovisiona Verified Access de forma preventiva porque tendria coste y una configuracion sin destino privado real no aporta seguridad.
 
 Objetivo: integrar edge web con acceso privado y seguridad de red.
 

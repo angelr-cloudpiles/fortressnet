@@ -1224,13 +1224,19 @@ code {
 }
 
 .policy-editor input,
-.policy-editor select {
+.policy-editor select,
+.policy-editor textarea {
   height: 38px;
   padding: 0 10px;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--ink);
+}
+
+.policy-editor textarea {
+  min-height: 86px;
+  resize: vertical;
 }
 
 .policy-editor select[multiple] {

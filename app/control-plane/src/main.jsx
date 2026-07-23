@@ -40,6 +40,7 @@ const navItems = [
   { id: "policies", label: "Policies", icon: Shield },
   { id: "access", label: "Access", icon: Users },
   { id: "idp", label: "External IdP", icon: Link2 },
+  { id: "ztna", label: "Zero Trust", icon: LockKeyhole },
   { id: "api-keys", label: "API Keys", icon: KeyRound },
   { id: "events", label: "Events", icon: ClipboardList },
   { id: "ai", label: "AI Analyst", icon: Sparkles, badge: "Beta" },
@@ -103,7 +104,8 @@ const emptyState = {
   approvals: [],
   dns_zones: [],
   dns_records: [],
-  ai_findings: []
+  ai_findings: [],
+  ztna_applications: []
 };
 
 function App() {
@@ -319,6 +321,7 @@ function App() {
               setStatus={setStatus}
             />
           )}
+          {active === "ztna" && <ZtnaScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
           {active === "api-keys" && (
             <ApiKeysScreen
               token={token}
@@ -786,6 +789,52 @@ function IdpScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
       </Panel>
       <Panel title="Add IdP Connection">
         <IdpCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+      </Panel>
+    </div>
+  );
+}
+
+function ZtnaScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+  const applications = filterByTenant(state.ztna_applications, selectedTenantId);
+  const connections = filterByTenant(state.idp_connections, selectedTenantId).filter((connection) => connection.status === "active");
+  const [name, setName] = useState("");
+  const [protocol, setProtocol] = useState("https");
+  const [privateHostname, setPrivateHostname] = useState("");
+  const [idpConnectionId, setIdpConnectionId] = useState("");
+  const [devicePostureRequired, setDevicePostureRequired] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/ztna/applications", token, {
+      tenant_id: selectedTenantId,
+      name,
+      protocol,
+      private_hostname: privateHostname,
+      idp_connection_id: idpConnectionId,
+      device_posture_required: devicePostureRequired
+    }, "Private application registered in design state.", setStatus, () => {
+      setName("");
+      setPrivateHostname("");
+      setIdpConnectionId("");
+      setDevicePostureRequired(false);
+      onCreated();
+    });
+  };
+
+  return (
+    <div className="screen">
+      <Panel title="Private Applications" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        {applications.length ? <table className="data-table"><thead><tr><th>Application</th><th>Protocol</th><th>Private target</th><th>Identity</th><th>Posture</th><th>Status</th></tr></thead><tbody>{applications.map((application) => <tr key={application.application_id}><td>{application.name}</td><td>{application.protocol.toUpperCase()}</td><td>{application.private_hostname}</td><td>{application.idp_connection_id ? "External IdP" : "Pending"}</td><td>{application.device_posture_required ? "Required" : "Optional"}</td><td><span className="health pending">{application.status}</span></td></tr>)}</tbody></table> : <EmptyState icon={LockKeyhole} title="No private applications" body="Register an application before creating its access endpoint." />}
+      </Panel>
+      <Panel title="Register Private Application">
+        {!state.tenants.length ? <EmptyState icon={Users} title="Create a tenant first" body="Private applications are isolated by tenant." /> : <form className="policy-editor" onSubmit={submit}>
+          <div><label htmlFor="ztna-name">Application name</label><input id="ztna-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Operations console" /></div>
+          <div><label htmlFor="ztna-protocol">Protocol</label><select id="ztna-protocol" value={protocol} onChange={(event) => setProtocol(event.target.value)}><option value="https">HTTPS</option><option value="ssh">SSH</option><option value="rdp">RDP</option><option value="tcp">TCP</option></select></div>
+          <div><label htmlFor="ztna-hostname">Private hostname or IP</label><input id="ztna-hostname" value={privateHostname} onChange={(event) => setPrivateHostname(event.target.value)} placeholder="admin.internal.example" /></div>
+          <div><label htmlFor="ztna-idp">External IdP</label><select id="ztna-idp" value={idpConnectionId} onChange={(event) => setIdpConnectionId(event.target.value)}><option value="">Configure later</option>{connections.map((connection) => <option key={connection.connection_id} value={connection.connection_id}>{connection.name}</option>)}</select></div>
+          <div className="policy-scope-picker"><label>Device posture</label><div className="scope-picker"><label><input type="checkbox" checked={devicePostureRequired} onChange={(event) => setDevicePostureRequired(event.target.checked)} /> Require a posture policy</label></div></div>
+          <button className="primary" disabled={!token || !selectedTenantId || !name || !privateHostname}><Plus size={16} /> Register application</button>
+        </form>}
       </Panel>
     </div>
   );
@@ -1384,6 +1433,12 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   const [rateLimitPath, setRateLimitPath] = useState("");
   const [rateLimitMethods, setRateLimitMethods] = useState([]);
   const [rateLimitCountries, setRateLimitCountries] = useState([]);
+  const [managedProtections, setManagedProtections] = useState([]);
+  const [blockedAsns, setBlockedAsns] = useState("");
+  const [blockedHeaderName, setBlockedHeaderName] = useState("");
+  const [blockedHeaderValues, setBlockedHeaderValues] = useState("");
+  const [allowedIpCidrs, setAllowedIpCidrs] = useState("");
+  const [blockedIpCidrs, setBlockedIpCidrs] = useState("");
 
   const toggleMethod = (method) => {
     setRateLimitMethods((current) => current.includes(method) ? current.filter((item) => item !== method) : [...current, method]);
@@ -1391,6 +1446,10 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
 
   const selectCountries = (event) => {
     setRateLimitCountries(Array.from(event.target.selectedOptions, (option) => option.value));
+  };
+
+  const toggleManagedProtection = (protection) => {
+    setManagedProtections((current) => current.includes(protection) ? current.filter((item) => item !== protection) : [...current, protection]);
   };
 
   const submit = async (event) => {
@@ -1403,13 +1462,25 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       rate_limit: Number(rateLimit),
       rate_limit_path: rateLimitPath,
       rate_limit_methods: rateLimitMethods,
-      rate_limit_countries: rateLimitCountries
+      rate_limit_countries: rateLimitCountries,
+      managed_protections: managedProtections,
+      blocked_asns: blockedAsns,
+      blocked_header_name: blockedHeaderName,
+      blocked_header_values: blockedHeaderValues,
+      allowed_ip_cidrs: allowedIpCidrs,
+      blocked_ip_cidrs: blockedIpCidrs
     }, "Policy draft created.", setStatus, () => {
       setName("");
       setRateLimit("2000");
       setRateLimitPath("");
       setRateLimitMethods([]);
       setRateLimitCountries([]);
+      setManagedProtections([]);
+      setBlockedAsns("");
+      setBlockedHeaderName("");
+      setBlockedHeaderValues("");
+      setAllowedIpCidrs("");
+      setBlockedIpCidrs("");
       onCreated();
     });
   };
@@ -1426,7 +1497,13 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       <div><label htmlFor="policy-rate-path">Path prefix</label><input id="policy-rate-path" value={rateLimitPath} onChange={(event) => setRateLimitPath(event.target.value)} placeholder="/login" /></div>
       <div className="policy-scope-picker"><label>HTTP methods</label><div className="scope-picker">{rateLimitMethodOptions.map((method) => <label key={method}><input type="checkbox" checked={rateLimitMethods.includes(method)} onChange={() => toggleMethod(method)} /> {method}</label>)}</div></div>
       <div><label htmlFor="policy-rate-countries">Countries</label><select id="policy-rate-countries" multiple value={rateLimitCountries} onChange={selectCountries}>{rateLimitCountryOptions.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></div>
-      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmethods: ${rateLimitMethods.length ? rateLimitMethods.join(", ") : "all methods"}\ncountries: ${rateLimitCountries.length ? rateLimitCountries.join(", ") : "all countries"}\napproval_required: true`}</pre>
+      <div className="policy-scope-picker"><label>Managed protections</label><div className="scope-picker"><label><input type="checkbox" checked={managedProtections.includes("ip_reputation")} onChange={() => toggleManagedProtection("ip_reputation")} /> IP reputation</label><label><input type="checkbox" checked={managedProtections.includes("anonymous_ip")} onChange={() => toggleManagedProtection("anonymous_ip")} /> Anonymous IP</label></div></div>
+      <div><label htmlFor="policy-blocked-asns">Blocked ASNs</label><input id="policy-blocked-asns" value={blockedAsns} onChange={(event) => setBlockedAsns(event.target.value)} placeholder="12345, 64496" /></div>
+      <div><label htmlFor="policy-blocked-header-name">Blocked request header</label><input id="policy-blocked-header-name" value={blockedHeaderName} onChange={(event) => setBlockedHeaderName(event.target.value)} placeholder="x-forwarded-host" /></div>
+      <div><label htmlFor="policy-blocked-header-values">Blocked header values</label><input id="policy-blocked-header-values" value={blockedHeaderValues} onChange={(event) => setBlockedHeaderValues(event.target.value)} placeholder="invalid.example, unknown.example" /></div>
+      <div><label htmlFor="policy-allowed-cidrs">Allowed source CIDRs</label><textarea id="policy-allowed-cidrs" value={allowedIpCidrs} onChange={(event) => setAllowedIpCidrs(event.target.value)} placeholder="203.0.113.0/24\n2001:db8::/32" /></div>
+      <div><label htmlFor="policy-blocked-cidrs">Blocked source CIDRs</label><textarea id="policy-blocked-cidrs" value={blockedIpCidrs} onChange={(event) => setBlockedIpCidrs(event.target.value)} placeholder="198.51.100.0/24" /></div>
+      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmanaged: ${managedProtections.length ? managedProtections.join(", ") : "baseline only"}\nASNs: ${blockedAsns || "none"}\nsource lists: ${allowedIpCidrs || blockedIpCidrs ? "configured" : "none"}\napproval_required: true`}</pre>
       <button className="primary" disabled={!token || !selectedTenantId || !name || Number(rateLimit) < 100 || Number(rateLimit) > 2000000}><Plus size={16} /> Create policy</button>
     </form>
   );

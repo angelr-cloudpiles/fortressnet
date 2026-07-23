@@ -184,6 +184,11 @@ variable "ai_findings_table_name" {
   type        = string
 }
 
+variable "ztna_applications_table_name" {
+  description = "Zero Trust private application catalog table name."
+  type        = string
+}
+
 variable "edge_logs_bucket_domain_name" {
   description = "S3 bucket domain name for tenant CloudFront access logs."
   type        = string

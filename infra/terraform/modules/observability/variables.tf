@@ -53,3 +53,13 @@ variable "platform_kms_key_arn" {
   description = "Platform KMS key ARN used to encrypt alert topics."
   type        = string
 }
+
+variable "audit_logs_bucket_name" {
+  description = "S3 bucket containing immutable control-plane audit events."
+  type        = string
+}
+
+variable "reports_bucket_name" {
+  description = "S3 bucket used for Athena query results and generated reports."
+  type        = string
+}

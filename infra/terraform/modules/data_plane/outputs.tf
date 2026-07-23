@@ -133,6 +133,11 @@ output "ai_findings_table_name" {
   value       = aws_dynamodb_table.ai_findings.name
 }
 
+output "ztna_applications_table_name" {
+  description = "Zero Trust private application catalog table name."
+  value       = aws_dynamodb_table.ztna_applications.name
+}
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket

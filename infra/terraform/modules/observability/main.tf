@@ -3,6 +3,95 @@ resource "aws_sns_topic" "alerts" {
   kms_master_key_id = var.platform_kms_key_arn
 }
 
+resource "aws_glue_catalog_database" "security_lake" {
+  name        = replace("${var.name}_security_lake", "-", "_")
+  description = "FortressNet immutable control-plane audit lake."
+}
+
+resource "aws_glue_catalog_table" "control_plane_audit_events" {
+  name          = "control_plane_audit_events"
+  database_name = aws_glue_catalog_database.security_lake.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    classification                 = "json"
+    "projection.enabled"          = "true"
+    "projection.year.type"        = "integer"
+    "projection.year.range"       = "2025,NOW"
+    "projection.month.type"       = "integer"
+    "projection.month.range"      = "1,12"
+    "projection.month.digits"     = "2"
+    "projection.day.type"         = "integer"
+    "projection.day.range"        = "1,31"
+    "projection.day.digits"       = "2"
+    "storage.location.template"   = "s3://${var.audit_logs_bucket_name}/control-plane/year=$${year}/month=$${month}/day=$${day}/"
+  }
+
+  partition_keys {
+    name = "year"
+    type = "string"
+  }
+
+  partition_keys {
+    name = "month"
+    type = "string"
+  }
+
+  partition_keys {
+    name = "day"
+    type = "string"
+  }
+
+  storage_descriptor {
+    location      = "s3://${var.audit_logs_bucket_name}/control-plane/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      name                  = "openx_json"
+      serialization_library = "org.openx.data.jsonserde.JsonSerDe"
+    }
+
+    columns {
+      name = "action"
+      type = "string"
+    }
+    columns {
+      name = "tenant_id"
+      type = "string"
+    }
+    columns {
+      name = "actor"
+      type = "string"
+    }
+    columns {
+      name = "payload"
+      type = "string"
+    }
+    columns {
+      name = "at"
+      type = "string"
+    }
+  }
+}
+
+resource "aws_athena_workgroup" "security_lake" {
+  name          = "${var.name}-security-lake"
+  force_destroy = false
+
+  configuration {
+    enforce_workgroup_configuration    = true
+    publish_cloudwatch_metrics_enabled = true
+
+    result_configuration {
+      output_location = "s3://${var.reports_bucket_name}/athena/"
+      encryption_configuration {
+        encryption_option = "SSE_S3"
+      }
+    }
+  }
+}
+
 resource "aws_sns_topic_subscription" "email" {
   count = var.alarm_email == "" ? 0 : 1
 

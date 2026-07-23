@@ -1038,6 +1038,41 @@ resource "aws_dynamodb_table" "ai_findings" {
   }
 }
 
+resource "aws_dynamodb_table" "ztna_applications" {
+  name         = "${var.name}-ztna-applications"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "application_id"
+
+  attribute {
+    name = "application_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 

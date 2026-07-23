@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -13,7 +14,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, GetDNSSECCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { CreateWebACLCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
+import { CreateIPSetCommand, CreateWebACLCommand, DeleteIPSetCommand, GetIPSetCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
 import { CognitoJwtVerifier } from "aws-jwt-verify";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,7 +57,8 @@ const tables = {
   approvals: process.env.APPROVALS_TABLE,
   dnsZones: process.env.DNS_ZONES_TABLE,
   dnsRecords: process.env.DNS_RECORDS_TABLE,
-  aiFindings: process.env.AI_FINDINGS_TABLE
+  aiFindings: process.env.AI_FINDINGS_TABLE,
+  ztnaApplications: process.env.ZTNA_APPLICATIONS_TABLE
 };
 
 const roleScopes = {
@@ -126,7 +128,7 @@ app.use("/api", requireManagementAccess);
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings] = await Promise.all([
+    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.domains),
       scanTable(tables.policies),
@@ -143,7 +145,8 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       scanTable(tables.approvals),
       scanTable(tables.dnsZones),
       scanTable(tables.dnsRecords),
-      scanTable(tables.aiFindings)
+      scanTable(tables.aiFindings),
+      scanTable(tables.ztnaApplications)
     ]);
 
     res.json({
@@ -163,7 +166,8 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       approvals: sortByDate(scopeItems(req.actor, approvals)),
       dns_zones: sortByDate(scopeItems(req.actor, dnsZones)),
       dns_records: sortByDate(scopeItems(req.actor, dnsRecords)),
-      ai_findings: sortByDate(scopeItems(req.actor, aiFindings))
+      ai_findings: sortByDate(scopeItems(req.actor, aiFindings)),
+      ztna_applications: sortByDate(scopeItems(req.actor, ztnaApplications))
     });
   } catch (error) {
     next(error);
@@ -899,6 +903,53 @@ app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async
   }
 });
 
+app.get("/api/ztna/applications", requireScope("identity:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const applications = tenantId ? await queryByTenant(tables.ztnaApplications, tenantId) : await scanTable(tables.ztnaApplications);
+    res.json({ applications: sortByDate(applications) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ztna/applications", requireScope("identity:write"), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
+    const name = clean(body.name);
+    const protocol = clean(body.protocol).toLowerCase();
+    const privateHostname = normalizePrivateApplicationHostname(body.private_hostname);
+    const idpConnectionId = clean(body.idp_connection_id);
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!name || name.length > 100) return res.status(400).json({ error: "ztna_application_name_invalid" });
+    if (!new Set(["https", "ssh", "rdp", "tcp"]).has(protocol)) return res.status(400).json({ error: "ztna_application_protocol_invalid" });
+    if (!privateHostname) return res.status(400).json({ error: "ztna_private_hostname_invalid" });
+    if (idpConnectionId) {
+      const connection = await getById(tables.idpConnections, { connection_id: idpConnectionId });
+      if (!connection || connection.tenant_id !== tenantId || connection.status !== "active") return res.status(409).json({ error: "active_tenant_idp_required" });
+    }
+    const now = new Date().toISOString();
+    const application = {
+      application_id: `ztna_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      name,
+      protocol,
+      private_hostname: privateHostname,
+      idp_connection_id: idpConnectionId || null,
+      device_posture_required: Boolean(body.device_posture_required),
+      status: "design",
+      created_at: now,
+      updated_at: now
+    };
+    await putUnique(tables.ztnaApplications, application, "application_id");
+    await audit("ztna.application_registered", tenantId, application, req.actor);
+    res.status(201).json({ application });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/ai/findings", requireScope("ai:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
@@ -958,6 +1009,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
     const mode = normalizeWafMode(body.mode);
     if (!mode) return res.status(400).json({ error: "supported_waf_mode_required" });
     const rateLimit = normalizeWafRateLimitConfig(body);
+    const advanced = normalizeWafAdvancedConfig(body);
 
     const now = new Date().toISOString();
     const policy = {
@@ -967,6 +1019,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
       scope: clean(body.scope) || "all_domains",
       mode,
       ...rateLimit,
+      ...advanced,
       approval_required: true,
       status: "draft",
       created_at: now,
@@ -1131,6 +1184,13 @@ app.post("/api/waf-change-sets/:changeSetId/rollback", requireScope("edge:write"
       ExpressionAttributeValues: { ":status": "rolled_back", ":rolled_back_at": now, ":updated_at": now },
       ReturnValues: "ALL_NEW"
     }));
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.edgeDeployments,
+      Key: { deployment_id: edgeDeployment.deployment_id },
+      UpdateExpression: "SET updated_at = :updated_at REMOVE waf_ip_sets",
+      ExpressionAttributeValues: { ":updated_at": now }
+    }));
+    await deleteWafIpSets(changeSet.waf_ip_sets || []);
     await audit("waf_change_set.rolled_back", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, domain_id: domainId }, req.actor);
     res.json({ waf_change_set: result.Attributes });
   } catch (error) {
@@ -2566,19 +2626,23 @@ function aiFinding(tenantId, day, code, severity, summary, recommendation, evide
 }
 
 async function applyWafChangeSet(changeSet, edgeDeployment) {
-  if ((changeSet.rules || []).some((rule) => rule.type === "custom_rule")) throw httpError(409, "unsupported_custom_waf_rule");
   const webAcl = await waf.send(new GetWebACLCommand({ Id: edgeDeployment.web_acl_id, Name: edgeDeployment.web_acl_name || tenantWebAclName(edgeDeployment.domain_id), Scope: "CLOUDFRONT" }));
   if (!webAcl.LockToken) throw httpError(502, "waf_web_acl_not_available");
-  const compiledRules = toAwsWafRules(changeSet.rules || [], edgeDeployment.domain_id);
-  await waf.send(new UpdateWebACLCommand({
-    Id: edgeDeployment.web_acl_id,
-    Name: webAcl.WebACL.Name,
-    Scope: "CLOUDFRONT",
-    LockToken: webAcl.LockToken,
-    DefaultAction: webAcl.WebACL.DefaultAction || { Allow: {} },
-    VisibilityConfig: webAcl.WebACL.VisibilityConfig || wafVisibilityConfig(`fn_${edgeDeployment.domain_id}`),
-    Rules: compiledRules
-  }));
+  const materialized = await materializeWafRules(changeSet, edgeDeployment);
+  try {
+    await waf.send(new UpdateWebACLCommand({
+      Id: edgeDeployment.web_acl_id,
+      Name: webAcl.WebACL.Name,
+      Scope: "CLOUDFRONT",
+      LockToken: webAcl.LockToken,
+      DefaultAction: webAcl.WebACL.DefaultAction || { Allow: {} },
+      VisibilityConfig: webAcl.WebACL.VisibilityConfig || wafVisibilityConfig(`fn_${edgeDeployment.domain_id}`),
+      Rules: toAwsWafRules(materialized.rules, edgeDeployment.domain_id)
+    }));
+  } catch (error) {
+    await deleteWafIpSets(materialized.ipSets);
+    throw error;
+  }
   const now = new Date().toISOString();
   const updated = {
     ...changeSet,
@@ -2586,10 +2650,18 @@ async function applyWafChangeSet(changeSet, edgeDeployment) {
     domain_id: edgeDeployment.domain_id,
     web_acl_id: edgeDeployment.web_acl_id,
     rollback_rules: webAcl.WebACL.Rules || [],
+    waf_ip_sets: materialized.ipSets,
     applied_at: now,
     updated_at: now
   };
   await dynamo.send(new PutCommand({ TableName: tables.wafChangeSets, Item: updated }));
+  await dynamo.send(new UpdateCommand({
+    TableName: tables.edgeDeployments,
+    Key: { deployment_id: edgeDeployment.deployment_id },
+    UpdateExpression: "SET waf_ip_sets = :ip_sets, updated_at = :updated_at",
+    ExpressionAttributeValues: { ":ip_sets": materialized.ipSets, ":updated_at": now }
+  }));
+  await deleteWafIpSets(edgeDeployment.waf_ip_sets || []);
   return updated;
 }
 
@@ -2635,8 +2707,88 @@ function toAwsWafRules(rules, domainId) {
         Statement: { RateBasedStatement: rateBasedStatement }
       };
     }
+    if (rule.type === "asn_match") {
+      return {
+        ...common,
+        Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: { AsnMatchStatement: { ASNs: rule.asns } }
+      };
+    }
+    if (rule.type === "header_match") {
+      const statements = rule.values.map((value) => ({
+        ByteMatchStatement: {
+          SearchString: Buffer.from(value, "utf8"),
+          FieldToMatch: { SingleHeader: { Name: rule.header_name } },
+          TextTransformations: [{ Priority: 0, Type: "NONE" }],
+          PositionalConstraint: "EXACTLY"
+        }
+      }));
+      return {
+        ...common,
+        Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: statements.length === 1 ? statements[0] : { OrStatement: { Statements: statements } }
+      };
+    }
+    if (rule.type === "ip_set_reference") {
+      return {
+        ...common,
+        Action: rule.action === "ALLOW" ? { Allow: {} } : rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: { IPSetReferenceStatement: { ARN: rule.arn } }
+      };
+    }
     throw httpError(409, "unsupported_waf_rule_type");
   });
+}
+
+async function materializeWafRules(changeSet, edgeDeployment) {
+  const ipSets = [];
+  const rules = [];
+  try {
+    for (const rule of changeSet.rules || []) {
+      if (rule.type !== "ip_list") {
+        rules.push(rule);
+        continue;
+      }
+      for (const [version, addresses] of Object.entries(groupIpAddressesByVersion(rule.addresses))) {
+        if (!addresses.length) continue;
+        const name = `fn-${edgeDeployment.domain_id.slice(-18)}-${changeSet.change_set_id.slice(-12)}-${rule.list_type}-${version.toLowerCase()}`.slice(0, 128);
+        const result = await waf.send(new CreateIPSetCommand({
+          Name: name,
+          Description: `FortressNet ${rule.list_type} list for ${edgeDeployment.domain_id}`,
+          Scope: "CLOUDFRONT",
+          IPAddressVersion: version,
+          Addresses: addresses,
+          Tags: [{ Key: "fortressnet:managed", Value: "true" }, { Key: "fortressnet:tenant-id", Value: changeSet.tenant_id }]
+        }));
+        const ipSet = result.Summary;
+        if (!ipSet?.ARN || !ipSet?.Id || !ipSet?.Name) throw httpError(502, "waf_ip_set_not_available");
+        const resource = { arn: ipSet.ARN, id: ipSet.Id, name: ipSet.Name, version, list_type: rule.list_type };
+        ipSets.push(resource);
+        rules.push({
+          name: `${rule.name}-${version}`,
+          type: "ip_set_reference",
+          arn: ipSet.ARN,
+          action: rule.action
+        });
+      }
+    }
+    return { rules, ipSets };
+  } catch (error) {
+    await deleteWafIpSets(ipSets);
+    throw error;
+  }
+}
+
+async function deleteWafIpSets(ipSets) {
+  await Promise.all((ipSets || []).map(async (ipSet) => {
+    if (!ipSet?.id || !ipSet?.name) return;
+    try {
+      const current = await waf.send(new GetIPSetCommand({ Id: ipSet.id, Name: ipSet.name, Scope: "CLOUDFRONT" }));
+      if (current.LockToken) await waf.send(new DeleteIPSetCommand({ Id: ipSet.id, Name: ipSet.name, Scope: "CLOUDFRONT", LockToken: current.LockToken }));
+    } catch (error) {
+      if (!["WAFNonexistentItemException", "WAFUnavailableEntityException"].includes(error?.name)) console.warn("waf_ip_set_delete_failed", ipSet.id, error?.message || error);
+    }
+  }));
 }
 
 function rateLimitScopeDownStatement(rule) {
@@ -2778,6 +2930,14 @@ function normalizeDomain(value) {
   return domain;
 }
 
+function normalizePrivateApplicationHostname(value) {
+  const hostname = clean(value).toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (!hostname || hostname.length > 253 || /[/?#@\s]/.test(hostname)) return "";
+  if (/^(?:localhost|.+\.local)$/i.test(hostname)) return hostname;
+  if (isIP(hostname)) return hostname;
+  return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]?$/.test(hostname) ? hostname : "";
+}
+
 function normalizeOriginUrl(value) {
   try {
     const url = new URL(clean(value));
@@ -2829,7 +2989,7 @@ function isPrivateIpv4(host) {
 
 function normalizeWafMode(value) {
   const mode = clean(value).toLowerCase() || "monitor";
-  return { managed_defaults: "monitor", count: "monitor", monitor: "monitor", block: "block", emergency_lockdown: "emergency_lockdown" }[mode] || "";
+  return { managed_defaults: "monitor", count: "monitor", monitor: "monitor", block: "block" }[mode] || "";
 }
 
 function normalizeWafRateLimitConfig(body) {
@@ -2860,6 +3020,56 @@ function normalizeWafRateLimitConfig(body) {
   };
 }
 
+function normalizeWafAdvancedConfig(body) {
+  const managedProtections = uniqueNormalizedValues(body.managed_protections, (value) => clean(value).toLowerCase());
+  const supportedProtections = new Set(["ip_reputation", "anonymous_ip"]);
+  if (managedProtections.some((value) => !supportedProtections.has(value))) throw httpError(400, "managed_protections_invalid");
+
+  const blockedAsns = uniqueNormalizedValues(body.blocked_asns, (value) => clean(value)).map(Number);
+  if (blockedAsns.length > 100 || blockedAsns.some((value) => !Number.isSafeInteger(value) || value < 1 || value > 4_294_967_295)) {
+    throw httpError(400, "blocked_asns_invalid");
+  }
+
+  const headerName = clean(body.blocked_header_name).toLowerCase();
+  const headerValues = uniqueNormalizedValues(body.blocked_header_values, (value) => clean(value));
+  if ((headerName || headerValues.length) && (!/^[!#$%&'*+.^_`|~0-9a-z-]{1,64}$/.test(headerName) || !headerValues.length || headerValues.length > 10 || headerValues.some((value) => value.length > 200 || /[^\x20-\x7e]/.test(value)))) {
+    throw httpError(400, "blocked_header_invalid");
+  }
+
+  const allowedIpCidrs = normalizeIpCidrs(body.allowed_ip_cidrs);
+  const blockedIpCidrs = normalizeIpCidrs(body.blocked_ip_cidrs);
+  return {
+    managed_protections: managedProtections,
+    blocked_asns: blockedAsns,
+    blocked_header_name: headerName,
+    blocked_header_values: headerValues,
+    allowed_ip_cidrs: allowedIpCidrs,
+    blocked_ip_cidrs: blockedIpCidrs
+  };
+}
+
+function normalizeIpCidrs(value) {
+  const addresses = Array.from(new Set(String(Array.isArray(value) ? value.join(",") : value || "").split(/[\s,]+/).map(clean).filter(Boolean)));
+  if (addresses.length > 1000 || addresses.some((address) => !isValidIpCidr(address))) throw httpError(400, "ip_cidr_list_invalid");
+  return addresses;
+}
+
+function isValidIpCidr(value) {
+  const [host, prefix, extra] = value.split("/");
+  if (!host || !prefix || extra) return false;
+  const version = host.includes(":") ? 6 : 4;
+  const maxPrefix = version === 6 ? 128 : 32;
+  const parsedPrefix = Number(prefix);
+  return Number.isSafeInteger(parsedPrefix) && parsedPrefix >= 0 && parsedPrefix <= maxPrefix && isIP(host) === version;
+}
+
+function groupIpAddressesByVersion(addresses) {
+  return {
+    IPV4: addresses.filter((address) => !address.split("/")[0].includes(":")),
+    IPV6: addresses.filter((address) => address.split("/")[0].includes(":"))
+  };
+}
+
 function uniqueNormalizedValues(value, normalize) {
   return Array.from(new Set(normalizeList(value).map(normalize).filter(Boolean)));
 }
@@ -2883,9 +3093,14 @@ async function requirePilotMonitorBaseline(changeSet, edgeDeployment) {
 }
 
 function compileWafRules(policy) {
-  const action = ["block", "emergency_lockdown"].includes(policy.mode) ? "BLOCK" : "COUNT";
+  const action = policy.mode === "block" ? "BLOCK" : "COUNT";
   const managedOverride = action === "BLOCK" ? "none" : "count";
-  const baseRules = [
+  const protections = new Set(Array.isArray(policy.managed_protections) ? policy.managed_protections : []);
+  const baseRules = [];
+  if (Array.isArray(policy.allowed_ip_cidrs) && policy.allowed_ip_cidrs.length) {
+    baseRules.push({ name: "FortressNetAllowedSources", type: "ip_list", list_type: "allow", addresses: policy.allowed_ip_cidrs, action: "ALLOW" });
+  }
+  baseRules.push(
     {
       name: "AWS-AWSManagedRulesCommonRuleSet",
       type: "managed_rule_group",
@@ -2918,15 +3133,31 @@ function compileWafRules(policy) {
       countries: Array.isArray(policy.rate_limit_countries) ? policy.rate_limit_countries : [],
       action
     }
-  ];
-
-  if (policy.mode === "emergency_lockdown") {
+  );
+  if (protections.has("ip_reputation")) {
     baseRules.push({
-      name: "FortressNetEmergencyLockdown",
-      type: "custom_rule",
-      expression: "allowlist_required",
-      action: "BLOCK"
+      name: "AWS-AWSManagedRulesAmazonIpReputationList",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesAmazonIpReputationList",
+      override_action: managedOverride
     });
+  }
+  if (protections.has("anonymous_ip")) {
+    baseRules.push({
+      name: "AWS-AWSManagedRulesAnonymousIpList",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesAnonymousIpList",
+      override_action: managedOverride
+    });
+  }
+  if (Array.isArray(policy.blocked_asns) && policy.blocked_asns.length) baseRules.push({ name: "FortressNetBlockedAsns", type: "asn_match", asns: policy.blocked_asns, action });
+  if (policy.blocked_header_name && Array.isArray(policy.blocked_header_values) && policy.blocked_header_values.length) {
+    baseRules.push({ name: "FortressNetBlockedHeader", type: "header_match", header_name: policy.blocked_header_name, values: policy.blocked_header_values, action });
+  }
+  if (Array.isArray(policy.blocked_ip_cidrs) && policy.blocked_ip_cidrs.length) {
+    baseRules.push({ name: "FortressNetBlockedSources", type: "ip_list", list_type: "block", addresses: policy.blocked_ip_cidrs, action });
   }
 
   return baseRules;
@@ -3009,4 +3240,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafRateLimitConfig, toAwsWafRules };
+export { cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules };

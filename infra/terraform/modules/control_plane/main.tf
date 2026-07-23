@@ -265,6 +265,7 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_zones_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ztna_applications_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.users_table_name}/index/*",
@@ -279,7 +280,8 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.approvals_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_zones_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}/index/*",
-          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}/index/*"
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ztna_applications_table_name}/index/*"
         ]
       },
       {
@@ -336,6 +338,9 @@ resource "aws_iam_role_policy" "task" {
         Effect = "Allow"
         Action = [
           "wafv2:CreateWebACL",
+          "wafv2:CreateIPSet",
+          "wafv2:DeleteIPSet",
+          "wafv2:GetIPSet",
           "wafv2:GetWebACL",
           "wafv2:ListWebACLs",
           "wafv2:UpdateWebACL",
@@ -527,6 +532,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "AI_FINDINGS_TABLE"
           value = var.ai_findings_table_name
+        },
+        {
+          name  = "ZTNA_APPLICATIONS_TABLE"
+          value = var.ztna_applications_table_name
         },
         {
           name  = "EDGE_LOGS_BUCKET_DOMAIN_NAME"

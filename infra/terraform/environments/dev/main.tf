@@ -109,6 +109,7 @@ module "control_plane" {
   dns_zones_table_name            = module.data_plane.dns_zones_table_name
   dns_records_table_name          = module.data_plane.dns_records_table_name
   ai_findings_table_name          = module.data_plane.ai_findings_table_name
+  ztna_applications_table_name    = module.data_plane.ztna_applications_table_name
   edge_logs_bucket_domain_name    = module.data_plane.edge_logs_bucket_domain_name
   cognito_user_pool_id            = module.identity.user_pool_id
   cognito_app_client_id           = module.identity.app_client_id
@@ -260,15 +261,17 @@ resource "aws_flow_log" "vpc" {
 module "observability" {
   source = "../../modules/observability"
 
-  name                 = local.name
-  alarm_email          = var.alarm_email
-  ecs_cluster_name     = module.control_plane.cluster_name
-  ecs_service_name     = module.control_plane.service_name
-  alb_arn_suffix       = module.control_plane.alb_arn_suffix
-  target_group_suffix  = module.control_plane.target_group_arn_suffix
-  cloudfront_id        = module.edge.cloudfront_distribution_id
-  waf_web_acl_name     = module.edge.waf_web_acl_name
-  waf_web_acl_scope    = "CloudFront"
-  dashboard_region     = var.aws_region
-  platform_kms_key_arn = module.data_plane.kms_key_arn
+  name                   = local.name
+  alarm_email            = var.alarm_email
+  ecs_cluster_name       = module.control_plane.cluster_name
+  ecs_service_name       = module.control_plane.service_name
+  alb_arn_suffix         = module.control_plane.alb_arn_suffix
+  target_group_suffix    = module.control_plane.target_group_arn_suffix
+  cloudfront_id          = module.edge.cloudfront_distribution_id
+  waf_web_acl_name       = module.edge.waf_web_acl_name
+  waf_web_acl_scope      = "CloudFront"
+  dashboard_region       = var.aws_region
+  platform_kms_key_arn   = module.data_plane.kms_key_arn
+  audit_logs_bucket_name = module.data_plane.audit_logs_bucket_name
+  reports_bucket_name    = module.data_plane.reports_bucket_name
 }
