@@ -26,6 +26,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 80);
 const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+// Preserve the viewer Host for virtual-hosted customer origins. The origin
+// hostname controls the network connection, while Host selects the site.
+const cloudFrontViewerHostOriginRequestPolicyId = "216adef6-5c7f-47e4-b989-5492eafa07d3";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
 const s3 = new S3Client({ region });
@@ -3075,7 +3078,7 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
       AllowedMethods: { Quantity: 7, Items: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"], CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } },
       Compress: true,
       CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
-      OriginRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+      OriginRequestPolicyId: cloudFrontViewerHostOriginRequestPolicyId,
       ResponseHeadersPolicyId: deployment.response_headers_policy_id || "67f7725c-6f97-4210-82d7-5512b31e9d03",
       TrustedSigners: { Enabled: false, Quantity: 0 },
       TrustedKeyGroups: { Enabled: false, Quantity: 0 }

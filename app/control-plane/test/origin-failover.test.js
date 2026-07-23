@@ -23,6 +23,7 @@ test("creates a CloudFront origin group for a validated failover pool", () => {
   assert.equal(config.Origins.Items[1].CustomOriginConfig.HTTPSPort, 8443);
   assert.equal(config.OriginGroups.Quantity, 1);
   assert.equal(config.DefaultCacheBehavior.TargetOriginId, "origin-group-dom_test");
+  assert.equal(config.DefaultCacheBehavior.OriginRequestPolicyId, "216adef6-5c7f-47e4-b989-5492eafa07d3");
   assert.deepEqual(config.OriginGroups.Items[0].FailoverCriteria.StatusCodes.Items, [500, 502, 503, 504]);
   assert.deepEqual(config.OriginGroups.Items[0].Members.Items, [{ OriginId: "origin-primary" }, { OriginId: "origin-secondary" }]);
 });
