@@ -1841,7 +1841,8 @@ app.get("/api/events", requireScope("events:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
-    res.json({ events: await collectSecurityEvents(deployments, Number(req.query.limit || 100)) });
+    const windowHours = Math.min(Math.max(Number(req.query.window_hours || 24), 1), 24 * 30);
+    res.json({ events: await collectSecurityEvents(deployments, Number(req.query.limit || 100), windowHours) });
   } catch (error) {
     next(error);
   }
@@ -3873,11 +3874,12 @@ function wafMethodStatement(method) {
   };
 }
 
-async function collectSecurityEvents(deployments, limit) {
+async function collectSecurityEvents(deployments, limit, windowHours = 24) {
+  const startTime = Date.now() - Math.min(Math.max(Number(windowHours) || 24, 1), 24 * 30) * 60 * 60 * 1000;
   const results = await Promise.all(deployments.filter((item) => item.log_group_name).map(async (deployment) => {
     const response = await cloudwatchLogs.send(new FilterLogEventsCommand({
       logGroupName: deployment.log_group_name,
-      startTime: Date.now() - 24 * 60 * 60 * 1000,
+      startTime,
       limit: Math.min(Math.max(limit, 1), 500)
     })).catch((error) => {
       if (["ResourceNotFoundException", "AccessDeniedException"].includes(error?.name)) return { events: [] };

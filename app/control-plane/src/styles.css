@@ -897,6 +897,18 @@ kbd {
   margin-top: 5px;
 }
 
+.metric-context-line {
+  height: 2px;
+  margin-top: 19px;
+  background: var(--line-soft);
+}
+
+.dashboard-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .empty-spark {
   opacity: .68;
 }
@@ -1020,6 +1032,33 @@ kbd {
 .line-chart text {
   fill: #667085;
   font-size: 12px;
+}
+
+.traffic-line {
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-loading,
+.overview-events-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 220px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chart-loading svg,
+.overview-events-loading svg {
+  animation: spin 1s linear infinite;
+}
+
+.overview-events-loading {
+  min-height: 160px;
 }
 
 .clean-baseline {
@@ -2603,6 +2642,18 @@ code {
 .event-detail dd code {
   max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .dashboard-panel-actions {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .dashboard-panel-actions .segmented {
+    max-width: 100%;
+    overflow-x: auto;
+  }
 }
 
 @media (max-width: 1180px) {

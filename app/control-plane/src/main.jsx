@@ -682,7 +682,33 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
 }
 
 function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
-  const metrics = buildMetrics(state);
+  const [events, setEvents] = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState("");
+  const rangeHours = overviewRangeHours(range);
+
+  const loadEvents = async () => {
+    if (!token) return;
+    setEventsLoading(true);
+    setEventsError("");
+    try {
+      const tenantQuery = selectedTenantId ? `tenant_id=${encodeURIComponent(selectedTenantId)}&` : "";
+      const data = await apiRequest(`/api/events?${tenantQuery}window_hours=${rangeHours}&limit=500`, token);
+      setEvents(Array.isArray(data.events) ? data.events : []);
+    } catch (error) {
+      setEvents([]);
+      setEventsError(error.message || "security_events_unavailable");
+    } finally {
+      setEventsLoading(false);
+    }
+  };
+
+  useEffect(() => { loadEvents(); }, [token, selectedTenantId, range]);
+
+  const visibleDomains = selectedTenantId ? filterByTenant(state.domains, selectedTenantId) : state.domains;
+  const trafficSeries = useMemo(() => buildTrafficSeries(events, rangeHours), [events, rangeHours]);
+  const metrics = useMemo(() => buildMetrics(state, events, trafficSeries, visibleDomains), [state, events, trafficSeries, visibleDomains]);
+  const eventStatsByDomain = useMemo(() => buildEventStatsByDomain(events), [events]);
 
   return (
     <div className="screen">
@@ -691,8 +717,8 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
         {metrics.map((metric) => <MetricCard key={metric.label} metric={metric} />)}
       </div>
       <div className="dashboard-grid">
-        <Panel className="traffic-panel" title="Edge Traffic" action={<Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} />}>
-          <EmptyChart />
+        <Panel className="traffic-panel" title="Edge Traffic" action={<div className="dashboard-panel-actions"><Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} /><button className="secondary compact" disabled={eventsLoading} onClick={loadEvents}><RefreshCw size={14} /> Refresh</button></div>}>
+          <TrafficChart events={events} series={trafficSeries} loading={eventsLoading} error={eventsError} range={range} />
         </Panel>
         <Panel title="Tenant Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
           <div className="tenant-registration-action"><button className="primary" disabled={!token} onClick={onCreateTenant}><Plus size={16} /> Register tenant</button></div>
@@ -703,10 +729,10 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
       </div>
       <div className="table-grid">
         <Panel title="Recent Security Events" action={<button className="link-button" onClick={() => onNavigate("events")}>View event stream <ChevronRight size={14} /></button>}>
-          <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
+          <OverviewEventsTable events={events.slice(0, 6)} domains={visibleDomains} loading={eventsLoading} error={eventsError} />
         </Panel>
         <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Manage domains <ChevronRight size={14} /></button>}>
-          <DomainTable domains={state.domains} />
+          <DomainTable domains={visibleDomains} eventStatsByDomain={eventStatsByDomain} />
         </Panel>
       </div>
       <Panel title="Onboarding">
@@ -729,15 +755,17 @@ function MetricCard({ metric }) {
       </div>
       <div className="metric-value">{metric.value}</div>
       <div className={`metric-delta ${metric.trend}`}>{metric.delta}</div>
-      <SparkLine color={metric.color} />
+      {metric.series ? <SparkLine color={metric.color} values={metric.series} /> : <div className="metric-context-line" />}
     </article>
   );
 }
 
-function SparkLine({ color = "blue" }) {
+function SparkLine({ color = "blue", values = [] }) {
+  const max = Math.max(...values, 1);
+  const points = values.map((value, index) => `${(index / Math.max(values.length - 1, 1)) * 150},${38 - (Math.max(0, value) / max) * 28}`).join(" ");
   return (
-    <svg className="spark empty-spark" viewBox="0 0 150 46" preserveAspectRatio="none">
-      <line x1="0" x2="150" y1="34" y2="34" className={`stroke-${color}`} strokeWidth="2" strokeDasharray="4 5" />
+    <svg className="spark" viewBox="0 0 150 46" preserveAspectRatio="none" aria-label="Observed request trend">
+      <polyline points={points} className={`stroke-${color}`} fill="none" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -764,21 +792,35 @@ function Segmented({ value, setValue, options }) {
   );
 }
 
-function EmptyChart() {
+function TrafficChart({ events, series, loading, error, range }) {
+  if (loading) return <div className="chart-loading"><RefreshCw size={20} /> Loading observed edge events...</div>;
+  if (error) return <EmptyState icon={Activity} title="Event metrics are unavailable" body="The console could not retrieve the selected tenant's WAF telemetry. Refresh the panel or confirm Events read access." />;
+  if (!events.length) return <EmptyState icon={Activity} title="No observed edge traffic" body={`No WAF events were recorded for this tenant in the selected ${range} window. This dashboard does not generate sample traffic.`} />;
+
+  const max = Math.max(...series.flatMap((bucket) => [bucket.total, bucket.allowed, bucket.blocked]), 1);
+  const pointString = (key) => series.map((bucket, index) => `${45 + (index / Math.max(series.length - 1, 1)) * 660},${250 - (bucket[key] / max) * 190}`).join(" ");
+  const labels = [0, Math.floor((series.length - 1) / 2), series.length - 1].map((index) => ({ index, label: series[index]?.label || "" }));
   return (
     <div className="chart-wrap">
       <div className="legend"><span className="legend-blue"></span>Total <span className="legend-green"></span>Allowed <span className="legend-red"></span>Blocked</div>
       <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="none">
         {[0, 1, 2, 3, 4].map((i) => <line key={i} x1="45" x2="705" y1={40 + i * 52} y2={40 + i * 52} />)}
-        <line x1="45" x2="705" y1="250" y2="250" className="stroke-blue clean-baseline" />
-        <line x1="45" x2="705" y1="250" y2="250" className="stroke-green clean-baseline" />
-        <line x1="45" x2="705" y1="250" y2="250" className="stroke-red clean-baseline" />
-        {["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"].map((label, i) => (
-          <text key={label} x={45 + i * 128} y="284">{label}</text>
-        ))}
+        <text x="8" y="44">{max}</text><text x="8" y="148">{Math.round(max / 2)}</text><text x="25" y="254">0</text>
+        <polyline points={pointString("total")} className="stroke-blue traffic-line" fill="none" />
+        <polyline points={pointString("allowed")} className="stroke-green traffic-line" fill="none" />
+        <polyline points={pointString("blocked")} className="stroke-red traffic-line" fill="none" />
+        {labels.map(({ index, label }) => <text key={`${label}-${index}`} x={45 + (index / Math.max(series.length - 1, 1)) * 660} y="284">{label}</text>)}
       </svg>
     </div>
   );
+}
+
+function OverviewEventsTable({ events, domains, loading, error }) {
+  if (loading) return <div className="overview-events-loading"><RefreshCw size={16} /> Loading real security events...</div>;
+  if (error) return <EmptyTable columns={["Time", "Request", "Rule", "Location", "Outcome"]} message="Security events are unavailable for this tenant." />;
+  if (!events.length) return <EmptyTable columns={["Time", "Request", "Rule", "Location", "Outcome"]} message="No security events were observed in the selected time window." />;
+  const domainsById = Object.fromEntries(domains.map((domain) => [domain.domain_id, domain.domain_name]));
+  return <table className="data-table overview-events"><thead><tr><th>Time</th><th>Request</th><th>Rule</th><th>Location</th><th>Outcome</th></tr></thead><tbody>{events.map((event) => <tr key={event.event_id}><td><time title={formatEventTime(event.timestamp)}>{formatEventTime(event.timestamp, { relative: true })}</time><small>{domainsById[event.domain_id] || "Protected edge"}</small></td><td><span className="method-chip">{event.method || "-"}</span><code className="event-path">{event.uri || "/"}</code></td><td>{formatRuleName(event.rule_id)}</td><td>{event.country || "Unknown"}</td><td><EventActionBadge action={event.action} /></td></tr>)}</tbody></table>;
 }
 
 function EmptyState({ icon: Icon, title, body }) {
@@ -2228,7 +2270,7 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   );
 }
 
-function DomainTable({ domains, token = "", onVerified = null, setStatus = null }) {
+function DomainTable({ domains, token = "", onVerified = null, setStatus = null, eventStatsByDomain = {} }) {
   if (!domains.length) {
     return <EmptyTable columns={["Domain", "Status", "Requests", "Blocked", "WAF Matches", "DNS"]} message="No protected domains are configured." />;
   }
@@ -2241,8 +2283,8 @@ function DomainTable({ domains, token = "", onVerified = null, setStatus = null 
           <tr key={domain.domain_id}>
             <td>{domain.domain_name}</td>
             <td><span className="health pending">{domain.status}</span></td>
-            <td>{domain.requests || 0}</td>
-            <td>{domain.blocked || 0}</td>
+            <td>{eventStatsByDomain[domain.domain_id]?.total ?? domain.requests ?? 0}</td>
+            <td>{eventStatsByDomain[domain.domain_id]?.blocked ?? domain.blocked ?? 0}</td>
             <td><small>{domain.verification_name}</small></td>
             <td><button className="secondary compact" disabled={!token} onClick={() => verifyDomainDns(domain.domain_id, token, setStatus, onVerified)}>Check DNS</button></td>
           </tr>
@@ -2531,17 +2573,61 @@ function StatusBanner({ status }) {
   return <div className={`status-banner ${status.type}`}>{status.message}</div>;
 }
 
-function buildMetrics(state) {
-  const requests = sum(state.domains, "requests");
-  const blocked = sum(state.domains, "blocked");
-  const wafMatches = sum(state.domains, "waf_matches");
+function overviewRangeHours(range) {
+  return { "1H": 1, "6H": 6, "24H": 24, "7D": 24 * 7, "30D": 24 * 30 }[range] || 24;
+}
+
+function buildTrafficSeries(events, rangeHours) {
+  const bucketCount = 12;
+  const end = Date.now();
+  const start = end - rangeHours * 60 * 60 * 1000;
+  const bucketDuration = (end - start) / bucketCount;
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const bucketStart = start + index * bucketDuration;
+    return { start: bucketStart, total: 0, allowed: 0, blocked: 0, matches: 0, label: formatTrafficBucketLabel(bucketStart, rangeHours) };
+  });
+  events.forEach((event) => {
+    const timestamp = Number(event.timestamp);
+    if (!Number.isFinite(timestamp) || timestamp < start || timestamp > end) return;
+    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((timestamp - start) / bucketDuration)));
+    const bucket = buckets[index];
+    bucket.total += 1;
+    if (event.action === "ALLOW") bucket.allowed += 1;
+    if (["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)) bucket.blocked += 1;
+    if (event.rule_id && event.rule_id !== "Default_Action") bucket.matches += 1;
+  });
+  return buckets;
+}
+
+function formatTrafficBucketLabel(timestamp, rangeHours) {
+  const date = new Date(timestamp);
+  if (rangeHours <= 24) return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" }).format(date);
+}
+
+function buildEventStatsByDomain(events) {
+  return events.reduce((stats, event) => {
+    if (!event.domain_id) return stats;
+    const current = stats[event.domain_id] || { total: 0, blocked: 0, matches: 0 };
+    current.total += 1;
+    current.blocked += ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action) ? 1 : 0;
+    current.matches += event.rule_id && event.rule_id !== "Default_Action" ? 1 : 0;
+    stats[event.domain_id] = current;
+    return stats;
+  }, {});
+}
+
+function buildMetrics(state, events = [], trafficSeries = [], domains = state.domains) {
+  const requests = events.length;
+  const blocked = events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length;
+  const wafMatches = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action").length;
   return [
     { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue" },
-    { label: "Protected Domains", value: String(state.domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green" },
+    { label: "Protected Domains", value: String(domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green" },
     { label: "Policies", value: String(state.policies.length), delta: "Tenant-scoped drafts", trend: "neutral", color: "orange" },
-    { label: "Protected Requests", value: String(requests), delta: "Waiting for traffic", trend: "neutral", color: "blue" },
-    { label: "Blocked Requests", value: String(blocked), delta: "No security events", trend: "neutral", color: "red" },
-    { label: "WAF Matches", value: String(wafMatches), delta: "Rules ready", trend: "neutral", color: "orange" }
+    { label: "Protected Requests", value: String(requests), delta: requests ? "Observed WAF requests" : "No observed traffic", trend: requests ? "good" : "neutral", color: "blue", series: trafficSeries.map((bucket) => bucket.total) },
+    { label: "Blocked Requests", value: String(blocked), delta: blocked ? "WAF interventions" : "No interventions observed", trend: blocked ? "risk" : "good", color: "red", series: trafficSeries.map((bucket) => bucket.blocked) },
+    { label: "WAF Matches", value: String(wafMatches), delta: wafMatches ? "Managed or custom rule matches" : "No rule matches observed", trend: wafMatches ? "risk" : "neutral", color: "orange", series: trafficSeries.map((bucket) => bucket.matches) }
   ];
 }
 
