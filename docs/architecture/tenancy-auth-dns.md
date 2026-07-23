@@ -101,6 +101,8 @@ Roles iniciales:
 - `billing_admin`
 - `read_only`
 
+`platform_owner` es un rol global de FortressNet: puede ver todos los tenants, operar la configuracion transversal, crear tenants y administrar planes. No puede aprobar cambios que afecten a un tenant cliente. Las aprobaciones de edge, WAF, cambios de origen y Verified Access requieren un `tenant_admin` o `security_admin` activo, perteneciente al mismo `tenant_id` y distinto del solicitante. Un administrador de tenant solo recibe datos y puede operar recursos de su propio tenant.
+
 Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; el correo temporal lo entrega Cognito. La cuenta se activa al completar el primer login. El token de bootstrap queda solo como recuperacion controlada de plataforma.
 
 La configuracion TOTP se inicia en el perfil de FortressNet despues del primer login. El backend comprueba que el access token pertenezca al mismo sujeto del ID token y llama a `AssociateSoftwareToken`, `VerifySoftwareToken` y `SetUserMFAPreference`. El QR se genera en el navegador con el emisor `FortressNet`; el secreto no se persiste y los eventos de auditoria registran unicamente el inicio y la confirmacion de la operacion. Cognito Managed Login no ofrece una configuracion de emisor para su QR nativo, por lo que el portal no usa ese QR para el alta con marca FortressNet.

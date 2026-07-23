@@ -313,6 +313,7 @@ function App() {
           {active === "onboarding" && (
             <OnboardingScreen
               token={token}
+              platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
@@ -324,6 +325,7 @@ function App() {
           {active === "domains" && (
             <DomainsScreen
               token={token}
+              platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
@@ -346,6 +348,7 @@ function App() {
           {active === "policies" && (
             <PoliciesScreen
               token={token}
+              platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
@@ -785,7 +788,7 @@ function EmptyTable({ columns, message }) {
   );
 }
 
-function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
+function OnboardingScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const origins = filterByTenant(state.origins, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
@@ -798,6 +801,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const tenantWafChangeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
   const tenantApprovers = filterByTenant(state.users, selectedTenantId)
     .filter((user) => (user.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)));
+  const canApproveTenantChanges = tenantApprovalEligible(platform, selectedTenantId);
   const appliedWafChangeSet = tenantWafChangeSets
     .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied" && changeSet.mode === "block");
   const monitorWafChangeSet = tenantWafChangeSets
@@ -858,6 +862,8 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
             certificate={latestCertificate}
             deployment={latestDeployment}
             approvers={tenantApprovers}
+            canApproveTenantChanges={canApproveTenantChanges}
+            actorSubject={platform?.actor?.subject || ""}
             pendingWafChangeSet={pendingWafChangeSet}
             appliedWafChangeSet={appliedWafChangeSet}
             monitorWafChangeSet={monitorWafChangeSet}
@@ -879,7 +885,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   );
 }
 
-function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, pendingWafChangeSet, appliedWafChangeSet, monitorWafChangeSet, onCreated, setStatus, onNavigate }) {
+function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, canApproveTenantChanges, actorSubject, pendingWafChangeSet, appliedWafChangeSet, monitorWafChangeSet, onCreated, setStatus, onNavigate }) {
   let title = "Create or select a tenant";
   let detail = "Select the customer tenant before creating a protected site.";
   let action = null;
@@ -916,7 +922,16 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   } else if (deployment?.status === "pending_approval") {
     const activeApprover = approvers.find((user) => user.status === "active");
     const invitedApprover = approvers.find((user) => user.status === "invited");
-    if (!approvers.length) {
+    const requestedByActor = deployment.requested_by === actorSubject;
+    if (!canApproveTenantChanges) {
+      title = "Tenant approval required";
+      detail = "Platform administrators can review every tenant but do not approve tenant-scoped changes. An active tenant administrator or security administrator for this tenant must complete the approval.";
+      action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
+    } else if (requestedByActor) {
+      title = "Invite an independent approver";
+      detail = "You requested this edge deployment, so separation of duties prevents you from approving it. A different active tenant administrator or security administrator must review the request.";
+      action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
+    } else if (!approvers.length) {
       title = "Invite an independent approver";
       detail = "This edge request needs a different tenant administrator or security administrator. Invite that operator from Access; FortressNet sends the Cognito invitation and keeps this request pending until they review it.";
       action = { label: "Invite approver", icon: Users, run: () => onNavigate("access") };
@@ -943,8 +958,18 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
       detail = "Create and compile a tenant WAF policy, then return here to apply it to this protected edge before traffic cutover.";
       action = { label: "Open policies", icon: Shield, run: () => onNavigate("policies") };
     } else if (pendingWafChangeSet.status === "pending_approval") {
-      detail = "The WAF change set requires approval before it can be applied to this edge.";
-      action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "WAF change set approved.") };
+      if (!canApproveTenantChanges) {
+        title = "Tenant approval required";
+        detail = "This WAF change must be approved by an active tenant administrator or security administrator in the selected tenant. A platform administrator can review the change but cannot approve it.";
+        action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
+      } else if (pendingWafChangeSet.created_by === actorSubject) {
+        title = "Invite an independent approver";
+        detail = "You compiled this WAF change, so a different active tenant administrator or security administrator must review and approve it before it can be applied.";
+        action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
+      } else {
+        detail = "The WAF change set requires approval before it can be applied to this edge.";
+        action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "WAF change set approved.") };
+      }
     } else if (pendingWafChangeSet.status === "approved" && pendingWafChangeSet.mode === "block" && !monitorWafChangeSet) {
       title = "Start the 24-hour observation window";
       detail = "The approved policy would block traffic. FortressNet first deploys the same protections in monitor mode, which records matches without blocking requests. After 24 hours, review the observations and apply the approved blocking policy.";
@@ -1001,7 +1026,7 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   );
 }
 
-function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   return (
@@ -1015,7 +1040,7 @@ function DomainsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
       </Panel>
       </div>
       <Panel title="Tenant Edge">
-        <EdgeDeploymentTable token={token} domains={domains} deployments={deployments} onChanged={onCreated} setStatus={setStatus} />
+        <EdgeDeploymentTable token={token} domains={domains} deployments={deployments} canApproveTenantChanges={tenantApprovalEligible(platform, selectedTenantId)} actorSubject={platform?.actor?.subject || ""} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
@@ -1218,7 +1243,7 @@ function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   );
 }
 
-function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function PoliciesScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const policies = filterByTenant(state.policies, selectedTenantId);
   const changeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
 
@@ -1246,7 +1271,7 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
         </Panel>
       </div>
       <Panel id="waf-change-sets" title="WAF Change Sets">
-        <WafChangeSetTable changeSets={changeSets} domains={filterByTenant(state.domains, selectedTenantId)} token={token} onChanged={onCreated} setStatus={setStatus} />
+        <WafChangeSetTable changeSets={changeSets} domains={filterByTenant(state.domains, selectedTenantId)} token={token} canApproveTenantChanges={tenantApprovalEligible(platform, selectedTenantId)} actorSubject={platform?.actor?.subject || ""} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
     </div>
   );
@@ -2212,7 +2237,7 @@ function CertificateTable({ certificates, token = "", onRefreshed = null, setSta
   );
 }
 
-function WafChangeSetTable({ changeSets, domains = [], token = "", onChanged = null, setStatus = null }) {
+function WafChangeSetTable({ changeSets, domains = [], token = "", canApproveTenantChanges = false, actorSubject = "", onChanged = null, setStatus = null }) {
   const [domainId, setDomainId] = useState("");
   useEffect(() => {
     if (!domains.some((domain) => domain.domain_id === domainId)) setDomainId(domains.length === 1 ? domains[0].domain_id : "");
@@ -2233,7 +2258,7 @@ function WafChangeSetTable({ changeSets, domains = [], token = "", onChanged = n
             <td><span className="health pending">{changeSet.status}</span></td>
             <td>{(changeSet.rules || []).length}</td>
             <td><select className="compact-select" value={domainId} onChange={(event) => setDomainId(event.target.value)} disabled={!domains.length}><option value="">Select domain</option>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></td>
-            <td><WafAction changeSet={changeSet} changeSets={changeSets} domainId={domainId} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
+            <td><WafAction changeSet={changeSet} changeSets={changeSets} domainId={domainId} token={token} canApproveTenantChanges={canApproveTenantChanges} actorSubject={actorSubject} onChanged={onChanged} setStatus={setStatus} /></td>
           </tr>
         ))}
       </tbody>
@@ -2241,7 +2266,7 @@ function WafChangeSetTable({ changeSets, domains = [], token = "", onChanged = n
   );
 }
 
-function EdgeDeploymentTable({ token, domains, deployments, onChanged, setStatus }) {
+function EdgeDeploymentTable({ token, domains, deployments, canApproveTenantChanges = false, actorSubject = "", onChanged, setStatus }) {
   const byDomain = new Map(deployments.map((deployment) => [deployment.domain_id, deployment]));
   if (!domains.length) return <EmptyTable columns={["Domain", "Edge", "Target", "Action"]} message="Create a domain and issue its certificate before requesting a tenant edge." />;
   return (
@@ -2253,24 +2278,32 @@ function EdgeDeploymentTable({ token, domains, deployments, onChanged, setStatus
           <td>{domain.domain_name}</td>
           <td><span className="health pending">{deployment?.status || "not_requested"}</span></td>
           <td><small>{deployment?.distribution_domain_name || "Awaiting provision"}</small></td>
-          <td><EdgeAction domain={domain} deployment={deployment} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
+          <td><EdgeAction domain={domain} deployment={deployment} token={token} canApproveTenantChanges={canApproveTenantChanges} actorSubject={actorSubject} onChanged={onChanged} setStatus={setStatus} /></td>
         </tr>;
       })}</tbody>
     </table>
   );
 }
 
-function EdgeAction({ domain, deployment, token, onChanged, setStatus }) {
+function EdgeAction({ domain, deployment, token, canApproveTenantChanges, actorSubject, onChanged, setStatus }) {
   if (!deployment) return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/edge-deployment-request`, "POST", token, setStatus, onChanged, "Edge deployment requested.")}>Request edge</button>;
-  if (deployment.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onChanged, "Edge deployment approved.")}>Review & approve</button>;
+  if (deployment.status === "pending_approval") {
+    if (!canApproveTenantChanges) return <span className="mode-readonly">Tenant approval required</span>;
+    if (deployment.requested_by === actorSubject) return <span className="mode-readonly">Independent approval required</span>;
+    return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/approve`, "POST", token, setStatus, onChanged, "Edge deployment approved.")}>Review & approve</button>;
+  }
   if (deployment.status === "approved") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/provision`, "POST", token, setStatus, onChanged, "Edge provisioning started.")}>Provision</button>;
   if (deployment.status === "provisioning") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onChanged, "Edge status refreshed.")}>Refresh</button>;
   if (deployment.status === "ready_for_cutover") return <span className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${domain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onChanged, "Traffic DNS checked.")}>Check DNS</button></span>;
   return <span className="mode-readonly">{deployment.status}</span>;
 }
 
-function WafAction({ changeSet, changeSets, domainId, token, onChanged, setStatus }) {
-  if (changeSet.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "WAF change set approved.")}>Approve</button>;
+function WafAction({ changeSet, changeSets, domainId, token, canApproveTenantChanges, actorSubject, onChanged, setStatus }) {
+  if (changeSet.status === "pending_approval") {
+    if (!canApproveTenantChanges) return <span className="mode-readonly">Tenant approval required</span>;
+    if (changeSet.created_by === actorSubject) return <span className="mode-readonly">Independent approval required</span>;
+    return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "WAF change set approved.")}>Approve</button>;
+  }
   if (changeSet.status === "approved" && changeSet.mode === "block") {
     const monitorChangeSet = changeSets.find((item) => item.domain_id === domainId && item.status === "applied" && item.mode === "monitor");
     if (!monitorChangeSet) return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/start-monitoring`, "POST", token, setStatus, onChanged, "WAF observation started. Blocking remains disabled for 24 hours.", { domain_id: domainId })}>Start observation</button>;
@@ -2434,6 +2467,9 @@ function friendlyWorkflowError(message) {
   if (message === "monitor_observation_window_required") {
     return "The blocking policy cannot be applied yet. Start or complete the 24-hour monitor observation window first; FortressNet will enable Apply WAF when it is safe to proceed.";
   }
+  if (message === "tenant_approval_scope_required") {
+    return "This approval must be completed by an active tenant administrator or security administrator for the selected tenant. Platform administrators can review tenant changes but cannot approve them.";
+  }
   return message;
 }
 
@@ -2533,6 +2569,16 @@ function base64Url(bytes) {
 function filterByTenant(items, selectedTenantId) {
   if (!selectedTenantId) return items;
   return items.filter((item) => item.tenant_id === selectedTenantId);
+}
+
+function tenantApprovalEligible(platform, tenantId) {
+  const actor = platform?.actor;
+  return Boolean(
+    tenantId &&
+    !platform?.is_platform_actor &&
+    actor?.tenant_id === tenantId &&
+    (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
+  );
 }
 
 function humanizeWorkflowStatus(status, fallback = "Pending") {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, compileWafRules, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, compileWafRules, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -96,4 +96,12 @@ test("normalizes a tenant registration and excludes opportunity data from the pu
   assert.equal(publicTenant(tenant).registration_status, "registered");
   assert.equal("registration" in publicTenant(tenant), false);
   assert.throws(() => normalizeTenantRegistration({}, "Example Tenant", "pilot"), { message: "legal_entity_name_required" });
+});
+
+test("limits tenant approvals to administrators inside the tenant", () => {
+  assert.equal(isTenantApprovalActor({ tenant_id: "tenant_soportame", roles: ["tenant_admin"] }, "tenant_soportame"), true);
+  assert.equal(isTenantApprovalActor({ tenant_id: "tenant_soportame", roles: ["security_admin"] }, "tenant_soportame"), true);
+  assert.equal(isTenantApprovalActor({ tenant_id: "platform", roles: ["platform_owner"], scopes: ["*"] }, "tenant_soportame"), false);
+  assert.equal(isTenantApprovalActor({ tenant_id: "tenant_other", roles: ["tenant_admin"] }, "tenant_soportame"), false);
+  assert.equal(isTenantApprovalActor({ tenant_id: "tenant_soportame", roles: ["security_analyst"] }, "tenant_soportame"), false);
 });

@@ -157,7 +157,8 @@ app.get("/api/platform", (req, res) => {
     auth_mode: req.actor?.type || "authenticated",
     roles: Object.keys(roleScopes),
     scopes: allowedScopes,
-    is_platform_actor: isPlatformActor(req.actor)
+    is_platform_actor: isPlatformActor(req.actor),
+    actor: publicActor(req.actor)
   });
 });
 
@@ -779,6 +780,7 @@ app.post("/api/edge-deployments/:deploymentId/approve", requireScope("edge:appro
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
     tenantForActor(req.actor, deployment.tenant_id);
+    requireTenantApprovalActor(req.actor, deployment.tenant_id);
     if (deployment.status !== "pending_approval") return res.status(409).json({ error: "edge_deployment_not_pending_approval" });
     if (deployment.requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
@@ -871,6 +873,7 @@ app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireSco
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
     tenantForActor(req.actor, deployment.tenant_id);
+    requireTenantApprovalActor(req.actor, deployment.tenant_id);
     if (deployment.origin_update_status !== "pending_approval") return res.status(409).json({ error: "origin_update_not_pending" });
     if (deployment.origin_update_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
@@ -1337,6 +1340,7 @@ app.post("/api/ztna/applications/:applicationId/verified-access-approve", requir
     const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
     if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
     tenantForActor(req.actor, application.tenant_id);
+    requireTenantApprovalActor(req.actor, application.tenant_id);
     if (application.verified_access_status !== "pending_approval") return res.status(409).json({ error: "verified_access_request_not_pending" });
     if (application.verified_access_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
@@ -1580,6 +1584,7 @@ app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("edge:approve
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
     tenantForActor(req.actor, changeSet.tenant_id);
+    requireTenantApprovalActor(req.actor, changeSet.tenant_id);
     if (changeSet.status !== "pending_approval") return res.status(409).json({ error: "waf_change_set_not_pending_approval" });
     if (changeSet.created_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
@@ -2331,6 +2336,17 @@ function requirePlatformActor(req, res, next) {
 
 function isPlatformActor(actor) {
   return Boolean(actor?.scopes?.includes("*"));
+}
+
+function isTenantApprovalActor(actor, tenantId) {
+  return Boolean(
+    clean(actor?.tenant_id) === clean(tenantId) &&
+    (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
+  );
+}
+
+function requireTenantApprovalActor(actor, tenantId) {
+  if (!isTenantApprovalActor(actor, tenantId)) throw httpError(403, "tenant_approval_scope_required");
 }
 
 function tenantForActor(actor, requestedTenantId) {
@@ -4118,4 +4134,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
