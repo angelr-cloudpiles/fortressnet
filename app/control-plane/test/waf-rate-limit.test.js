@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, compileWafRules, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -104,4 +104,12 @@ test("limits tenant approvals to administrators inside the tenant", () => {
   assert.equal(isTenantApprovalActor({ tenant_id: "platform", roles: ["platform_owner"], scopes: ["*"] }, "tenant_soportame"), false);
   assert.equal(isTenantApprovalActor({ tenant_id: "tenant_other", roles: ["tenant_admin"] }, "tenant_soportame"), false);
   assert.equal(isTenantApprovalActor({ tenant_id: "tenant_soportame", roles: ["security_analyst"] }, "tenant_soportame"), false);
+});
+
+test("creates the AWS managed WAF baseline in monitor mode", () => {
+  const rules = compileWafRules(defaultWafBaseline());
+  const awsRules = toAwsWafRules(rules, "dom_baseline");
+  assert.equal(defaultWafBaseline().mode, "monitor");
+  assert.equal(rules.length, 6);
+  assert.equal(awsRules.every((rule) => rule.OverrideAction?.Count || rule.Action?.Count), true);
 });

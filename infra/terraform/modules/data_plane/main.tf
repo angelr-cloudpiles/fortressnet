@@ -379,6 +379,26 @@ resource "aws_dynamodb_table" "tenants" {
   }
 }
 
+resource "aws_dynamodb_table" "customers" {
+  name         = "${var.name}-customers"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "customer_id"
+
+  attribute {
+    name = "customer_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_dynamodb_table" "domains" {
   name         = "${var.name}-domains"
   billing_mode = "PAY_PER_REQUEST"

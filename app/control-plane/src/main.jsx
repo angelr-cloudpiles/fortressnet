@@ -102,6 +102,7 @@ const verifiedDomainStatuses = new Set([
   "certificate_issued_pending_edge",
   "edge_provisioning",
   "pending_traffic_dns",
+  "edge_validation_failed",
   "active"
 ]);
 
@@ -122,11 +123,13 @@ const workflowStatusLabels = {
   provisioning: "Provisioning",
   ready_for_cutover: "Ready for traffic DNS",
   pending_traffic_dns: "Awaiting traffic DNS",
+  edge_validation_failed: "Edge traffic validation failed",
   active: "Active",
   applied: "Applied"
 };
 
 const emptyState = {
+  customers: [],
   tenants: [],
   domains: [],
   policies: [],
@@ -398,7 +401,7 @@ function App() {
           {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
         </section>
       </main>
-      {tenantWizardOpen && <TenantRegistrationWizard token={token} setStatus={setStatus} onClose={() => setTenantWizardOpen(false)} onCreated={(tenant) => {
+      {tenantWizardOpen && <TenantRegistrationWizard token={token} customers={state.customers} users={state.users} setStatus={setStatus} onClose={() => setTenantWizardOpen(false)} onCreated={(tenant) => {
         setSelectedTenantId(tenant.tenant_id);
         setTenantWizardOpen(false);
         loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
@@ -952,6 +955,10 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
     title = "Check edge provisioning";
     detail = "AWS is creating the protected edge. Refresh the deployment status before changing traffic DNS.";
     action = { label: "Refresh edge", icon: RefreshCw, run: () => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/refresh`, "PATCH", token, setStatus, onCreated, "Edge status refreshed.") };
+  } else if (domain?.status === "edge_validation_failed") {
+    title = "Fix the private origin endpoint";
+    detail = "The traffic CNAME is detected, but the protected hostname returned an error through the edge. Configure a dedicated HTTPS origin hostname that does not resolve back to the protected hostname, then update the origin through the approved change workflow.";
+    action = { label: "Open origins", icon: Layers3, run: () => onNavigate("origins") };
   } else if (deployment && !appliedWafChangeSet) {
     title = "Apply the WAF policy";
     if (!pendingWafChangeSet) {
@@ -1681,90 +1688,47 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
   );
 }
 
-function TenantRegistrationWizard({ token, setStatus, onClose, onCreated }) {
+function TenantRegistrationWizard({ token, customers = [], users = [], setStatus, onClose, onCreated }) {
   const [step, setStep] = useState(0);
+  const [accountMode, setAccountMode] = useState("new");
   const [technicalSameAsPrimary, setTechnicalSameAsPrimary] = useState(true);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    plan: "pilot",
-    company: { legal_name: "", country: "", tax_id: "", website: "", industry: "", address_line_1: "", city: "", postal_code: "" },
-    primary_contact: { full_name: "", email: "", job_title: "", phone: "" },
-    technical_contact: { full_name: "", email: "", job_title: "", phone: "" },
-    commercial: { estimated_domains: "1", expected_traffic_tier: "unknown", use_case: "" },
-    opportunity_authorized: false
-  });
+  const [form, setForm] = useState({ customer_id: "", existing_user_id: "", name: "", plan: "pilot", company: { legal_name: "", country: "", tax_id: "", website: "", industry: "", address_line_1: "", city: "", postal_code: "" }, primary_contact: { full_name: "", email: "", job_title: "", phone: "" }, technical_contact: { full_name: "", email: "", job_title: "", phone: "" }, commercial: { estimated_domains: "1", expected_traffic_tier: "unknown", use_case: "" }, opportunity_authorized: false });
   const update = (section, field, value) => setForm((current) => ({ ...current, [section]: { ...current[section], [field]: value } }));
   const updateTopLevel = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const selectedCustomer = customers.find((customer) => customer.customer_id === form.customer_id) || null;
+  const customerUsers = users.filter((user) => user.customer_id === form.customer_id && (user.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)));
+  const existingAdministrator = customerUsers.find((user) => user.user_id === form.existing_user_id) || null;
   const validateStep = () => {
-    if (step === 0 && (!form.name.trim() || !form.company.legal_name.trim() || !form.company.country)) return "Complete the tenant, legal entity and country fields.";
-    if (step === 1 && (!form.primary_contact.full_name.trim() || !form.primary_contact.email.trim() || (!technicalSameAsPrimary && (!form.technical_contact.full_name.trim() || !form.technical_contact.email.trim())))) return "Add a primary and technical contact with valid email addresses.";
-    if (step === 2 && (!form.commercial.estimated_domains || !form.opportunity_authorized)) return "Confirm the expected scope and authorization before registering the tenant.";
+    if (step === 0 && accountMode === "new" && (!form.company.legal_name.trim() || !form.company.country)) return "Complete the legal entity and country fields for the customer account.";
+    if (step === 0 && accountMode === "existing" && !selectedCustomer) return "Select the customer account that will own this tenant.";
+    if (step === 1 && accountMode === "new" && (!form.primary_contact.full_name.trim() || !form.primary_contact.email.trim() || (!technicalSameAsPrimary && (!form.technical_contact.full_name.trim() || !form.technical_contact.email.trim())))) return "Add the initial administrator and technical contact with valid email addresses.";
+    if (step === 1 && accountMode === "existing" && !existingAdministrator) return "Select a customer administrator for this tenant.";
+    if (step === 2 && (!form.name.trim() || !form.commercial.estimated_domains || !form.opportunity_authorized)) return "Complete the tenant name, expected scope and authorization before registering.";
     return "";
   };
-  const next = () => {
-    const validationError = validateStep();
-    if (validationError) return setError(validationError);
-    setError("");
-    setStep((current) => Math.min(current + 1, 2));
-  };
+  const next = () => { const validationError = validateStep(); if (validationError) return setError(validationError); setError(""); setStep((current) => Math.min(current + 1, 2)); };
   const submit = async (event) => {
     event.preventDefault();
     const validationError = validateStep();
     if (validationError) return setError(validationError);
-    const technicalContact = technicalSameAsPrimary ? { ...form.primary_contact } : form.technical_contact;
+    const primaryContact = accountMode === "existing" ? { full_name: existingAdministrator.display_name || existingAdministrator.email, email: existingAdministrator.email, job_title: "", phone: "" } : form.primary_contact;
+    const technicalContact = accountMode === "existing" || technicalSameAsPrimary ? { ...primaryContact } : form.technical_contact;
+    const company = accountMode === "existing" ? { legal_name: selectedCustomer.legal_name, country: selectedCustomer.country, website: selectedCustomer.website || "", industry: selectedCustomer.industry || "" } : form.company;
     try {
       setSubmitting(true);
-      const data = await apiRequest("/api/tenants", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, registration: { company: form.company, primary_contact: form.primary_contact, technical_contact: technicalContact, commercial: form.commercial, opportunity_authorized: form.opportunity_authorized } }) });
-      setStatus({ type: "success", message: "Tenant registration created." });
+      const data = await apiRequest("/api/customer-onboarding", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: accountMode === "existing" ? selectedCustomer.customer_id : "", existing_user_id: accountMode === "existing" ? existingAdministrator.user_id : "", customer: company, admin: accountMode === "new" ? { display_name: primaryContact.full_name, email: primaryContact.email } : null, tenant: { name: form.name, plan: form.plan }, registration: { company, primary_contact: primaryContact, technical_contact: technicalContact, commercial: form.commercial, opportunity_authorized: form.opportunity_authorized } }) });
+      setStatus({ type: "success", message: data.invitation_status === "sent" ? "Customer account, administrator invitation and tenant created." : "Tenant added to the customer account." });
       onCreated(data.tenant);
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setSubmitting(false);
-    }
+    } catch (requestError) { setError(requestError.message); } finally { setSubmitting(false); }
   };
-  const steps = ["Organization", "Contacts", "Scope"];
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose(); }}>
-      <section className="tenant-wizard" role="dialog" aria-modal="true" aria-labelledby="tenant-wizard-title">
-        <header className="tenant-wizard-header"><div><p>NEW TENANT</p><h2 id="tenant-wizard-title">Tenant registration</h2></div><button className="icon-button bordered" type="button" title="Close tenant registration" disabled={submitting} onClick={onClose}><X size={18} /></button></header>
-        <div className="wizard-stepper" aria-label={`Step ${step + 1} of 3`}>{steps.map((label, index) => <div key={label} className={index === step ? "current" : index < step ? "complete" : ""}><span>{index + 1}</span>{label}</div>)}</div>
-        <form onSubmit={submit}>
-          {step === 0 && <div className="wizard-fields">
-            <label htmlFor="tenant-registration-name">Tenant name<input id="tenant-registration-name" value={form.name} onChange={(event) => updateTopLevel("name", event.target.value)} required /></label>
-            <label htmlFor="tenant-legal-name">Legal entity<input id="tenant-legal-name" value={form.company.legal_name} onChange={(event) => update("company", "legal_name", event.target.value)} required /></label>
-            <label htmlFor="tenant-country">Country<select id="tenant-country" value={form.company.country} onChange={(event) => update("company", "country", event.target.value)} required><option value="">Select country</option>{tenantCountryOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            <label htmlFor="tenant-tax-id">Tax ID<input id="tenant-tax-id" value={form.company.tax_id} onChange={(event) => update("company", "tax_id", event.target.value)} /></label>
-            <label htmlFor="tenant-website">Website<input id="tenant-website" type="url" inputMode="url" placeholder="https://" value={form.company.website} onChange={(event) => update("company", "website", event.target.value)} /></label>
-            <label htmlFor="tenant-industry">Industry<input id="tenant-industry" value={form.company.industry} onChange={(event) => update("company", "industry", event.target.value)} /></label>
-            <label htmlFor="tenant-address">Address<input id="tenant-address" value={form.company.address_line_1} onChange={(event) => update("company", "address_line_1", event.target.value)} /></label>
-            <label htmlFor="tenant-city">City<input id="tenant-city" value={form.company.city} onChange={(event) => update("company", "city", event.target.value)} /></label>
-            <label htmlFor="tenant-postal-code">Postal code<input id="tenant-postal-code" value={form.company.postal_code} onChange={(event) => update("company", "postal_code", event.target.value)} /></label>
-          </div>}
-          {step === 1 && <div className="wizard-fields">
-            <h3>Primary contact</h3>
-            <label htmlFor="tenant-primary-name">Full name<input id="tenant-primary-name" value={form.primary_contact.full_name} onChange={(event) => update("primary_contact", "full_name", event.target.value)} required /></label>
-            <label htmlFor="tenant-primary-email">Email<input id="tenant-primary-email" type="email" value={form.primary_contact.email} onChange={(event) => update("primary_contact", "email", event.target.value)} required /></label>
-            <label htmlFor="tenant-primary-title">Job title<input id="tenant-primary-title" value={form.primary_contact.job_title} onChange={(event) => update("primary_contact", "job_title", event.target.value)} /></label>
-            <label htmlFor="tenant-primary-phone">Phone<input id="tenant-primary-phone" type="tel" value={form.primary_contact.phone} onChange={(event) => update("primary_contact", "phone", event.target.value)} /></label>
-            <label className="check-row wizard-wide"><input type="checkbox" checked={technicalSameAsPrimary} onChange={(event) => setTechnicalSameAsPrimary(event.target.checked)} /> Technical contact is the primary contact</label>
-            {!technicalSameAsPrimary && <><h3 className="wizard-wide">Technical contact</h3><label htmlFor="tenant-technical-name">Full name<input id="tenant-technical-name" value={form.technical_contact.full_name} onChange={(event) => update("technical_contact", "full_name", event.target.value)} required /></label><label htmlFor="tenant-technical-email">Email<input id="tenant-technical-email" type="email" value={form.technical_contact.email} onChange={(event) => update("technical_contact", "email", event.target.value)} required /></label><label htmlFor="tenant-technical-title">Job title<input id="tenant-technical-title" value={form.technical_contact.job_title} onChange={(event) => update("technical_contact", "job_title", event.target.value)} /></label><label htmlFor="tenant-technical-phone">Phone<input id="tenant-technical-phone" type="tel" value={form.technical_contact.phone} onChange={(event) => update("technical_contact", "phone", event.target.value)} /></label></>}
-          </div>}
-          {step === 2 && <div className="wizard-fields">
-            <label htmlFor="tenant-plan">Requested plan<select id="tenant-plan" value={form.plan} onChange={(event) => updateTopLevel("plan", event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
-            <label htmlFor="tenant-estimated-domains">Expected protected domains<input id="tenant-estimated-domains" type="number" min="1" max="10000" value={form.commercial.estimated_domains} onChange={(event) => update("commercial", "estimated_domains", event.target.value)} required /></label>
-            <label htmlFor="tenant-traffic-tier">Expected monthly traffic<select id="tenant-traffic-tier" value={form.commercial.expected_traffic_tier} onChange={(event) => update("commercial", "expected_traffic_tier", event.target.value)}><option value="unknown">Unknown</option><option value="under_1m">Under 1M requests</option><option value="1m_to_10m">1M to 10M requests</option><option value="10m_to_100m">10M to 100M requests</option><option value="over_100m">Over 100M requests</option></select></label>
-            <label className="wizard-wide" htmlFor="tenant-use-case">Security use case<textarea id="tenant-use-case" rows="5" value={form.commercial.use_case} onChange={(event) => update("commercial", "use_case", event.target.value)} /></label>
-            <label className="check-row wizard-wide"><input type="checkbox" checked={form.opportunity_authorized} onChange={(event) => updateTopLevel("opportunity_authorized", event.target.checked)} /> I confirm this data is authorized for tenant registration and future opportunity records.</label>
-          </div>}
-          {error && <div className="wizard-error" role="alert">{error}</div>}
-          <footer className="tenant-wizard-footer">{step > 0 ? <button className="secondary" type="button" disabled={submitting} onClick={() => { setError(""); setStep((current) => current - 1); }}><ChevronLeft size={16} /> Back</button> : <span />}{step < 2 ? <button className="primary" type="button" onClick={next}>Continue <ChevronRight size={16} /></button> : <button className="primary" type="submit" disabled={submitting}>{submitting ? "Registering" : "Create tenant"} <CheckCircle2 size={16} /></button>}</footer>
-        </form>
-      </section>
-    </div>
-  );
+  const steps = ["Customer account", "Administrator", "Tenant scope"];
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose(); }}><section className="tenant-wizard" role="dialog" aria-modal="true" aria-labelledby="tenant-wizard-title"><header className="tenant-wizard-header"><div><p>CUSTOMER ONBOARDING</p><h2 id="tenant-wizard-title">Create customer account</h2></div><button className="icon-button bordered" type="button" title="Close customer onboarding" disabled={submitting} onClick={onClose}><X size={18} /></button></header><div className="wizard-stepper" aria-label={`Step ${step + 1} of 3`}>{steps.map((label, index) => <div key={label} className={index === step ? "current" : index < step ? "complete" : ""}><span>{index + 1}</span>{label}</div>)}</div><form onSubmit={submit}>
+    {step === 0 && <div className="wizard-fields"><div className="policy-scope-picker wizard-wide"><label>Account</label><div className="scope-picker"><label><input type="radio" name="customer-account-mode" checked={accountMode === "new"} onChange={() => { setAccountMode("new"); updateTopLevel("customer_id", ""); updateTopLevel("existing_user_id", ""); }} /> New customer account</label><label><input type="radio" name="customer-account-mode" checked={accountMode === "existing"} onChange={() => setAccountMode("existing")} /> Existing customer account</label></div></div>{accountMode === "existing" ? <label className="wizard-wide" htmlFor="customer-existing-account">Customer account<select id="customer-existing-account" value={form.customer_id} onChange={(event) => { updateTopLevel("customer_id", event.target.value); updateTopLevel("existing_user_id", ""); }}><option value="">Select customer account</option>{customers.map((customer) => <option key={customer.customer_id} value={customer.customer_id}>{customer.legal_name} ({customer.tenant_count} tenants)</option>)}</select></label> : <><label htmlFor="tenant-legal-name">Legal entity<input id="tenant-legal-name" value={form.company.legal_name} onChange={(event) => update("company", "legal_name", event.target.value)} required /></label><label htmlFor="tenant-country">Country<select id="tenant-country" value={form.company.country} onChange={(event) => update("company", "country", event.target.value)} required><option value="">Select country</option>{tenantCountryOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label htmlFor="tenant-tax-id">Tax ID<input id="tenant-tax-id" value={form.company.tax_id} onChange={(event) => update("company", "tax_id", event.target.value)} /></label><label htmlFor="tenant-website">Website<input id="tenant-website" type="url" inputMode="url" placeholder="https://" value={form.company.website} onChange={(event) => update("company", "website", event.target.value)} /></label><label htmlFor="tenant-industry">Industry<input id="tenant-industry" value={form.company.industry} onChange={(event) => update("company", "industry", event.target.value)} /></label><label htmlFor="tenant-address">Address<input id="tenant-address" value={form.company.address_line_1} onChange={(event) => update("company", "address_line_1", event.target.value)} /></label><label htmlFor="tenant-city">City<input id="tenant-city" value={form.company.city} onChange={(event) => update("company", "city", event.target.value)} /></label><label htmlFor="tenant-postal-code">Postal code<input id="tenant-postal-code" value={form.company.postal_code} onChange={(event) => update("company", "postal_code", event.target.value)} /></label></>}</div>}
+    {step === 1 && <div className="wizard-fields">{accountMode === "existing" ? <label className="wizard-wide" htmlFor="customer-existing-admin">Customer administrator<select id="customer-existing-admin" value={form.existing_user_id} onChange={(event) => updateTopLevel("existing_user_id", event.target.value)}><option value="">Select administrator</option>{customerUsers.map((user) => <option key={user.user_id} value={user.user_id}>{user.display_name || user.email} ({user.email})</option>)}</select></label> : <><h3>Initial account administrator</h3><label htmlFor="tenant-primary-name">Full name<input id="tenant-primary-name" value={form.primary_contact.full_name} onChange={(event) => update("primary_contact", "full_name", event.target.value)} required /></label><label htmlFor="tenant-primary-email">Email<input id="tenant-primary-email" type="email" value={form.primary_contact.email} onChange={(event) => update("primary_contact", "email", event.target.value)} required /></label><label htmlFor="tenant-primary-title">Job title<input id="tenant-primary-title" value={form.primary_contact.job_title} onChange={(event) => update("primary_contact", "job_title", event.target.value)} /></label><label htmlFor="tenant-primary-phone">Phone<input id="tenant-primary-phone" type="tel" value={form.primary_contact.phone} onChange={(event) => update("primary_contact", "phone", event.target.value)} /></label><label className="check-row wizard-wide"><input type="checkbox" checked={technicalSameAsPrimary} onChange={(event) => setTechnicalSameAsPrimary(event.target.checked)} /> Technical contact is the primary contact</label>{!technicalSameAsPrimary && <><h3 className="wizard-wide">Technical contact</h3><label htmlFor="tenant-technical-name">Full name<input id="tenant-technical-name" value={form.technical_contact.full_name} onChange={(event) => update("technical_contact", "full_name", event.target.value)} required /></label><label htmlFor="tenant-technical-email">Email<input id="tenant-technical-email" type="email" value={form.technical_contact.email} onChange={(event) => update("technical_contact", "email", event.target.value)} required /></label><label htmlFor="tenant-technical-title">Job title<input id="tenant-technical-title" value={form.technical_contact.job_title} onChange={(event) => update("technical_contact", "job_title", event.target.value)} /></label><label htmlFor="tenant-technical-phone">Phone<input id="tenant-technical-phone" type="tel" value={form.technical_contact.phone} onChange={(event) => update("technical_contact", "phone", event.target.value)} /></label></>}</>}</div>}
+    {step === 2 && <div className="wizard-fields"><label htmlFor="tenant-registration-name">Tenant name<input id="tenant-registration-name" value={form.name} onChange={(event) => updateTopLevel("name", event.target.value)} required /></label><label htmlFor="tenant-plan">Requested plan<select id="tenant-plan" value={form.plan} onChange={(event) => updateTopLevel("plan", event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label><label htmlFor="tenant-estimated-domains">Expected protected domains<input id="tenant-estimated-domains" type="number" min="1" max="10000" value={form.commercial.estimated_domains} onChange={(event) => update("commercial", "estimated_domains", event.target.value)} required /></label><label htmlFor="tenant-traffic-tier">Expected monthly traffic<select id="tenant-traffic-tier" value={form.commercial.expected_traffic_tier} onChange={(event) => update("commercial", "expected_traffic_tier", event.target.value)}><option value="unknown">Unknown</option><option value="under_1m">Under 1M requests</option><option value="1m_to_10m">1M to 10M requests</option><option value="10m_to_100m">10M to 100M requests</option><option value="over_100m">Over 100M requests</option></select></label><label className="wizard-wide" htmlFor="tenant-use-case">Security use case<textarea id="tenant-use-case" rows="5" value={form.commercial.use_case} onChange={(event) => update("commercial", "use_case", event.target.value)} /></label><label className="check-row wizard-wide"><input type="checkbox" checked={form.opportunity_authorized} onChange={(event) => updateTopLevel("opportunity_authorized", event.target.checked)} /> I confirm this data is authorized for customer onboarding and future opportunity records.</label></div>}
+    {error && <div className="wizard-error" role="alert">{error}</div>}<footer className="tenant-wizard-footer">{step > 0 ? <button className="secondary" type="button" disabled={submitting} onClick={() => { setError(""); setStep((current) => current - 1); }}><ChevronLeft size={16} /> Back</button> : <span />}{step < 2 ? <button className="primary" type="button" onClick={next}>Continue <ChevronRight size={16} /></button> : <button className="primary" type="submit" disabled={submitting}>{submitting ? "Registering" : "Create account and tenant"} <CheckCircle2 size={16} /></button>}</footer></form></section></div>;
 }
 
 function UserCreateForm({ token, platform, tenants, selectedTenantId, onCreated, setStatus }) {
@@ -2024,13 +1988,13 @@ function OriginPoolForm({ token, tenants, domains, origins, pools, selectedTenan
 }
 
 function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState("AWS Managed Security Baseline");
   const [mode, setMode] = useState("monitor");
   const [rateLimit, setRateLimit] = useState("2000");
   const [rateLimitPath, setRateLimitPath] = useState("");
   const [rateLimitMethods, setRateLimitMethods] = useState([]);
   const [rateLimitCountries, setRateLimitCountries] = useState([]);
-  const [managedProtections, setManagedProtections] = useState([]);
+  const [managedProtections, setManagedProtections] = useState(["ip_reputation", "anonymous_ip"]);
   const [blockedAsns, setBlockedAsns] = useState("");
   const [blockedHeaderName, setBlockedHeaderName] = useState("");
   const [blockedHeaderValues, setBlockedHeaderValues] = useState("");
@@ -2067,12 +2031,12 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       allowed_ip_cidrs: allowedIpCidrs,
       blocked_ip_cidrs: blockedIpCidrs
     }, "Policy draft created.", setStatus, () => {
-      setName("");
+      setName("AWS Managed Security Baseline");
       setRateLimit("2000");
       setRateLimitPath("");
       setRateLimitMethods([]);
       setRateLimitCountries([]);
-      setManagedProtections([]);
+      setManagedProtections(["ip_reputation", "anonymous_ip"]);
       setBlockedAsns("");
       setBlockedHeaderName("");
       setBlockedHeaderValues("");
@@ -2470,6 +2434,9 @@ function friendlyWorkflowError(message) {
   if (message === "tenant_approval_scope_required") {
     return "This approval must be completed by an active tenant administrator or security administrator for the selected tenant. Platform administrators can review tenant changes but cannot approve them.";
   }
+  if (message === "origin_matches_protected_domain") {
+    return "The origin cannot use the protected hostname. Create or provide a separate HTTPS origin hostname that stays pointed at the application after the public hostname is switched to FortressNet.";
+  }
   return message;
 }
 
@@ -2568,7 +2535,7 @@ function base64Url(bytes) {
 
 function filterByTenant(items, selectedTenantId) {
   if (!selectedTenantId) return items;
-  return items.filter((item) => item.tenant_id === selectedTenantId);
+  return items.filter((item) => item.tenant_id === selectedTenantId || item.tenant_ids?.includes(selectedTenantId));
 }
 
 function tenantApprovalEligible(platform, tenantId) {

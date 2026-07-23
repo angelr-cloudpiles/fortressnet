@@ -47,6 +47,7 @@ const cognitoAccessVerifier = process.env.COGNITO_USER_POOL_ID && process.env.CO
 
 const tables = {
   tenants: process.env.TENANTS_TABLE,
+  customers: process.env.CUSTOMERS_TABLE,
   domains: process.env.DOMAINS_TABLE,
   policies: process.env.SECURITY_POLICIES_TABLE,
   entitlements: process.env.ENTITLEMENTS_TABLE,
@@ -164,8 +165,9 @@ app.get("/api/platform", (req, res) => {
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications, dmarcConfigurations] = await Promise.all([
+    const [tenants, customers, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications, dmarcConfigurations] = await Promise.all([
       scanTable(tables.tenants),
+      scanTable(tables.customers),
       scanTable(tables.domains),
       scanTable(tables.policies),
       scanTable(tables.entitlements),
@@ -188,6 +190,7 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
 
     res.json({
       tenants: sortByDate(scopeItems(req.actor, tenants)).map(publicTenant),
+      customers: sortByDate(scopeCustomers(req.actor, customers, tenants)).map(publicCustomer),
       domains: sortByDate(scopeItems(req.actor, domains)),
       policies: sortByDate(scopeItems(req.actor, policies)),
       entitlements: sortByDate(scopeItems(req.actor, entitlements)),
@@ -221,6 +224,7 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
     if (!domainName) return res.status(400).json({ error: "valid_domain_required" });
     if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
+    if (originUrl.hostname === domainName) return res.status(400).json({ error: "origin_matches_protected_domain" });
     if (!tables.origins || !tables.originPools || !tables.certificates) return res.status(503).json({ error: "onboarding_tables_not_configured" });
     await enforceTenantLimit(tenantId, "domains", (await queryByTenant(tables.domains, tenantId)).length);
 
@@ -301,18 +305,21 @@ app.post("/api/domain-onboarding", requireScope("domain:write"), async (req, res
   }
 });
 
-app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), async (req, res, next) => {
+app.post("/api/customer-onboarding", requirePlatformActor, requireScope("tenant:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
-    const name = clean(body.name);
+    const tenantInput = body.tenant || {};
+    const name = clean(tenantInput.name);
+    const plan = normalizePlan(tenantInput.plan);
+    const existingCustomerId = clean(body.customer_id);
+    const now = new Date().toISOString();
     if (!name) return res.status(400).json({ error: "tenant_name_required" });
-    const plan = normalizePlan(body.plan);
     if (!plan) return res.status(400).json({ error: "supported_plan_required" });
     const registration = normalizeTenantRegistration(body.registration, name, plan);
 
-    const now = new Date().toISOString();
     const tenant = {
       tenant_id: `tenant_${slugify(name)}_${crypto.randomBytes(3).toString("hex")}`,
+      customer_id: existingCustomerId || `cus_${slugify(registration.company.legal_name)}_${crypto.randomBytes(3).toString("hex")}`,
       name,
       status: "registered",
       plan,
@@ -321,17 +328,127 @@ app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), asy
       updated_at: now
     };
     const entitlement = createEntitlement(tenant, now);
-    await dynamo.send(new TransactWriteCommand({
-      TransactItems: [
+    const baselinePolicy = createDefaultTenantWafPolicy(tenant.tenant_id, now);
+    let customer;
+    let user;
+    let cognitoCreated = false;
+
+    if (existingCustomerId) {
+      customer = await getById(tables.customers, { customer_id: existingCustomerId });
+      if (!customer) return res.status(404).json({ error: "customer_not_found" });
+      user = await getById(tables.users, { user_id: clean(body.existing_user_id) });
+      if (!user || user.customer_id !== customer.customer_id) return res.status(400).json({ error: "customer_administrator_required" });
+      if ((user.tenant_ids || [user.tenant_id]).includes(tenant.tenant_id)) return res.status(409).json({ error: "customer_user_already_assigned" });
+    } else {
+      const admin = body.admin || {};
+      const email = normalizeEmail(admin.email);
+      const displayName = clean(admin.display_name);
+      if (!email) return res.status(400).json({ error: "valid_email_required" });
+      if (!displayName) return res.status(400).json({ error: "display_name_required" });
+      const existing = await queryByIndex(tables.users, "email-index", "email", email);
+      if (existing.length) return res.status(409).json({ error: "user_already_exists" });
+      customer = {
+        customer_id: tenant.customer_id,
+        legal_name: registration.company.legal_name,
+        country: registration.company.country,
+        tax_id: registration.company.tax_id || "",
+        website: registration.company.website || "",
+        industry: registration.company.industry || "",
+        address_line_1: registration.company.address_line_1 || "",
+        city: registration.company.city || "",
+        postal_code: registration.company.postal_code || "",
+        primary_user_email: email,
+        tenant_count: 1,
+        status: "active",
+        created_at: now,
+        updated_at: now
+      };
+      user = {
+        user_id: `usr_${crypto.randomUUID()}`,
+        tenant_id: tenant.tenant_id,
+        tenant_ids: [tenant.tenant_id],
+        customer_id: customer.customer_id,
+        email,
+        display_name: displayName,
+        status: "invited",
+        roles: ["tenant_admin"],
+        scopes: roleScopes.tenant_admin,
+        idp_subject: "",
+        mfa_required: true,
+        created_at: now,
+        updated_at: now
+      };
+      try {
+        await cognito.send(new AdminCreateUserCommand({
+          UserPoolId: process.env.COGNITO_USER_POOL_ID,
+          Username: email,
+          DesiredDeliveryMediums: ["EMAIL"],
+          UserAttributes: [
+            { Name: "email", Value: email },
+            { Name: "email_verified", Value: "true" },
+            { Name: "name", Value: displayName },
+            { Name: "custom:tenant_id", Value: tenant.tenant_id },
+            { Name: "custom:role", Value: "tenant_admin" }
+          ]
+        }));
+        cognitoCreated = true;
+        await cognito.send(new AdminAddUserToGroupCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: email, GroupName: "tenant_admins" }));
+      } catch (error) {
+        if (cognitoCreated) await cognito.send(new AdminDeleteUserCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: email })).catch(() => {});
+        throw error;
+      }
+    }
+
+    try {
+      const writes = [
         { Put: { TableName: tables.tenants, Item: tenant, ConditionExpression: "attribute_not_exists(tenant_id)" } },
-        { Put: { TableName: tables.entitlements, Item: entitlement, ConditionExpression: "attribute_not_exists(customer_identifier)" } }
-      ]
-    }));
-    await audit("tenant.created", tenant.tenant_id, { tenant_id: tenant.tenant_id, plan, registration_version: registration.version, registration_status: registration.status, entitlement: publicEntitlement(entitlement) }, req.actor);
-    res.status(201).json({ tenant: publicTenant(tenant), entitlement: publicEntitlement(entitlement) });
+        { Put: { TableName: tables.entitlements, Item: entitlement, ConditionExpression: "attribute_not_exists(customer_identifier)" } },
+        { Put: { TableName: tables.policies, Item: baselinePolicy, ConditionExpression: "attribute_not_exists(policy_id)" } }
+      ];
+      if (existingCustomerId) {
+        writes.push(
+          {
+            Update: {
+              TableName: tables.users,
+              Key: { user_id: user.user_id },
+              UpdateExpression: "SET tenant_ids = list_append(if_not_exists(tenant_ids, :empty), :tenant_ids), updated_at = :updated_at",
+              ConditionExpression: "customer_id = :customer_id AND (attribute_not_exists(tenant_ids) OR NOT contains(tenant_ids, :tenant_id))",
+              ExpressionAttributeValues: { ":empty": [], ":tenant_ids": [tenant.tenant_id], ":tenant_id": tenant.tenant_id, ":customer_id": customer.customer_id, ":updated_at": now }
+            }
+          },
+          {
+            Update: {
+              TableName: tables.customers,
+              Key: { customer_id: customer.customer_id },
+              UpdateExpression: "SET tenant_count = if_not_exists(tenant_count, :zero) + :one, updated_at = :updated_at",
+              ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":updated_at": now }
+            }
+          }
+        );
+      } else {
+        writes.push(
+          { Put: { TableName: tables.customers, Item: customer, ConditionExpression: "attribute_not_exists(customer_id)" } },
+          { Put: { TableName: tables.users, Item: user, ConditionExpression: "attribute_not_exists(user_id)" } }
+        );
+      }
+      await dynamo.send(new TransactWriteCommand({ TransactItems: writes }));
+    } catch (error) {
+      if (cognitoCreated) await cognito.send(new AdminDeleteUserCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: user.email })).catch(() => {});
+      throw error;
+    }
+
+    await audit("customer.onboarded", tenant.tenant_id, { customer_id: customer.customer_id, tenant_id: tenant.tenant_id, user_id: user.user_id, baseline_policy_id: baselinePolicy.policy_id, existing_customer: Boolean(existingCustomerId) }, req.actor);
+    res.status(201).json({ customer: publicCustomer(customer), tenant: publicTenant(tenant), user: redactUser(user), entitlement: publicEntitlement(entitlement), baseline_policy: baselinePolicy, invitation_status: existingCustomerId ? "not_required" : "sent" });
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), (_req, res) => {
+  res.status(410).json({
+    error: "customer_onboarding_required",
+    message: "Create tenants through /api/customer-onboarding so the customer account, administrator and baseline policy are recorded together."
+  });
 });
 
 app.get("/api/tenants", requireScope("tenant:read"), async (req, res, next) => {
@@ -583,6 +700,7 @@ app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
     const domain = await getById(tables.domains, { domain_id: domainId });
     if (!domain || domain.tenant_id !== tenantId) return res.status(404).json({ error: "domain_not_found" });
     await assertOriginConfigurationEditable(tenantId, domainId);
+    if (originUrl.hostname === domain.domain_name) return res.status(400).json({ error: "origin_matches_protected_domain" });
 
     const now = new Date().toISOString();
     const origin = {
@@ -732,6 +850,7 @@ app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:wr
     const origin = origins[0];
     if (!certificate) return res.status(409).json({ error: "issued_certificate_required" });
     if (!pool || !origin || origin.status !== "healthy") return res.status(409).json({ error: "healthy_origin_pool_required" });
+    if (origins.some((item) => item.hostname === domain.domain_name)) return res.status(409).json({ error: "origin_matches_protected_domain" });
     if (pool.failover_enabled && (origins.length !== 2 || origins.some((item) => item.status !== "healthy"))) return res.status(409).json({ error: "healthy_failover_origin_required" });
     const existing = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domain.domain_id);
     if (existing.some((item) => !["failed", "rolled_back"].includes(item.status))) return res.status(409).json({ error: "edge_deployment_already_exists" });
@@ -918,6 +1037,10 @@ app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), a
     const cnameRecords = await dns.resolveCname(domain.domain_name).catch(() => []);
     const target = clean(deployment.distribution_domain_name).replace(/\.$/, "");
     const cutoverVerified = cnameRecords.some((record) => clean(record).replace(/\.$/, "") === target);
+    const edgeHealth = cutoverVerified ? await checkProtectedEdge(domain) : { healthy: false, status_code: 0, error: "traffic_cname_not_detected" };
+    const active = cutoverVerified && edgeHealth.healthy;
+    const status = active ? "active" : cutoverVerified ? "edge_validation_failed" : "pending_traffic_dns";
+    const step = active ? "active" : cutoverVerified ? "origin_remediation" : "traffic_dns_cutover";
     const now = new Date().toISOString();
     const result = await dynamo.send(new UpdateCommand({
       TableName: tables.domains,
@@ -925,15 +1048,15 @@ app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), a
       UpdateExpression: "SET #status = :status, onboarding_step = :step, cutover_last_checked_at = :checked, updated_at = :updated_at",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
-        ":status": cutoverVerified ? "active" : "pending_traffic_dns",
-        ":step": cutoverVerified ? "active" : "traffic_dns_cutover",
+        ":status": status,
+        ":step": step,
         ":checked": now,
         ":updated_at": now
       },
       ReturnValues: "ALL_NEW"
     }));
-    await audit("edge_deployment.cutover_checked", domain.tenant_id, { domain_id: domain.domain_id, cutoverVerified }, req.actor);
-    res.json({ domain: result.Attributes, verified: cutoverVerified, cname_records: cnameRecords, required_target: target });
+    await audit("edge_deployment.cutover_checked", domain.tenant_id, { domain_id: domain.domain_id, cutoverVerified, edge_health: edgeHealth }, req.actor);
+    res.json({ domain: result.Attributes, verified: active, dns_verified: cutoverVerified, edge_health: edgeHealth, cname_records: cnameRecords, required_target: target });
   } catch (error) {
     next(error);
   }
@@ -1751,7 +1874,7 @@ app.get("/api/reports", requireScope("reports:read"), async (req, res, next) => 
 app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
-    const users = tenantId ? await queryByTenant(tables.users, tenantId) : await scanTable(tables.users);
+    const users = tenantId ? (await scanTable(tables.users)).filter((user) => userBelongsToTenant(user, tenantId)) : await scanTable(tables.users);
     res.json({ users: sortByDate(users) });
   } catch (error) {
     next(error);
@@ -1778,9 +1901,12 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
     if (existing.some((item) => item.tenant_id === tenantId)) return res.status(409).json({ error: "user_already_exists" });
     await enforceTenantLimit(tenantId, "users", (await queryByTenant(tables.users, tenantId)).length);
     const now = new Date().toISOString();
+    const tenant = tenantId === "platform" ? null : await getById(tables.tenants, { tenant_id: tenantId });
     const user = {
       user_id: `usr_${crypto.randomUUID()}`,
       tenant_id: tenantId,
+      tenant_ids: [tenantId],
+      customer_id: tenant?.customer_id || "",
       email,
       display_name: displayName,
       status: clean(body.status) || "invited",
@@ -2168,6 +2294,7 @@ async function authenticateRequest(req) {
       type: "bootstrap",
       subject: "bootstrap-admin",
       tenant_id: "platform",
+      tenant_ids: ["platform"],
       roles: ["platform_owner"],
       scopes: ["*"]
     };
@@ -2200,6 +2327,7 @@ async function authenticateRequest(req) {
     type: "api_key",
     subject: record.key_id,
     tenant_id: record.tenant_id,
+    tenant_ids: [record.tenant_id],
     roles: ["api_key"],
     scopes: record.scopes || []
   };
@@ -2245,6 +2373,7 @@ async function authenticateCognitoToken(token) {
     subject: clean(claims.sub),
     username,
     tenant_id: user.tenant_id,
+    tenant_ids: Array.from(new Set([...(user.tenant_ids || []), user.tenant_id].filter(Boolean))),
     roles: permittedRoles,
     scopes: Array.from(new Set(permittedRoles.flatMap((role) => roleScopes[role] || []))),
     email,
@@ -2289,6 +2418,7 @@ async function provisionExternalIdpUser(claims, email, username, groups) {
   const user = {
     user_id: `usr_${crypto.randomUUID()}`,
     tenant_id: connection.tenant_id,
+    tenant_ids: [connection.tenant_id],
     email,
     display_name: clean(claims.name) || email,
     status: "active",
@@ -2340,7 +2470,7 @@ function isPlatformActor(actor) {
 
 function isTenantApprovalActor(actor, tenantId) {
   return Boolean(
-    clean(actor?.tenant_id) === clean(tenantId) &&
+    actorTenantIds(actor).includes(clean(tenantId)) &&
     (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
   );
 }
@@ -2352,18 +2482,34 @@ function requireTenantApprovalActor(actor, tenantId) {
 function tenantForActor(actor, requestedTenantId) {
   const tenantId = clean(requestedTenantId);
   if (isPlatformActor(actor)) return tenantId;
-  if (!actor?.tenant_id || actor.tenant_id === "platform") {
+  const tenantIds = actorTenantIds(actor);
+  if (!tenantIds.length || tenantIds.includes("platform")) {
     throw httpError(403, "tenant_context_required");
   }
-  if (tenantId && tenantId !== actor.tenant_id) {
+  if (tenantId && !tenantIds.includes(tenantId)) {
     throw httpError(403, "cross_tenant_access_denied");
   }
-  return actor.tenant_id;
+  return tenantId || actor.tenant_id || tenantIds[0];
 }
 
 function scopeItems(actor, items) {
   if (isPlatformActor(actor)) return items;
-  return items.filter((item) => item?.tenant_id === actor?.tenant_id);
+  const tenantIds = new Set(actorTenantIds(actor));
+  return items.filter((item) => [...tenantIds].some((tenantId) => userBelongsToTenant(item, tenantId)));
+}
+
+function actorTenantIds(actor) {
+  return Array.from(new Set([...(Array.isArray(actor?.tenant_ids) ? actor.tenant_ids : []), clean(actor?.tenant_id)].filter(Boolean)));
+}
+
+function userBelongsToTenant(item, tenantId) {
+  return item?.tenant_id === tenantId || (Array.isArray(item?.tenant_ids) && item.tenant_ids.includes(tenantId));
+}
+
+function scopeCustomers(actor, customers, tenants) {
+  if (isPlatformActor(actor)) return customers;
+  const customerIds = new Set(scopeItems(actor, tenants).map((tenant) => tenant.customer_id).filter(Boolean));
+  return customers.filter((customer) => customerIds.has(customer.customer_id));
 }
 
 function scopeProfiles(actor, profiles) {
@@ -2562,6 +2708,22 @@ function publicTenant(tenant) {
     ...publicFields,
     registration_status: registration?.status || "not_registered",
     registration_version: registration?.version || null
+  };
+}
+
+function publicCustomer(customer) {
+  if (!customer) return null;
+  return {
+    customer_id: customer.customer_id,
+    legal_name: customer.legal_name,
+    country: customer.country,
+    website: customer.website || "",
+    industry: customer.industry || "",
+    primary_user_email: customer.primary_user_email || "",
+    tenant_count: Number(customer.tenant_count || 0),
+    status: customer.status,
+    created_at: customer.created_at,
+    updated_at: customer.updated_at
   };
 }
 
@@ -2847,7 +3009,7 @@ async function ensureTenantWebAcl(deployment, domain) {
     Description: `FortressNet managed edge for ${domain.domain_name}`,
     Scope: "CLOUDFRONT",
     DefaultAction: { Allow: {} },
-    Rules: [],
+    Rules: toAwsWafRules(compileWafRules(defaultWafBaseline()), domain.domain_id),
     VisibilityConfig: wafVisibilityConfig(`fn_${domain.domain_id}`),
     Tags: [
       { Key: "ManagedBy", Value: "FortressNet" },
@@ -3099,6 +3261,14 @@ async function checkOriginHealth(origin) {
   return { ...result, address, checked_url: `${target.protocol}//${target.hostname}${pathName}` };
 }
 
+async function checkProtectedEdge(domain) {
+  const hostname = normalizeDomain(domain.domain_name);
+  if (!hostname) throw httpError(400, "valid_domain_required");
+  const address = await resolvePublicOriginAddress(hostname);
+  const result = await requestHealthCheck(new URL(`https://${hostname}/`), address, "/", 15000, hostname);
+  return { ...result, address, checked_url: `https://${hostname}/` };
+}
+
 async function recordOriginHealthCheck(origin, actor = null, source = "scheduled") {
   let health;
   try {
@@ -3344,7 +3514,7 @@ function normalizeImportDnsRecord(record, zoneName) {
 }
 
 function isVerifiedDomainStatus(status) {
-  return ["verified_pending_certificate", "certificate_validation", "certificate_issued_pending_edge", "edge_provisioning", "pending_traffic_dns", "active"].includes(clean(status));
+  return ["verified_pending_certificate", "certificate_validation", "certificate_issued_pending_edge", "edge_provisioning", "pending_traffic_dns", "edge_validation_failed", "active"].includes(clean(status));
 }
 
 function normalizeVerifiedAccessRequest(body, application, connection) {
@@ -4057,6 +4227,37 @@ function compileWafRules(policy) {
   return baseRules;
 }
 
+function defaultWafBaseline() {
+  return {
+    name: "AWS Managed Security Baseline",
+    mode: "monitor",
+    scope: "all_domains",
+    rate_limit: 2000,
+    rate_limit_path: "",
+    rate_limit_methods: [],
+    rate_limit_countries: [],
+    managed_protections: ["ip_reputation", "anonymous_ip"],
+    blocked_asns: [],
+    blocked_header_name: "",
+    blocked_header_values: [],
+    allowed_ip_cidrs: [],
+    blocked_ip_cidrs: []
+  };
+}
+
+function createDefaultTenantWafPolicy(tenantId, now) {
+  return {
+    policy_id: `pol_${crypto.randomUUID()}`,
+    tenant_id: tenantId,
+    ...defaultWafBaseline(),
+    source: "fortressnet_aws_managed_baseline",
+    approval_required: true,
+    status: "baseline_ready",
+    created_at: now,
+    updated_at: now
+  };
+}
+
 function slugify(value) {
   return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 42) || "tenant";
 }
@@ -4080,6 +4281,8 @@ function redactUser(user) {
   return {
     user_id: user.user_id,
     tenant_id: user.tenant_id,
+    tenant_ids: user.tenant_ids || [user.tenant_id],
+    customer_id: user.customer_id || "",
     email: user.email,
     roles: user.roles,
     scopes: user.scopes,
@@ -4093,6 +4296,7 @@ function publicActor(actor) {
     type: actor.type,
     subject: actor.subject,
     tenant_id: actor.tenant_id,
+    tenant_ids: actorTenantIds(actor),
     roles: actor.roles,
     scopes: actor.scopes,
     mfa_required: Boolean(actor.mfa_required),
@@ -4134,4 +4338,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

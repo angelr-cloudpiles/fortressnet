@@ -94,6 +94,11 @@ variable "tenants_table_name" {
   type        = string
 }
 
+variable "customers_table_name" {
+  description = "Customer accounts table name."
+  type        = string
+}
+
 variable "domains_table_name" {
   description = "Domains table name."
   type        = string

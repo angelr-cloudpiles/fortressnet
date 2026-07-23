@@ -148,6 +148,7 @@ module "control_plane" {
   origin_verify_header_value        = random_password.origin_verify_header.result
   log_bucket_name                   = module.data_plane.audit_logs_bucket_name
   tenants_table_name                = module.data_plane.tenants_table_name
+  customers_table_name              = module.data_plane.customers_table_name
   domains_table_name                = module.data_plane.domains_table_name
   entitlements_table_name           = module.data_plane.entitlements_table_name
   security_policies_table_name      = module.data_plane.security_policies_table_name

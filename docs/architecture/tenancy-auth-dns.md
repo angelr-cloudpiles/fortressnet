@@ -103,6 +103,16 @@ Roles iniciales:
 
 `platform_owner` es un rol global de FortressNet: puede ver todos los tenants, operar la configuracion transversal, crear tenants y administrar planes. No puede aprobar cambios que afecten a un tenant cliente. Las aprobaciones de edge, WAF, cambios de origen y Verified Access requieren un `tenant_admin` o `security_admin` activo, perteneciente al mismo `tenant_id` y distinto del solicitante. Un administrador de tenant solo recibe datos y puede operar recursos de su propio tenant.
 
+## Alta de cliente y baseline WAF
+
+El alta se inicia desde el asistente modal de cuenta cliente. La operacion crea primero la cuenta, envia la invitacion Cognito al administrador inicial y despues registra el tenant, su entitlement y la baseline de AWS WAF. Una cuenta puede tener varios tenants; la membresia del usuario conserva los `tenant_ids` autorizados y cada solicitud se valida contra el tenant del recurso.
+
+La ruta heredada de alta directa de tenant queda deshabilitada: toda integracion debe usar el flujo `customer-onboarding` para que no existan tenants sin cuenta cliente, administrador ni baseline de seguridad.
+
+Cada tenant recibe una baseline en modo `monitor` con `AWSManagedRulesCommonRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`, `AWSManagedRulesSQLiRuleSet`, reputacion IP, IP anonimas y rate limiting. Al crear un edge, esas reglas se aplican inicialmente con `Count`; cualquier cambio del cliente se realiza mediante change set y aprobacion independiente.
+
+El hostname publico protegido nunca puede ser usado como origen. Antes de marcar el cutover como activo, FortressNet confirma tanto el CNAME como una respuesta correcta a traves del edge. El origen debe tener un hostname HTTPS separado que permanezca apuntando a la aplicacion cuando el hostname publico se redirige a CloudFront.
+
 Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; el correo temporal lo entrega Cognito. La cuenta se activa al completar el primer login. El token de bootstrap queda solo como recuperacion controlada de plataforma.
 
 La configuracion TOTP se inicia en el perfil de FortressNet despues del primer login. El backend comprueba que el access token pertenezca al mismo sujeto del ID token y llama a `AssociateSoftwareToken`, `VerifySoftwareToken` y `SetUserMFAPreference`. El QR se genera en el navegador con el emisor `FortressNet`; el secreto no se persiste y los eventos de auditoria registran unicamente el inicio y la confirmacion de la operacion. Cognito Managed Login no ofrece una configuracion de emisor para su QR nativo, por lo que el portal no usa ese QR para el alta con marca FortressNet.

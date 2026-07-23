@@ -43,6 +43,11 @@ output "tenants_table_name" {
   value       = aws_dynamodb_table.tenants.name
 }
 
+output "customers_table_name" {
+  description = "Customer accounts table name."
+  value       = aws_dynamodb_table.customers.name
+}
+
 output "domains_table_name" {
   description = "Domains table name."
   value       = aws_dynamodb_table.domains.name

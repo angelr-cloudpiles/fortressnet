@@ -247,6 +247,7 @@ resource "aws_iam_role_policy" "task" {
         ]
         Resource = [
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.tenants_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.customers_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.entitlements_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}",
@@ -517,6 +518,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "TENANTS_TABLE"
           value = var.tenants_table_name
+        },
+        {
+          name  = "CUSTOMERS_TABLE"
+          value = var.customers_table_name
         },
         {
           name  = "DOMAINS_TABLE"
