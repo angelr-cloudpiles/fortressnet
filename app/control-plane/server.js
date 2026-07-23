@@ -2372,6 +2372,7 @@ async function authenticateCognitoToken(token) {
     type: "cognito",
     subject: clean(claims.sub),
     username,
+    display_name: user.display_name || clean(claims.name) || email,
     tenant_id: user.tenant_id,
     tenant_ids: Array.from(new Set([...(user.tenant_ids || []), user.tenant_id].filter(Boolean))),
     roles: permittedRoles,
@@ -4304,6 +4305,8 @@ function publicActor(actor) {
   return {
     type: actor.type,
     subject: actor.subject,
+    display_name: actor.display_name || actor.email || "Platform administrator",
+    email: actor.email || "",
     tenant_id: actor.tenant_id,
     tenant_ids: actorTenantIds(actor),
     roles: actor.roles,

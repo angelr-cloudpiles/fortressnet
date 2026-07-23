@@ -545,9 +545,23 @@ kbd {
   font-weight: 800;
 }
 
+.user > div {
+  min-width: 0;
+}
+
 .user strong {
   display: block;
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .content {

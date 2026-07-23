@@ -290,7 +290,7 @@ function App() {
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed((current) => !current)} />
       <main className="main">
-        <Topbar authenticated authMode={authMode} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
+        <Topbar authenticated actor={platform?.actor} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
         <section className="content">
           <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} onCreateTenant={openTenantCreate} />
           {status.message && <StatusBanner status={status} />}
@@ -481,9 +481,12 @@ function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId
   );
 }
 
-function Topbar({ authenticated, authMode, onSignIn, onSignOut, onOpenProfile, onNavigate, onSearch }) {
+function Topbar({ authenticated, actor, onSignIn, onSignOut, onOpenProfile, onNavigate, onSearch }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const contactName = actor?.display_name || actor?.email || "Account";
+  const contactEmail = actor?.email || "";
+  const initials = contactName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "FN";
   const openProfile = () => {
     setAccountMenuOpen(false);
     onOpenProfile();
@@ -505,8 +508,8 @@ function Topbar({ authenticated, authMode, onSignIn, onSignOut, onOpenProfile, o
       {authenticated ? (
         <div className="user-menu">
           <button className="user" onClick={() => setAccountMenuOpen((current) => !current)} aria-expanded={accountMenuOpen} aria-haspopup="menu" title="Account menu">
-            <span>FN</span>
-            <div><strong>Console</strong><small>{authMode === "cognito" ? "Cognito session" : "Recovery mode"}</small></div>
+            <span>{initials}</span>
+            <div><strong>{contactName}</strong>{contactEmail && <small>{contactEmail}</small>}</div>
             <ChevronDown size={15} />
           </button>
           {accountMenuOpen && (
