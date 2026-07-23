@@ -799,9 +799,11 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const tenantApprovers = filterByTenant(state.users, selectedTenantId)
     .filter((user) => (user.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)));
   const appliedWafChangeSet = tenantWafChangeSets
-    .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied");
+    .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied" && changeSet.mode === "block");
+  const monitorWafChangeSet = tenantWafChangeSets
+    .find((changeSet) => changeSet.domain_id === latestDomain?.domain_id && changeSet.status === "applied" && changeSet.mode === "monitor");
   const pendingWafChangeSet = tenantWafChangeSets
-    .find((changeSet) => changeSet.status !== "applied" && (!changeSet.domain_id || changeSet.domain_id === latestDomain?.domain_id));
+    .find((changeSet) => changeSet.mode === "block" && changeSet.status !== "applied" && (!changeSet.domain_id || changeSet.domain_id === latestDomain?.domain_id));
   const edgeReadyForCutover = ["ready_for_cutover", "active"].includes(latestDeployment?.status);
   const ownershipVerified = verifiedDomainStatuses.has(latestDomain?.status);
   const certificatePending = latestCertificate && latestCertificate.status !== "ISSUED";
@@ -811,7 +813,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
     { step: "Primary origin", value: humanizeWorkflowStatus(primaryOrigin?.status), done: primaryOrigin?.status === "healthy" },
     { step: "Certificate", value: humanizeWorkflowStatus(latestCertificate?.status), done: latestCertificate?.status === "ISSUED" },
     { step: "Edge deployment", value: humanizeWorkflowStatus(latestDeployment?.status, "Not requested"), done: edgeReadyForCutover },
-    { step: "WAF policy", value: appliedWafChangeSet ? "Applied" : humanizeWorkflowStatus(pendingWafChangeSet?.status, "Policy required"), done: Boolean(appliedWafChangeSet) },
+    { step: "WAF policy", value: appliedWafChangeSet ? "Blocking policy applied" : monitorWafChangeSet ? monitorObservationStatus(monitorWafChangeSet) : humanizeWorkflowStatus(pendingWafChangeSet?.status, "Policy required"), done: Boolean(appliedWafChangeSet) },
     { step: "Traffic DNS", value: latestDomain?.status === "active" ? "Active" : edgeReadyForCutover ? "Awaiting traffic CNAME" : "Blocked by edge deployment", done: latestDomain?.status === "active" }
   ];
   const currentStepIndex = checklist.findIndex((item) => !item.done);
@@ -858,6 +860,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
             approvers={tenantApprovers}
             pendingWafChangeSet={pendingWafChangeSet}
             appliedWafChangeSet={appliedWafChangeSet}
+            monitorWafChangeSet={monitorWafChangeSet}
             onCreated={onCreated}
             setStatus={setStatus}
             onNavigate={onNavigate}
@@ -876,7 +879,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   );
 }
 
-function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, pendingWafChangeSet, appliedWafChangeSet, onCreated, setStatus, onNavigate }) {
+function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, pendingWafChangeSet, appliedWafChangeSet, monitorWafChangeSet, onCreated, setStatus, onNavigate }) {
   let title = "Create or select a tenant";
   let detail = "Select the customer tenant before creating a protected site.";
   let action = null;
@@ -942,9 +945,24 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
     } else if (pendingWafChangeSet.status === "pending_approval") {
       detail = "The WAF change set requires approval before it can be applied to this edge.";
       action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "WAF change set approved.") };
+    } else if (pendingWafChangeSet.status === "approved" && pendingWafChangeSet.mode === "block" && !monitorWafChangeSet) {
+      title = "Start the 24-hour observation window";
+      detail = "The approved policy would block traffic. FortressNet first deploys the same protections in monitor mode, which records matches without blocking requests. After 24 hours, review the observations and apply the approved blocking policy.";
+      action = { label: "Start observation", icon: Activity, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/start-monitoring`, "POST", token, setStatus, onCreated, "WAF observation started. Blocking remains disabled for 24 hours.", { domain_id: domain.domain_id }) };
+    } else if (pendingWafChangeSet.status === "approved" && pendingWafChangeSet.mode === "block" && monitorWafChangeSet) {
+      const remainingHours = monitorObservationRemainingHours(monitorWafChangeSet);
+      if (remainingHours > 0) {
+        title = "Observe the WAF policy before blocking";
+        detail = `The equivalent policy is running in monitor mode. ${remainingHours} hour${remainingHours === 1 ? "" : "s"} remain before blocking can be enabled. Review Security Events for matches; traffic is not blocked during this window.`;
+        action = { label: "Review events", icon: ClipboardList, run: () => onNavigate("events") };
+      } else {
+        title = "Apply the WAF blocking policy";
+        detail = "The 24-hour monitor window is complete and the approved policy is ready to enforce at this edge.";
+        action = { label: "Apply WAF", icon: Shield, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/apply`, "POST", token, setStatus, onCreated, "WAF blocking policy applied.", { domain_id: domain.domain_id }) };
+      }
     } else if (pendingWafChangeSet.status === "approved") {
-      detail = "The WAF change set is approved and ready to be applied to this edge.";
-      action = { label: "Apply WAF", icon: Shield, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/apply`, "POST", token, setStatus, onCreated, "WAF change set applied.", { domain_id: domain.domain_id }) };
+      detail = "The approved monitor policy is ready to be applied to this edge. It records matches without blocking traffic.";
+      action = { label: "Apply monitor policy", icon: Shield, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/apply`, "POST", token, setStatus, onCreated, "WAF monitor policy applied.", { domain_id: domain.domain_id }) };
     } else {
       detail = "Complete the pending WAF change set before changing traffic DNS.";
       action = { label: "Open policies", icon: Shield, run: () => onNavigate("policies") };
@@ -2215,7 +2233,7 @@ function WafChangeSetTable({ changeSets, domains = [], token = "", onChanged = n
             <td><span className="health pending">{changeSet.status}</span></td>
             <td>{(changeSet.rules || []).length}</td>
             <td><select className="compact-select" value={domainId} onChange={(event) => setDomainId(event.target.value)} disabled={!domains.length}><option value="">Select domain</option>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></td>
-            <td><WafAction changeSet={changeSet} domainId={domainId} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
+            <td><WafAction changeSet={changeSet} changeSets={changeSets} domainId={domainId} token={token} onChanged={onChanged} setStatus={setStatus} /></td>
           </tr>
         ))}
       </tbody>
@@ -2251,8 +2269,13 @@ function EdgeAction({ domain, deployment, token, onChanged, setStatus }) {
   return <span className="mode-readonly">{deployment.status}</span>;
 }
 
-function WafAction({ changeSet, domainId, token, onChanged, setStatus }) {
+function WafAction({ changeSet, changeSets, domainId, token, onChanged, setStatus }) {
   if (changeSet.status === "pending_approval") return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "WAF change set approved.")}>Approve</button>;
+  if (changeSet.status === "approved" && changeSet.mode === "block") {
+    const monitorChangeSet = changeSets.find((item) => item.domain_id === domainId && item.status === "applied" && item.mode === "monitor");
+    if (!monitorChangeSet) return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/start-monitoring`, "POST", token, setStatus, onChanged, "WAF observation started. Blocking remains disabled for 24 hours.", { domain_id: domainId })}>Start observation</button>;
+    if (monitorObservationRemainingHours(monitorChangeSet) > 0) return <span className="mode-readonly">Observing {monitorObservationRemainingHours(monitorChangeSet)}h</span>;
+  }
   if (changeSet.status === "approved") return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/apply`, "POST", token, setStatus, onChanged, "WAF change set applied.", { domain_id: domainId })}>Apply</button>;
   if (changeSet.status === "applied") return <button className="secondary compact" disabled={!token || !domainId} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/rollback`, "POST", token, setStatus, onChanged, "WAF rollback applied.", { domain_id: domainId })}>Rollback</button>;
   return <span className="mode-readonly">{changeSet.status}</span>;
@@ -2408,7 +2431,21 @@ function friendlyWorkflowError(message) {
   if (message === "mfa_enrollment_required") {
     return "Multi-factor authentication must be configured before this security-sensitive action can be completed.";
   }
+  if (message === "monitor_observation_window_required") {
+    return "The blocking policy cannot be applied yet. Start or complete the 24-hour monitor observation window first; FortressNet will enable Apply WAF when it is safe to proceed.";
+  }
   return message;
+}
+
+function monitorObservationRemainingHours(changeSet) {
+  const startedAt = Date.parse(changeSet?.applied_at || "");
+  if (!Number.isFinite(startedAt)) return 24;
+  return Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - (Date.now() - startedAt)) / (60 * 60 * 1000)));
+}
+
+function monitorObservationStatus(changeSet) {
+  const remainingHours = monitorObservationRemainingHours(changeSet);
+  return remainingHours > 0 ? `Observing in monitor mode (${remainingHours}h remaining)` : "Observation complete";
 }
 
 async function loadOperationalData(path, token, key, setValue, setStatus) {

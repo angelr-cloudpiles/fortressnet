@@ -83,8 +83,8 @@ FortressNet no debe afirmar enforcement OpenAPI completo hasta que el compilador
 
 1. Start the first tenant policy in `monitor` mode. Set the IP threshold and, when required, limit it to a path prefix, HTTP methods and selected countries before compiling the change set.
 2. A different authorized operator approves the change set.
-3. Select the exact tenant domain in the console and apply the change.
-4. Keep monitor mode applied for at least 24 hours before applying a `block` policy to the same domain.
+3. Select the exact tenant domain in the console and apply the change. If the approved policy is already in `block` mode, the Go-Live Assistant can deploy an equivalent `monitor` baseline without blocking traffic.
+4. Keep monitor mode applied for at least 24 hours before applying a `block` policy to the same domain. The assistant shows the remaining time and only enables enforcement after that window ends.
 5. Use rollback to restore the previous WAF rules if the change has an unexpected effect.
 
 ## Origin Health

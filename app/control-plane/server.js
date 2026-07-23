@@ -1628,6 +1628,50 @@ app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("edge:write"), 
   }
 });
 
+app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
+    if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
+    tenantForActor(req.actor, changeSet.tenant_id);
+    if (changeSet.status !== "approved" || changeSet.mode !== "block") return res.status(409).json({ error: "approved_block_waf_change_set_required" });
+    const domainId = clean(req.body?.domain_id);
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    const edgeDeployment = await edgeDeploymentForDomain(domainId, changeSet.tenant_id);
+    if (!edgeDeployment?.web_acl_id || !["provisioning", "ready_for_cutover", "active"].includes(edgeDeployment.status)) return res.status(409).json({ error: "provisioned_edge_required" });
+
+    const existing = (await queryByTenant(tables.wafChangeSets, changeSet.tenant_id)).find((item) => (
+      item.domain_id === domainId && item.status === "applied" && item.mode === "monitor"
+    ));
+    if (existing) return res.json({ waf_change_set: existing, observation_window_started: false });
+
+    const policy = await getById(tables.policies, { policy_id: changeSet.policy_id });
+    if (!policy) return res.status(404).json({ error: "policy_not_found" });
+    const now = new Date().toISOString();
+    const monitorChangeSet = {
+      change_set_id: `wcs_${crypto.randomUUID()}`,
+      tenant_id: changeSet.tenant_id,
+      policy_id: changeSet.policy_id,
+      policy_version: changeSet.policy_version,
+      target_scope: changeSet.target_scope,
+      domain_id: domainId,
+      mode: "monitor",
+      status: "approved",
+      provider: "aws_wafv2",
+      rules: compileWafRules({ ...policy, mode: "monitor" }),
+      summary: "Equivalent WAF rules deployed in monitor mode for the 24-hour observation window",
+      created_by: req.actor?.subject || "bootstrap",
+      derived_from_change_set_id: changeSet.change_set_id,
+      created_at: now,
+      updated_at: now
+    };
+    const applied = await applyWafChangeSet(monitorChangeSet, edgeDeployment);
+    await audit("waf_change_set.monitoring_started", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, monitor_change_set_id: applied.change_set_id, domain_id: domainId }, req.actor);
+    res.status(201).json({ waf_change_set: applied, observation_window_started: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/waf-change-sets/:changeSetId/rollback", requireScope("edge:write"), async (req, res, next) => {
   try {
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
