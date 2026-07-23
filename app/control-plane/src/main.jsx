@@ -96,7 +96,7 @@ function App() {
 
   useEffect(() => {
     if (!token) return;
-    loadState(token, setState, setStatus, setSelectedTenantId);
+    loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
   }, [token]);
 
   useEffect(() => {
@@ -128,7 +128,7 @@ function App() {
       sessionStorage.setItem("fortressnet_auth_mode", "bootstrap");
       setAuthMode("bootstrap");
       setAccessToken("");
-      loadState(clean, setState, setStatus, setSelectedTenantId);
+      loadState(clean, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
     } else {
       sessionStorage.removeItem("fortressnet_admin_token");
       sessionStorage.removeItem("fortressnet_auth_token");
@@ -145,7 +145,7 @@ function App() {
       setStatus({ type: "warning", message: "Management token required." });
       return;
     }
-    loadState(token, setState, setStatus, setSelectedTenantId);
+    loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
   };
 
   const signIn = () => startCognitoLogin(platform).catch((error) => setStatus({ type: "error", message: error.message }));
@@ -265,7 +265,7 @@ function App() {
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
-          {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} setStatus={setStatus} />}
+          {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
         </section>
       </main>
@@ -871,7 +871,7 @@ function SettingsScreen({ platform, token, onTokenSave }) {
   );
 }
 
-function ProfileScreen({ token, accessToken, authMode, setStatus }) {
+function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus }) {
   const [profile, setProfile] = useState({
     display_name: "",
     email: "",
@@ -942,6 +942,7 @@ function ProfileScreen({ token, accessToken, authMode, setStatus }) {
       setTotpCode("");
       setProfile((current) => ({ ...current, mfa_enrolled_at: new Date().toISOString() }));
       setStatus({ type: "success", message: "FortressNet authenticator verified and enabled." });
+      onMfaEnrolled?.();
     } catch (error) {
       setStatus({ type: "error", message: error.message });
     }
@@ -1446,13 +1447,18 @@ function buildMetrics(state) {
   ];
 }
 
-async function loadState(token, setState, setStatus, setSelectedTenantId) {
+async function loadState(token, setState, setStatus, setSelectedTenantId, onMfaRequired) {
   try {
     const data = await apiRequest("/api/management/state", token);
     setState({ ...emptyState, ...data });
     setSelectedTenantId((current) => current || data.tenants?.[0]?.tenant_id || "");
     setStatus({ type: "success", message: "Management state loaded." });
   } catch (error) {
+    if (error.message === "mfa_enrollment_required") {
+      onMfaRequired?.();
+      setStatus({ type: "warning", message: "Configure and verify your FortressNet authenticator to unlock management access." });
+      return;
+    }
     setStatus({ type: "error", message: error.message });
   }
 }

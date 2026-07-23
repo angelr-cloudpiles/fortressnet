@@ -18,6 +18,8 @@ Ambas URL son origenes OAuth registrados. Use una unica URL durante una sesion; 
 5. En **Multi-Factor Authentication**, seleccione **Configure authenticator**.
 6. Escanee el QR desde la aplicacion autenticadora y confirme el codigo de seis digitos.
 
+Mientras una cuenta con MFA requerida no confirme su autenticador, FortressNet limita la sesion al perfil y bloquea las operaciones de gestion. Al verificar el codigo, la consola habilita el acceso normal y Cognito solicitara el TOTP en los siguientes inicios de sesion.
+
 El QR de este flujo se identifica como `FortressNet`. El secreto solo se conserva en memoria del navegador durante el alta, no se guarda en FortressNet y no aparece en los registros de auditoria. Tras la verificacion, Cognito deja el autenticador TOTP como MFA preferido para la cuenta.
 
 No inicie el alta del autenticador desde una pantalla generica de Cognito si necesita que la etiqueta de la aplicacion sea `FortressNet`: esa experiencia administrada controla su propio emisor. Use la pantalla **Profile** de la consola.

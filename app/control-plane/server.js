@@ -1369,7 +1369,7 @@ app.get("/api/profile", requireScope("profile:write"), async (req, res, next) =>
       TableName: tables.profiles,
       Key: { profile_id: profileId }
     }));
-    res.json({ profile: result.Item || defaultProfile(profileId) });
+    res.json({ profile: { ...defaultProfile(profileId, req.actor), ...(result.Item || {}) } });
   } catch (error) {
     next(error);
   }
@@ -1572,6 +1572,8 @@ async function authenticateCognitoToken(token) {
     user = { ...user, status: "active", activated_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     await dynamo.send(new PutCommand({ TableName: tables.users, Item: user }));
   }
+  const mfaRequired = user.mfa_required === true;
+  const profile = mfaRequired ? await getById(tables.profiles, { profile_id: `profile_${clean(claims.sub)}` }) : null;
 
   return {
     type: "cognito",
@@ -1580,7 +1582,9 @@ async function authenticateCognitoToken(token) {
     tenant_id: user.tenant_id,
     roles: permittedRoles,
     scopes: Array.from(new Set(permittedRoles.flatMap((role) => roleScopes[role] || []))),
-    email
+    email,
+    mfa_required: mfaRequired,
+    mfa_enrolled: Boolean(profile?.mfa_enrolled_at)
   };
 }
 
@@ -1647,6 +1651,9 @@ function externalIdentityProviderName(claims) {
 
 function requireScope(scope) {
   return (req, res, next) => {
+    if (req.actor?.mfa_required && !req.actor?.mfa_enrolled && scope !== "profile:write") {
+      return res.status(428).json({ error: "mfa_enrollment_required" });
+    }
     if (!hasScope(req.actor, scope)) return res.status(403).json({ error: "insufficient_scope", required_scope: scope });
     next();
   };
@@ -2648,7 +2655,9 @@ function publicActor(actor) {
     subject: actor.subject,
     tenant_id: actor.tenant_id,
     roles: actor.roles,
-    scopes: actor.scopes
+    scopes: actor.scopes,
+    mfa_required: Boolean(actor.mfa_required),
+    mfa_enrolled: Boolean(actor.mfa_enrolled)
   };
 }
 
@@ -2656,11 +2665,11 @@ function actorProfileId(actor) {
   return actor?.subject ? `profile_${actor.subject}` : "profile_bootstrap-admin";
 }
 
-function defaultProfile(profileId) {
+function defaultProfile(profileId, actor = null) {
   return {
     profile_id: profileId,
-    display_name: "",
-    email: "",
+    display_name: actor?.email || "",
+    email: actor?.email || "",
     timezone: "UTC",
     locale: "en-US",
     notification_email: true,

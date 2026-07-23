@@ -105,6 +105,8 @@ Las invitaciones se crean desde FortressNet mediante Cognito `AdminCreateUser`; 
 
 La configuracion TOTP se inicia en el perfil de FortressNet despues del primer login. El backend comprueba que el access token pertenezca al mismo sujeto del ID token y llama a `AssociateSoftwareToken`, `VerifySoftwareToken` y `SetUserMFAPreference`. El QR se genera en el navegador con el emisor `FortressNet`; el secreto no se persiste y los eventos de auditoria registran unicamente el inicio y la confirmacion de la operacion. Cognito Managed Login no ofrece una configuracion de emisor para su QR nativo, por lo que el portal no usa ese QR para el alta con marca FortressNet.
 
+Cuando el registro de usuario tiene `mfa_required = true`, el middleware de scopes bloquea toda operacion de gestion con `mfa_enrollment_required` hasta que el perfil tenga una confirmacion TOTP. Solo las operaciones de perfil necesarias para completar el alta permanecen disponibles. Tras la confirmacion, Cognito marca el software token como MFA preferido y solicita el codigo en los siguientes inicios de sesion.
+
 ## SSO por tenant
 
 Para clientes B2B:
