@@ -1387,7 +1387,9 @@ app.put("/api/profile", requireScope("profile:write"), async (req, res, next) =>
     const profile = {
       profile_id: profileId,
       display_name: clean(body.display_name),
-      email: normalizeEmail(body.email),
+      // Cognito owns the authenticated email address. Keeping it immutable here
+      // prevents the console profile from diverging from the login identity.
+      email: req.actor?.type === "cognito" ? req.actor.email : normalizeEmail(body.email),
       timezone: clean(body.timezone) || "UTC",
       locale: clean(body.locale) || "en-US",
       notification_email: body.notification_email !== false,

@@ -62,16 +62,24 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 232px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 76px 1fr;
 }
 
 .sidebar {
   position: sticky;
   top: 0;
   height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 22px 22px 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: #fff;
   background:
     radial-gradient(circle at 30% 12%, rgba(32, 115, 218, 0.16), transparent 32%),
@@ -121,10 +129,80 @@ button {
   font-size: 13px;
 }
 
+.tenant-button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.sidebar-tenant-menu {
+  display: grid;
+  gap: 3px;
+  max-height: 180px;
+  margin-top: 6px;
+  padding: 5px;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+}
+
+.sidebar-tenant-menu button {
+  min-height: 31px;
+  padding: 0 8px;
+  overflow: hidden;
+  color: #eef4fd;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 620;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-tenant-menu button:hover,
+.sidebar-tenant-menu button.selected {
+  background: rgba(255, 255, 255, 0.14);
+}
+
 .nav {
   display: grid;
   gap: 7px;
   margin-top: 26px;
+}
+
+.sidebar.collapsed {
+  padding: 18px 13px;
+}
+
+.sidebar.collapsed .brand {
+  justify-content: center;
+}
+
+.sidebar.collapsed .brand span,
+.sidebar.collapsed .tenant-label,
+.sidebar.collapsed .tenant-button span,
+.sidebar.collapsed .nav-item span,
+.sidebar.collapsed .nav-item small,
+.sidebar.collapsed .sidebar-footer > :not(.collapse),
+.sidebar.collapsed .collapse span,
+.sidebar.collapsed .sidebar-tenant-menu {
+  display: none;
+}
+
+.sidebar.collapsed .tenant-button,
+.sidebar.collapsed .nav-item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.sidebar.collapsed .collapse {
+  justify-content: center;
+}
+
+.sidebar.collapsed .collapse svg {
+  transform: rotate(180deg);
 }
 
 .nav-item {
@@ -211,6 +289,8 @@ button {
 
 .main {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .topbar {
@@ -328,6 +408,49 @@ kbd {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.user-menu {
+  position: relative;
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 176px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 14px 30px rgba(16, 24, 40, 0.16);
+}
+
+.account-menu button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.account-menu button:hover {
+  background: #f2f6fb;
+}
+
+.account-menu button.danger {
+  color: #b42318;
 }
 
 .user > span {
@@ -1394,6 +1517,10 @@ code {
     grid-template-columns: 82px 1fr;
   }
 
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 82px 1fr;
+  }
+
   .sidebar {
     padding: 18px 13px;
   }
@@ -1414,12 +1541,16 @@ code {
   }
 
   .topbar {
-    grid-template-columns: 160px minmax(180px, 1fr) 44px;
+    grid-template-columns: 160px minmax(180px, 1fr) 44px auto;
   }
 
   .date-button,
-  .user {
+  .user > div {
     display: none;
+  }
+
+  .user {
+    grid-template-columns: 34px 14px;
   }
 
   .metric-grid {
@@ -1439,11 +1570,18 @@ code {
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
+  }
+
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
   }
 
   .sidebar {
     position: static;
     height: auto;
+    overflow: visible;
     display: block;
     padding: 14px;
   }

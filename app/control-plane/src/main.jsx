@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { createRoot } from "react-dom/client";
 import {
@@ -72,13 +72,14 @@ const emptyState = {
 function App() {
   const [active, setActive] = useState("overview");
   const [range, setRange] = useState("24H");
-  const [environment, setEnvironment] = useState("Production");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [platform, setPlatform] = useState(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || "");
   const [accessToken, setAccessToken] = useState(() => sessionStorage.getItem("fortressnet_access_token") || "");
   const [authMode, setAuthMode] = useState(() => sessionStorage.getItem("fortressnet_auth_mode") || "");
   const [state, setState] = useState(emptyState);
   const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [tenantCreateRequest, setTenantCreateRequest] = useState(0);
   const [status, setStatus] = useState({ type: "idle", message: "" });
   const pageTitle = navItems.find((item) => item.id === active)?.label ?? "Overview";
 
@@ -149,6 +150,36 @@ function App() {
   };
 
   const signIn = () => startCognitoLogin(platform).catch((error) => setStatus({ type: "error", message: error.message }));
+  const openTenantCreate = () => {
+    setActive("overview");
+    setTenantCreateRequest((current) => current + 1);
+  };
+  const searchConsole = (value) => {
+    const query = value.trim().toLowerCase();
+    if (!query) return;
+    const tenant = state.tenants.find((item) => `${item.name} ${item.tenant_id}`.toLowerCase().includes(query));
+    if (tenant) {
+      setSelectedTenantId(tenant.tenant_id);
+      setActive("overview");
+      setStatus({ type: "success", message: `Tenant selected: ${tenant.name}.` });
+      return;
+    }
+    const domain = state.domains.find((item) => `${item.domain_name} ${item.domain_id}`.toLowerCase().includes(query));
+    if (domain) {
+      setSelectedTenantId(domain.tenant_id);
+      setActive("domains");
+      setStatus({ type: "success", message: `Domain selected: ${domain.domain_name}.` });
+      return;
+    }
+    const policy = state.policies.find((item) => `${item.name} ${item.policy_id}`.toLowerCase().includes(query));
+    if (policy) {
+      setSelectedTenantId(policy.tenant_id);
+      setActive("policies");
+      setStatus({ type: "success", message: `Policy selected: ${policy.name}.` });
+      return;
+    }
+    setStatus({ type: "warning", message: "No tenant, domain, or policy matches that search." });
+  };
   const signOut = () => {
     sessionStorage.removeItem("fortressnet_admin_token");
     sessionStorage.removeItem("fortressnet_auth_token");
@@ -168,12 +199,12 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
-      <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} />
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed((current) => !current)} />
       <main className="main">
-        <Topbar environment={environment} setEnvironment={setEnvironment} authenticated={Boolean(token)} authMode={authMode} onSignIn={signIn} onSignOut={signOut} />
+        <Topbar authenticated={Boolean(token)} authMode={authMode} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
         <section className="content">
-          <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} />
+          <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} onCreateTenant={openTenantCreate} />
           {status.message && <StatusBanner status={status} />}
           {active === "overview" && (
             <Overview
@@ -186,6 +217,7 @@ function App() {
               onNavigate={setActive}
               onCreated={reload}
               setStatus={setStatus}
+              tenantCreateRequest={tenantCreateRequest}
             />
           )}
           {active === "onboarding" && (
@@ -266,31 +298,42 @@ function App() {
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
-          {active === "settings" && <SettingsScreen platform={platform} token={token} onTokenSave={persistToken} />}
+          {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} onTokenSave={persistToken} />}
         </section>
       </main>
     </div>
   );
 }
 
-function Sidebar({ active, onNavigate, selectedTenant }) {
+function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId, setSelectedTenantId, collapsed, onCollapse }) {
+  const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
+  const selectTenant = (tenantId) => {
+    setSelectedTenantId(tenantId);
+    setTenantMenuOpen(false);
+  };
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="brand">
         <div className="brand-mark"><Shield size={22} fill="currentColor" /></div>
         <span>FortressNet</span>
       </div>
       <div className="tenant-label">Tenant</div>
-      <button className="tenant-button">
+      <button className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
         <Users size={16} />
         <span>{selectedTenant?.name || "No tenant selected"}</span>
         <ChevronDown size={15} />
       </button>
+      {tenantMenuOpen && (
+        <div className="sidebar-tenant-menu" role="menu">
+          {tenants.map((tenant) => <button key={tenant.tenant_id} role="menuitem" className={tenant.tenant_id === selectedTenantId ? "selected" : ""} onClick={() => selectTenant(tenant.tenant_id)}>{tenant.name}</button>)}
+        </div>
+      )}
       <nav className="nav">
         {navItems.map((item) => {
           const Icon = item.icon;
           return (
-            <button key={item.id} className={`nav-item ${active === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)}>
+            <button key={item.id} className={`nav-item ${active === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)} aria-label={item.label} title={item.label}>
               <Icon size={18} />
               <span>{item.label}</span>
               {item.badge && <small>{item.badge}</small>}
@@ -299,7 +342,7 @@ function Sidebar({ active, onNavigate, selectedTenant }) {
         })}
       </nav>
       <div className="sidebar-footer">
-        <button className="collapse"><ChevronRight size={15} /> Collapse</button>
+        <button className="collapse" onClick={onCollapse} aria-label={collapsed ? "Expand navigation" : "Collapse navigation"} title={collapsed ? "Expand navigation" : "Collapse navigation"}><ChevronRight size={15} /> <span>{collapsed ? "Expand" : "Collapse"}</span></button>
         <div className="edge-status">
           <span className="status-dot green"></span>
           <div>
@@ -313,33 +356,47 @@ function Sidebar({ active, onNavigate, selectedTenant }) {
   );
 }
 
-function Topbar({ environment, setEnvironment, authenticated, authMode, onSignIn, onSignOut }) {
+function Topbar({ authenticated, authMode, onSignIn, onSignOut, onOpenProfile, onNavigate, onSearch }) {
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const openProfile = () => {
+    setAccountMenuOpen(false);
+    onOpenProfile();
+  };
+
   return (
     <header className="topbar">
-      <button className="env-select" onClick={() => setEnvironment(environment === "Production" ? "Staging" : "Production")}>
+      <div className="env-select" aria-label="Environment Production">
         <span className="status-dot green"></span>
-        <span><small>Environment</small>{environment}</span>
-        <ChevronDown size={16} />
-      </button>
-      <div className="search">
-        <Search size={17} />
-        <input aria-label="Search" placeholder="Search tenants, domains, policies, events..." />
-        <kbd>/</kbd>
+        <span><small>Environment</small>Production</span>
       </div>
-      <button className="date-button"><CalendarDays size={16} /> Live window</button>
-      <button className="icon-button"><Bell size={18} /></button>
+      <form className="search" onSubmit={(event) => { event.preventDefault(); onSearch(query); }}>
+        <Search size={17} />
+        <input aria-label="Search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tenants, domains, policies..." />
+        <kbd>/</kbd>
+      </form>
+      <div className="date-button"><CalendarDays size={16} /> Live window</div>
+      <button className="icon-button" title="Open security events" onClick={() => onNavigate("events")}><Bell size={18} /></button>
       {authenticated ? (
-        <button className="user" onClick={onSignOut} title="Sign out">
-          <span>FN</span>
-          <div><strong>Console</strong><small>{authMode === "cognito" ? "Cognito session" : "Recovery mode"}</small></div>
-          <ChevronDown size={15} />
-        </button>
+        <div className="user-menu">
+          <button className="user" onClick={() => setAccountMenuOpen((current) => !current)} aria-expanded={accountMenuOpen} aria-haspopup="menu" title="Account menu">
+            <span>FN</span>
+            <div><strong>Console</strong><small>{authMode === "cognito" ? "Cognito session" : "Recovery mode"}</small></div>
+            <ChevronDown size={15} />
+          </button>
+          {accountMenuOpen && (
+            <div className="account-menu" role="menu">
+              <button role="menuitem" onClick={openProfile}><Users size={16} /> Profile</button>
+              <button role="menuitem" className="danger" onClick={onSignOut}><LockKeyhole size={16} /> Sign out</button>
+            </div>
+          )}
+        </div>
       ) : <button className="primary compact" onClick={onSignIn}>Sign in</button>}
     </header>
   );
 }
 
-function PageHeader({ active, pageTitle, onNavigate, onReload }) {
+function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant }) {
   const title = active === "overview" ? "FortressNet Console" : pageTitle;
   const subtitle = active === "overview"
     ? "SaaS multi-tenant edge security control plane"
@@ -352,15 +409,15 @@ function PageHeader({ active, pageTitle, onNavigate, onReload }) {
         <p>{subtitle}</p>
       </div>
       <div className="header-actions">
-        <button className="secondary" onClick={() => onNavigate("overview")}><Plus size={16} /> Create tenant</button>
+        <button className="secondary" onClick={onCreateTenant}><Plus size={16} /> Create tenant</button>
         <button className="secondary" onClick={onReload}><RefreshCw size={16} /> Sync</button>
-        <button className="icon-button bordered"><MoreHorizontal size={18} /></button>
+        <button className="icon-button bordered" title="Open onboarding" onClick={() => onNavigate("onboarding")}><MoreHorizontal size={18} /></button>
       </div>
     </div>
   );
 }
 
-function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreated, setStatus }) {
+function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreated, setStatus, tenantCreateRequest }) {
   const metrics = buildMetrics(state);
 
   return (
@@ -374,14 +431,14 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
           <EmptyChart />
         </Panel>
         <Panel title="Tenant Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-          <TenantCreateForm token={token} onCreated={onCreated} setStatus={setStatus} />
+          <TenantCreateForm token={token} onCreated={onCreated} setStatus={setStatus} focusRequest={tenantCreateRequest} />
         </Panel>
         <Panel title="Platform Readiness" count={state.tenants.length}>
           <ReadinessList token={token} state={state} />
         </Panel>
       </div>
       <div className="table-grid">
-        <Panel title="Recent Security Events" action={<button className="link-button">View event stream <ChevronRight size={14} /></button>}>
+        <Panel title="Recent Security Events" action={<button className="link-button" onClick={() => onNavigate("events")}>View event stream <ChevronRight size={14} /></button>}>
           <EmptyTable columns={["Time", "Type", "Severity", "Domain", "Source", "Action"]} message="No security events have been collected." />
         </Panel>
         <Panel title="Domain Health" action={<button className="link-button" onClick={() => onNavigate("domains")}>Manage domains <ChevronRight size={14} /></button>}>
@@ -613,7 +670,7 @@ function PoliciesScreen({ token, state, selectedTenantId, setSelectedTenantId, o
             <EmptyState icon={Shield} title="No tenant policies yet" body="Create a tenant policy to scope WAF and rate-limit behavior." />
           )}
         </Panel>
-        <Panel title="Policy Detail" action={<button className="secondary"><TerminalSquare size={16} /> Managed defaults</button>}>
+        <Panel title="Policy Detail" action={<span className="mode-readonly">AWS managed baseline</span>}>
           <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
       </div>
@@ -840,8 +897,8 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   );
 }
 
-function SettingsScreen({ platform, token, onTokenSave }) {
-  const [draftToken, setDraftToken] = useState(token);
+function SettingsScreen({ platform, token, authMode, onTokenSave }) {
+  const [draftToken, setDraftToken] = useState(authMode === "bootstrap" ? token : "");
 
   return (
     <div className="screen settings-grid">
@@ -854,7 +911,7 @@ function SettingsScreen({ platform, token, onTokenSave }) {
           </div>
           <div className="token-input">
             <label className="sr-only" htmlFor="management-token">Management token</label>
-            <input id="management-token" value={draftToken} type="password" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
+            <input id="management-token" value={draftToken} type="password" autoComplete="off" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
             <button className="primary" onClick={() => onTokenSave(draftToken)}>Save</button>
           </div>
         </div>
@@ -953,7 +1010,7 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
       <Panel title="Personal Profile">
         <form className="form-grid" onSubmit={submit}>
           <label htmlFor="profile-name">Display name<input id="profile-name" value={profile.display_name || ""} onChange={(event) => setProfile({ ...profile, display_name: event.target.value })} /></label>
-          <label htmlFor="profile-email">Email<input id="profile-email" value={profile.email || ""} onChange={(event) => setProfile({ ...profile, email: event.target.value })} /></label>
+          <label htmlFor="profile-email">Email<input id="profile-email" value={profile.email || ""} readOnly aria-readonly="true" /></label>
           <label htmlFor="profile-timezone">Timezone<input id="profile-timezone" value={profile.timezone || "UTC"} onChange={(event) => setProfile({ ...profile, timezone: event.target.value })} /></label>
           <label htmlFor="profile-locale">Locale<input id="profile-locale" value={profile.locale || "en-US"} onChange={(event) => setProfile({ ...profile, locale: event.target.value })} /></label>
           <label className="check-row"><input type="checkbox" checked={profile.notification_email !== false} onChange={(event) => setProfile({ ...profile, notification_email: event.target.checked })} /> Email notifications</label>
@@ -963,7 +1020,7 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
       </Panel>
       <Panel title="Session Context">
         <div className="settings-list">
-          <div><Users size={18} /><span>Actor</span><strong>Bootstrap/API</strong></div>
+          <div><Users size={18} /><span>Actor</span><strong>{authMode === "cognito" ? "Cognito" : "Recovery/API"}</strong></div>
           <div><LockKeyhole size={18} /><span>Profile storage</span><strong>DynamoDB</strong></div>
           <div><Bell size={18} /><span>Notification preference</span><strong>{profile.notification_security === false ? "Limited" : "Security on"}</strong></div>
         </div>
@@ -988,9 +1045,14 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
   );
 }
 
-function TenantCreateForm({ token, onCreated, setStatus }) {
+function TenantCreateForm({ token, onCreated, setStatus, focusRequest }) {
   const [name, setName] = useState("");
   const [plan, setPlan] = useState("pilot");
+  const nameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (focusRequest > 0) nameInputRef.current?.focus();
+  }, [focusRequest]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1002,7 +1064,7 @@ function TenantCreateForm({ token, onCreated, setStatus }) {
 
   return (
     <form className="form-grid" onSubmit={submit}>
-      <label htmlFor="tenant-name">Tenant name<input id="tenant-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
+      <label htmlFor="tenant-name">Tenant name<input ref={nameInputRef} id="tenant-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
       <label htmlFor="tenant-plan">Plan<select id="tenant-plan" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
       <button className="primary" disabled={!token || !name}><Plus size={16} /> Create tenant</button>
     </form>
