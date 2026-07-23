@@ -1470,12 +1470,71 @@ function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTe
 
 function EventsScreen({ token, selectedTenantId, setStatus }) {
   const [events, setEvents] = useState([]);
-  const load = () => loadOperationalData(`/api/events${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "events", setEvents, setStatus);
+  const [query, setQuery] = useState("");
+  const [actionFilter, setActionFilter] = useState("all");
+  const [countryFilter, setCountryFilter] = useState("all");
+  const [selectedEventId, setSelectedEventId] = useState("");
+  const [lastUpdated, setLastUpdated] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    if (!token) return;
+    setLoading(true);
+    try {
+      const data = await apiRequest(`/api/events${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token);
+      const loadedEvents = Array.isArray(data.events) ? data.events : [];
+      setEvents(loadedEvents);
+      setLastUpdated(new Date().toISOString());
+      setStatus?.({ type: "success", message: `${loadedEvents.length} security events refreshed.` });
+    } catch (error) {
+      setStatus?.({ type: "error", message: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [token, selectedTenantId]);
+
+  const actionOptions = useMemo(() => Array.from(new Set(events.map((event) => event.action).filter(Boolean))).sort(), [events]);
+  const countries = useMemo(() => Array.from(new Set(events.map((event) => event.country).filter(Boolean))).sort(), [events]);
+  const filteredEvents = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return events.filter((event) => {
+      const matchesAction = actionFilter === "all" || event.action === actionFilter;
+      const matchesCountry = countryFilter === "all" || event.country === countryFilter;
+      const haystack = [event.uri, event.method, event.rule_id, event.country, event.client_ip_hash, event.action].join(" ").toLowerCase();
+      return matchesAction && matchesCountry && (!needle || haystack.includes(needle));
+    });
+  }, [events, query, actionFilter, countryFilter]);
+  const selectedEvent = filteredEvents.find((event) => event.event_id === selectedEventId) || filteredEvents[0] || null;
+  const summary = useMemo(() => summarizeSecurityEvents(events), [events]);
+
   return (
-    <div className="screen">
-      <Panel id="security-events" title="Security Event Stream" action={<button id="events-refresh" className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
-        {events.length ? <SecurityEventTable events={events} /> : <EmptyTable columns={["Time", "Rule", "Method", "Path", "Country", "Action"]} message="No security events have been collected from tenant WAF logs." />}
-      </Panel>
+    <div className="screen events-screen">
+      <div className="event-metric-grid">
+        <EventMetric label="Observed" value={summary.total} detail="Last 24 hours" tone="neutral" />
+        <EventMetric label="Blocked" value={summary.blocked} detail={summary.blocked ? "WAF interventions" : "No interventions"} tone={summary.blocked ? "risk" : "good"} />
+        <EventMetric label="Allowed" value={summary.allowed} detail="Requests passed" tone="good" />
+        <EventMetric label="Countries" value={summary.countries} detail={summary.countries ? `${summary.topCountry || "Unknown"} is most active` : "No geo data"} tone="neutral" />
+      </div>
+      <div className="events-workbench">
+        <Panel id="security-events" title="Security Event Stream" action={<button id="events-refresh" className="secondary compact" disabled={!token || loading} onClick={load}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh"}</button>}>
+          <div className="event-controls">
+            <label className="event-search" htmlFor="event-search"><Search size={16} /><input id="event-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search path, rule, country or client reference" /></label>
+            <div className="event-action-filter" aria-label="Filter by action">
+              <button className={actionFilter === "all" ? "selected" : ""} onClick={() => setActionFilter("all")}>All</button>
+              {actionOptions.map((action) => <button key={action} className={actionFilter === action ? "selected" : ""} onClick={() => setActionFilter(action)}>{action}</button>)}
+            </div>
+            <select className="compact-select event-country-filter" value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)} aria-label="Filter by country"><option value="all">All countries</option>{countries.map((country) => <option key={country} value={country}>{country}</option>)}</select>
+          </div>
+          <div className="event-context"><span>{filteredEvents.length} of {events.length} events</span><span>{lastUpdated ? `Updated ${formatEventTime(lastUpdated, { relative: true })}` : "Not refreshed yet"}</span></div>
+          {events.length ? <SecurityEventTable events={filteredEvents} selectedEventId={selectedEvent?.event_id} onSelect={setSelectedEventId} /> : <EmptyTable columns={["Time", "Request", "Rule", "Country", "Action"]} message="No security events have been collected from tenant WAF logs." />}
+        </Panel>
+        <aside className="event-inspector" aria-label="Selected event details">
+          <EventDistribution countries={summary.countryCounts} />
+          <EventInspector event={selectedEvent} />
+        </aside>
+      </div>
     </div>
   );
 }
@@ -2377,8 +2436,58 @@ function WafAction({ changeSet, changeSets, domainId, token, canApproveTenantCha
   return <span className="mode-readonly">{changeSet.status}</span>;
 }
 
-function SecurityEventTable({ events }) {
-  return <table className="data-table"><thead><tr><th>Time</th><th>Rule</th><th>Method</th><th>Path</th><th>Country</th><th>Action</th></tr></thead><tbody>{events.map((event) => <tr key={event.event_id}><td>{new Date(event.timestamp).toISOString()}</td><td>{event.rule_id || "-"}</td><td>{event.method}</td><td>{event.uri}</td><td>{event.country}</td><td><span className="health pending">{event.action}</span></td></tr>)}</tbody></table>;
+function SecurityEventTable({ events, selectedEventId, onSelect }) {
+  if (!events.length) return <div className="event-empty-filter"><Search size={18} /><strong>No events match these filters</strong><span>Adjust the search, action, or country filter to continue the investigation.</span></div>;
+  return <div className="event-table-wrap"><table className="data-table event-table"><thead><tr><th>Time</th><th>Request</th><th>Rule</th><th>Location</th><th>Outcome</th><th><span className="sr-only">Inspect</span></th></tr></thead><tbody>{events.map((event) => <tr className={event.event_id === selectedEventId ? "selected" : ""} key={event.event_id}><td><time title={formatEventTime(event.timestamp)}>{formatEventTime(event.timestamp, { relative: true })}</time><small>{formatEventTime(event.timestamp)}</small></td><td><span className="method-chip">{event.method || "-"}</span><code className="event-path">{event.uri || "/"}</code></td><td><span className="rule-label">{formatRuleName(event.rule_id)}</span></td><td>{event.country || "Unknown"}</td><td><EventActionBadge action={event.action} /></td><td><button className="event-inspect" title="Inspect event" aria-label={`Inspect ${event.method || "request"} ${event.uri || "/"}`} onClick={() => onSelect(event.event_id)}><ChevronRight size={17} /></button></td></tr>)}</tbody></table></div>;
+}
+
+function EventMetric({ label, value, detail, tone }) {
+  return <div className={`event-metric ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function EventActionBadge({ action }) {
+  const normalized = String(action || "UNKNOWN").toLowerCase();
+  return <span className={`event-action ${normalized}`}>{action || "UNKNOWN"}</span>;
+}
+
+function EventDistribution({ countries }) {
+  const entries = countries.slice(0, 5);
+  const max = Math.max(...entries.map(([, count]) => count), 1);
+  return <Panel title="Traffic geography"><div className="event-distribution">{entries.length ? entries.map(([country, count]) => <div key={country}><div><span>{country}</span><strong>{count}</strong></div><i><b style={{ width: `${Math.round((count / max) * 100)}%` }} /></i></div>) : <span className="mode-readonly">No country data available.</span>}</div></Panel>;
+}
+
+function EventInspector({ event }) {
+  return <Panel title="Event details">{event ? <div className="event-detail"><div className="event-detail-outcome"><EventActionBadge action={event.action} /><span>{formatEventTime(event.timestamp)}</span></div><dl><div><dt>Request</dt><dd><span className="method-chip">{event.method || "-"}</span><code>{event.uri || "/"}</code></dd></div><div><dt>Rule</dt><dd>{formatRuleName(event.rule_id)}</dd></div><div><dt>Country</dt><dd>{event.country || "Unknown"}</dd></div><div><dt>Client reference</dt><dd><code>{event.client_ip_hash || "Not captured"}</code></dd></div><div><dt>Event ID</dt><dd><code>{event.event_id}</code></dd></div></dl></div> : <EmptyState icon={ClipboardList} title="Select an event" body="Choose an event from the stream to inspect its protected request metadata." />}</Panel>;
+}
+
+function summarizeSecurityEvents(events) {
+  const countryCounts = Object.entries(events.reduce((counts, event) => ({ ...counts, [event.country || "Unknown"]: (counts[event.country || "Unknown"] || 0) + 1 }), {})).sort(([, left], [, right]) => right - left);
+  return {
+    total: events.length,
+    blocked: events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length,
+    allowed: events.filter((event) => event.action === "ALLOW").length,
+    countries: countryCounts.length,
+    topCountry: countryCounts[0]?.[0],
+    countryCounts
+  };
+}
+
+function formatRuleName(ruleId) {
+  if (!ruleId || ruleId === "Default_Action") return "Default action";
+  return String(ruleId).replaceAll(/[_-]+/g, " ");
+}
+
+function formatEventTime(value, { relative = false } = {}) {
+  const timestamp = typeof value === "number" ? value : Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "Unknown time";
+  if (relative) {
+    const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+    if (seconds < 60) return "Just now";
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  }
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
 }
 
 function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId }) {
