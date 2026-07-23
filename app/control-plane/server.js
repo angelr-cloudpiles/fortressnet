@@ -47,6 +47,8 @@ const tables = {
   idpConnections: process.env.IDP_CONNECTIONS_TABLE,
   profiles: process.env.PROFILES_TABLE,
   origins: process.env.ORIGINS_TABLE,
+  originHealthEvents: process.env.ORIGIN_HEALTH_EVENTS_TABLE,
+  operationLocks: process.env.OPERATION_LOCKS_TABLE,
   originPools: process.env.ORIGIN_POOLS_TABLE,
   certificates: process.env.CERTIFICATES_TABLE,
   wafChangeSets: process.env.WAF_CHANGE_SETS_TABLE,
@@ -477,6 +479,20 @@ app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
   }
 });
 
+app.get("/api/origin-health-events", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    const originId = clean(req.query.origin_id);
+    const events = originId
+      ? (await queryByIndex(tables.originHealthEvents, "origin_id-index", "origin_id", originId)).filter((event) => event.tenant_id === tenantId)
+      : await queryByTenant(tables.originHealthEvents, tenantId);
+    res.json({ origin_health_events: sortByDate(events).slice(0, 200) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -766,24 +782,8 @@ app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), asy
     const origin = await getById(tables.origins, { origin_id: clean(req.params.originId) });
     if (!origin) return res.status(404).json({ error: "origin_not_found" });
     tenantForActor(req.actor, origin.tenant_id);
-    const health = await checkOriginHealth(origin);
-    const now = new Date().toISOString();
-    const result = await dynamo.send(new UpdateCommand({
-      TableName: tables.origins,
-      Key: { origin_id: origin.origin_id },
-      UpdateExpression: "SET #status = :status, last_health_check_at = :checked, last_health_check = :health, updated_at = :updated_at",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: {
-        ":status": health.healthy ? "healthy" : "unhealthy",
-        ":checked": now,
-        ":health": health,
-        ":updated_at": now
-      },
-      ReturnValues: "ALL_NEW"
-    }));
-    await refreshOriginPoolStatuses(origin.tenant_id, origin.domain_id);
-    await audit("origin.health_checked", origin.tenant_id, { origin_id: origin.origin_id, health }, req.actor);
-    res.json({ origin: result.Attributes, health });
+    const checked = await recordOriginHealthCheck(origin, req.actor, "manual");
+    res.json({ origin: checked.origin, health: checked.health });
   } catch (error) {
     next(error);
   }
@@ -1548,6 +1548,7 @@ app.use((error, _req, res, _next) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
+  startOriginHealthScheduler();
   app.listen(port, "0.0.0.0", () => {
     console.log(`FortressNet control plane listening on ${port}`);
   });
@@ -2347,6 +2348,87 @@ async function checkOriginHealth(origin) {
   const timeoutMs = Math.min(Math.max(Number(origin.timeout_seconds || 10) * 1000, 1000), 15000);
   const result = await requestHealthCheck(target, address, pathName, timeoutMs, origin.host_header || target.hostname);
   return { ...result, address, checked_url: `${target.protocol}//${target.hostname}${pathName}` };
+}
+
+async function recordOriginHealthCheck(origin, actor = null, source = "scheduled") {
+  let health;
+  try {
+    health = await checkOriginHealth(origin);
+  } catch (error) {
+    health = { healthy: false, status_code: 0, error: error.code || error.message || "health_check_failed" };
+  }
+  const now = new Date().toISOString();
+  const status = health.healthy ? "healthy" : "unhealthy";
+  const statusChanged = origin.status !== status;
+  const result = await dynamo.send(new UpdateCommand({
+    TableName: tables.origins,
+    Key: { origin_id: origin.origin_id },
+    UpdateExpression: "SET #status = :status, last_health_check_at = :checked, last_health_check = :health, last_health_status_changed_at = :status_changed, updated_at = :updated_at",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: {
+      ":status": status,
+      ":checked": now,
+      ":health": health,
+      ":status_changed": statusChanged ? now : (origin.last_health_status_changed_at || now),
+      ":updated_at": now
+    },
+    ReturnValues: "ALL_NEW"
+  }));
+
+  const event = {
+    health_event_id: `ohe_${crypto.randomUUID()}`,
+    tenant_id: origin.tenant_id,
+    domain_id: origin.domain_id,
+    origin_id: origin.origin_id,
+    source,
+    status,
+    status_changed: statusChanged,
+    health,
+    checked_at: now,
+    created_at: now,
+    expires_at: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60)
+  };
+  if (tables.originHealthEvents) await putUnique(tables.originHealthEvents, event, "health_event_id");
+  await refreshOriginPoolStatuses(origin.tenant_id, origin.domain_id);
+  if (source === "manual" || statusChanged) {
+    await audit("origin.health_checked", origin.tenant_id, { origin_id: origin.origin_id, source, status_changed: statusChanged, health }, actor);
+  }
+  return { origin: result.Attributes, health, event };
+}
+
+function startOriginHealthScheduler() {
+  if (process.env.ORIGIN_HEALTH_SCHEDULER_ENABLED !== "true" || !tables.operationLocks || !tables.originHealthEvents) return;
+  const intervalMs = 5 * 60 * 1000;
+  const run = () => runOriginHealthSweep().catch((error) => console.warn("origin_health_sweep_failed", error?.message || error));
+  setTimeout(run, 30_000).unref();
+  setInterval(run, intervalMs).unref();
+}
+
+async function runOriginHealthSweep() {
+  if (!await acquireOperationLock("origin-health-sweep", 4 * 60)) return;
+  const origins = await scanTable(tables.origins);
+  for (const origin of origins) await recordOriginHealthCheck(origin, { type: "system", subject: "origin_health_scheduler" }, "scheduled");
+}
+
+async function acquireOperationLock(lockId, leaseSeconds) {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.operationLocks,
+      Key: { lock_id: lockId },
+      UpdateExpression: "SET expires_at = :expires_at, acquired_at = :acquired_at",
+      ConditionExpression: "attribute_not_exists(lock_id) OR expires_at < :now",
+      ExpressionAttributeValues: {
+        ":expires_at": now + leaseSeconds,
+        ":acquired_at": new Date().toISOString(),
+        ":now": now
+      }
+    }));
+    return true;
+  } catch (error) {
+    if (error?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 async function resolvePublicOriginAddress(hostname) {

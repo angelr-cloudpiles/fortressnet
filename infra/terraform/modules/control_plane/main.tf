@@ -255,6 +255,8 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.idp_connections_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.profiles_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origins_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_health_events_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.operation_locks_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_pools_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.certificates_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}",
@@ -269,6 +271,7 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.api_keys_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.idp_connections_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origins_table_name}/index/*",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_health_events_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.origin_pools_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.certificates_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_change_sets_table_name}/index/*",
@@ -480,6 +483,18 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "ORIGINS_TABLE"
           value = var.origins_table_name
+        },
+        {
+          name  = "ORIGIN_HEALTH_EVENTS_TABLE"
+          value = var.origin_health_events_table_name
+        },
+        {
+          name  = "OPERATION_LOCKS_TABLE"
+          value = var.operation_locks_table_name
+        },
+        {
+          name  = "ORIGIN_HEALTH_SCHEDULER_ENABLED"
+          value = "true"
         },
         {
           name  = "ORIGIN_POOLS_TABLE"

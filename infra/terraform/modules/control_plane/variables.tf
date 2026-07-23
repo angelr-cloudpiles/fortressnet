@@ -134,6 +134,16 @@ variable "origins_table_name" {
   type        = string
 }
 
+variable "origin_health_events_table_name" {
+  description = "Origin health event history table name."
+  type        = string
+}
+
+variable "operation_locks_table_name" {
+  description = "Distributed operation lock table name."
+  type        = string
+}
+
 variable "origin_pools_table_name" {
   description = "Origin pools table name."
   type        = string

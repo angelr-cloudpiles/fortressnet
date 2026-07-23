@@ -83,6 +83,16 @@ output "origins_table_name" {
   value       = aws_dynamodb_table.origins.name
 }
 
+output "origin_health_events_table_name" {
+  description = "Origin health event history table name."
+  value       = aws_dynamodb_table.origin_health_events.name
+}
+
+output "operation_locks_table_name" {
+  description = "Distributed operation lock table name."
+  value       = aws_dynamodb_table.operation_locks.name
+}
+
 output "origin_pools_table_name" {
   description = "Origin pools table name."
   value       = aws_dynamodb_table.origin_pools.name

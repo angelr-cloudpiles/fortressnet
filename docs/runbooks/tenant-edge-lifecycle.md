@@ -59,6 +59,12 @@ The current verifier is intentionally limited to direct CNAME records. Apex reco
 4. Keep monitor mode applied for at least 24 hours before applying a `block` policy to the same domain.
 5. Use rollback to restore the previous WAF rules if the change has an unexpected effect.
 
+## Origin Health
+
+- The control plane checks each registered public HTTPS origin every five minutes and records the resulting health event for 90 days.
+- A failed scheduled check marks the origin unhealthy and recalculates the pool state; CloudFront origin groups retain their configured runtime failover behavior.
+- Use the manual check after an origin remediation. Origin configuration for an existing edge remains immutable until the controlled active-edge update workflow is available.
+
 ## Pilot Billing And Readiness
 
 - The Billing view is an operational entitlement view, not an invoice. It reports enforced limits and observed WAF events; no consumption is fabricated.

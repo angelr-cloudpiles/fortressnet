@@ -603,6 +603,86 @@ resource "aws_dynamodb_table" "origins" {
   }
 }
 
+resource "aws_dynamodb_table" "origin_health_events" {
+  name         = "${var.name}-origin-health-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "health_event_id"
+
+  attribute {
+    name = "health_event_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "origin_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  global_secondary_index {
+    name            = "origin_id-index"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "origin_id"
+      key_type       = "HASH"
+    }
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
+resource "aws_dynamodb_table" "operation_locks" {
+  name         = "${var.name}-operation-locks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "lock_id"
+
+  attribute {
+    name = "lock_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+
 resource "aws_dynamodb_table" "origin_pools" {
   name         = "${var.name}-origin-pools"
   billing_mode = "PAY_PER_REQUEST"
