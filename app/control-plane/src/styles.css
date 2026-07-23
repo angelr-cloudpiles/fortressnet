@@ -1,28 +1,28 @@
 :root {
-  --bg: #f6f8fb;
+  --bg: #f3f8fa;
   --surface: #ffffff;
-  --panel: #f9fafc;
-  --panel-muted: #f5f7fa;
-  --sidebar: #07182a;
-  --sidebar-2: #0b2138;
-  --ink: #101828;
-  --muted: #667085;
-  --subtle: #98a2b3;
-  --line: #d8dee8;
-  --line-soft: #e8edf3;
-  --blue: #1769e0;
-  --blue-2: #2f80ed;
-  --blue-soft: #eaf3ff;
-  --green: #14985f;
-  --green-soft: #e9f8f0;
+  --panel: #f7fbfc;
+  --panel-muted: #eef6f8;
+  --sidebar: #041d39;
+  --sidebar-2: #062847;
+  --ink: #062a50;
+  --muted: #5c7085;
+  --subtle: #8ba0b2;
+  --line: #ccdde5;
+  --line-soft: #e1edf1;
+  --blue: #078fc5;
+  --blue-2: #22bfd2;
+  --blue-soft: #e3f7f8;
+  --green: #0b9674;
+  --green-soft: #e5f7f1;
   --red: #df2838;
   --red-soft: #ffecef;
-  --orange: #f97316;
-  --orange-soft: #fff3e8;
-  --yellow: #d89a00;
+  --orange: #ff922b;
+  --orange-soft: #fff3e2;
+  --yellow: #dc9b14;
   --yellow-soft: #fff7d6;
   --radius: 8px;
-  --shadow: 0 10px 30px rgba(16, 24, 40, 0.06);
+  --shadow: 0 10px 28px rgba(4, 39, 72, 0.07);
   color: var(--ink);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -63,19 +63,20 @@ button {
 .login-shell {
   min-height: 100vh;
   display: grid;
-  place-items: center;
-  padding: 24px;
-  background: #07182a;
+  place-items: center start;
+  padding: clamp(24px, 7vw, 108px);
+  background: #061a31 url("/brand/fortressnet-background.png") center / cover no-repeat;
 }
 
 .login-panel {
   width: min(100%, 430px);
-  padding: 38px;
+  padding: 30px;
   color: #f8fafc;
-  background: #0b2138;
-  border: 1px solid rgba(184, 204, 229, 0.22);
+  background: rgba(3, 30, 57, 0.9);
+  border: 1px solid rgba(89, 218, 223, 0.35);
   border-radius: 8px;
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 22px 56px rgba(0, 15, 31, 0.36);
+  backdrop-filter: blur(10px);
 }
 
 .login-brand {
@@ -87,20 +88,29 @@ button {
 }
 
 .login-mark {
-  display: grid;
-  place-items: center;
   width: 42px;
   height: 42px;
-  color: #63a4ff;
+  object-fit: contain;
+}
+
+.login-wordmark {
+  display: block;
+  width: 176px;
+  height: 154px;
+  margin-top: 20px;
+  object-fit: cover;
+  object-position: center;
+  border: 1px solid rgba(125, 228, 232, 0.24);
+  border-radius: 6px;
 }
 
 .login-copy {
-  margin: 44px 0 28px;
+  margin: 24px 0 28px;
 }
 
 .login-eyebrow {
   margin: 0 0 12px;
-  color: #8dbdff;
+  color: #6be0e1;
   font-size: 11px;
   font-weight: 760;
   letter-spacing: 0.1em;
@@ -140,6 +150,23 @@ button {
   border-color: rgba(255, 127, 140, 0.34);
 }
 
+@media (max-width: 760px) {
+  .login-shell {
+    place-items: center;
+    padding: 24px;
+    background-position: 58% center;
+  }
+
+  .login-panel {
+    padding: 24px;
+  }
+
+  .login-wordmark {
+    width: 152px;
+    height: 134px;
+  }
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 232px 1fr;
@@ -163,8 +190,7 @@ button {
   overscroll-behavior: contain;
   color: #fff;
   background:
-    radial-gradient(circle at 30% 12%, rgba(32, 115, 218, 0.16), transparent 32%),
-    linear-gradient(180deg, #061529 0%, #071b2f 48%, #061527 100%);
+    linear-gradient(180deg, #031a33 0%, #052a4c 54%, #03182e 100%);
 }
 
 .brand {
@@ -178,11 +204,9 @@ button {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  color: #ffffff;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
 }
 
 .tenant-label {
@@ -307,8 +331,9 @@ button {
 }
 
 .nav-item.active {
-  background: linear-gradient(180deg, #0877ec, #065ece);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+  color: #fff;
+  background: #087fb8;
+  box-shadow: inset 3px 0 0 var(--orange), inset 0 1px 0 rgba(255,255,255,.16);
 }
 
 .nav-item small,

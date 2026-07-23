@@ -419,7 +419,8 @@ function LoginScreen({ authConfig, status, onSignIn }) {
   return (
     <main className="login-shell">
       <section className="login-panel" aria-labelledby="login-title">
-        <div className="login-brand"><span className="login-mark"><Shield size={30} fill="currentColor" /></span><span>FortressNet</span></div>
+        <div className="login-brand"><img className="login-mark" src="/brand/fortressnet-shield.png" alt="" /><span>FortressNet</span></div>
+        <img className="login-wordmark" src="/brand/fortressnet-logo.png" alt="FortressNet Secure Networking - Accelerated Edge" />
         <div className="login-copy">
           <p className="login-eyebrow">SECURE CONSOLE</p>
           <h1 id="login-title">Sign in to FortressNet</h1>
@@ -443,7 +444,7 @@ function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="brand">
-        <div className="brand-mark"><Shield size={22} fill="currentColor" /></div>
+        <img className="brand-mark" src="/brand/fortressnet-shield.png" alt="" />
         <span>FortressNet</span>
       </div>
       <div className="tenant-label">Tenant</div>
