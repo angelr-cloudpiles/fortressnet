@@ -10,7 +10,7 @@ import express from "express";
 import { simpleParser } from "mailparser";
 import unzipper from "unzipper";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
-import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, ListResponseHeadersPoliciesCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
+import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, GetResponseHeadersPolicyConfigCommand, ListResponseHeadersPoliciesCommand, UpdateDistributionCommand, UpdateResponseHeadersPolicyCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AdminRemoveUserFromGroupCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -1635,6 +1635,57 @@ app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope(
   }
 });
 
+app.post("/api/edge-deployments/:deploymentId/security-refresh", requireScope("origin:write"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (!deployment.distribution_id || !deployment.client_security_token) return res.status(409).json({ error: "provisioned_edge_required" });
+    const domain = await getById(tables.domains, { domain_id: deployment.domain_id });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    const responseHeadersPolicyId = await ensureClientSecurityResponsePolicy(deployment, domain, deployment.client_security_token);
+    await hardenCloudFrontDistribution(deployment, responseHeadersPolicyId);
+    const now = new Date().toISOString();
+    const updated = { ...deployment, response_headers_policy_id: responseHeadersPolicyId, edge_security_refreshed_at: now, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+    await audit("edge_deployment.security_refreshed", deployment.tenant_id, { deployment_id: deployment.deployment_id, response_headers_policy_id: responseHeadersPolicyId, origin_tls_minimum: "TLSv1.2" }, req.actor);
+    res.json({ edge_deployment: publicEdgeDeployment(updated) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/edge-deployments/:deploymentId/origin-access-check", requireScope("origin:write"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    const origin = await getById(tables.origins, { origin_id: deployment.origin_id });
+    if (!origin) return res.status(404).json({ error: "origin_not_found" });
+    const domain = await getById(tables.domains, { domain_id: deployment.domain_id });
+    const originUrl = normalizeOriginUrl(origin.origin_url);
+    if (!domain || !originUrl) return res.status(409).json({ error: "dedicated_origin_required" });
+    if (originUrl.hostname === normalizeDomain(domain.domain_name)) {
+      const now = new Date().toISOString();
+      const updated = { ...deployment, origin_access_status: "not_configured", origin_access_checked_at: now, updated_at: now };
+      await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+      await audit("edge_deployment.origin_access_check_skipped", deployment.tenant_id, { deployment_id: deployment.deployment_id, reason: "dedicated_origin_required" }, req.actor);
+      return res.status(409).json({ error: "dedicated_origin_required" });
+    }
+    // This request connects directly to the resolved origin IP without the
+    // FortressNet header. Only an explicit 401/403 proves the edge cannot be bypassed.
+    const direct = await checkOriginHealth(origin);
+    const originAccessStatus = [401, 403].includes(Number(direct.status_code)) ? "locked" : direct.status_code >= 200 && direct.status_code < 400 ? "exposed" : "unknown";
+    const now = new Date().toISOString();
+    const updated = { ...deployment, origin_access_status: originAccessStatus, origin_access_checked_at: now, origin_access_check: direct, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+    await audit("edge_deployment.origin_access_checked", deployment.tenant_id, { deployment_id: deployment.deployment_id, origin_id: origin.origin_id, origin_access_status: originAccessStatus, status_code: direct.status_code }, req.actor);
+    res.json({ origin_access: { status: originAccessStatus, checked_at: now, status_code: direct.status_code, address: direct.address } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/policies", requireScope("waf:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -1814,7 +1865,7 @@ app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("waf
     if (!edgeDeployment?.web_acl_id || !["provisioning", "ready_for_cutover", "active"].includes(edgeDeployment.status)) return res.status(409).json({ error: "provisioned_edge_required" });
 
     const existing = (await queryByTenant(tables.wafChangeSets, changeSet.tenant_id)).find((item) => (
-      item.domain_id === domainId && item.status === "applied" && item.mode === "monitor"
+      item.domain_id === domainId && item.status === "applied" && item.mode === "monitor" && item.derived_from_change_set_id === changeSet.change_set_id
     ));
     if (existing) return res.json({ waf_change_set: existing, observation_window_started: false });
 
@@ -1839,6 +1890,19 @@ app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("waf
       updated_at: now
     };
     const applied = await applyWafChangeSet(monitorChangeSet, edgeDeployment);
+    const previousMonitors = (await queryByTenant(tables.wafChangeSets, changeSet.tenant_id)).filter((item) => (
+      item.domain_id === domainId &&
+      item.status === "applied" &&
+      item.mode === "monitor" &&
+      item.change_set_id !== applied.change_set_id
+    ));
+    await Promise.all(previousMonitors.map((item) => dynamo.send(new UpdateCommand({
+      TableName: tables.wafChangeSets,
+      Key: { change_set_id: item.change_set_id },
+      UpdateExpression: "SET #status = :status, superseded_by_change_set_id = :replacement, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":status": "superseded", ":replacement": applied.change_set_id, ":updated_at": now }
+    }))));
     await audit("waf_change_set.monitoring_started", changeSet.tenant_id, { change_set_id: changeSet.change_set_id, monitor_change_set_id: applied.change_set_id, domain_id: domainId }, req.actor);
     res.status(201).json({ waf_change_set: applied, observation_window_started: true });
   } catch (error) {
@@ -3311,7 +3375,16 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
 async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
   const name = `fn-csp-${deployment.deployment_id}`.slice(0, 128);
   const existing = await findResponseHeadersPolicy(name);
-  if (existing?.Id) return existing.Id;
+  if (existing?.Id) {
+    const current = await cloudfront.send(new GetResponseHeadersPolicyConfigCommand({ Id: existing.Id }));
+    if (!current.ETag) throw httpError(502, "client_security_policy_etag_unavailable");
+    await cloudfront.send(new UpdateResponseHeadersPolicyCommand({
+      Id: existing.Id,
+      IfMatch: current.ETag,
+      ResponseHeadersPolicyConfig: clientSecurityResponseHeadersPolicyConfig(name, domain.domain_name, token)
+    }));
+    return existing.Id;
+  }
   const response = await cloudfront.send(new CreateResponseHeadersPolicyCommand({
     ResponseHeadersPolicyConfig: clientSecurityResponseHeadersPolicyConfig(name, domain.domain_name, token)
   })).catch((error) => {
@@ -3332,18 +3405,49 @@ function clientSecurityResponseHeadersPolicyConfig(name, domainName, token) {
   const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
   return {
     Name: name,
-    Comment: `FortressNet report-only client security telemetry for ${domainName}`,
-    // CloudFront only models an enforcing CSP as a security header. Use an
-    // explicit Report-Only header so unknown customer apps remain functional.
+    Comment: `FortressNet baseline browser security controls for ${domainName}`,
+    // The enforced directives are deliberately non-disruptive for existing
+    // sites. The stricter Report-Only policy supplies the evidence needed to
+    // tune a tenant-specific CSP before allowing it to block content.
+    SecurityHeadersConfig: {
+      ContentSecurityPolicy: { ContentSecurityPolicy: "base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'", Override: true },
+      ContentTypeOptions: { Override: true },
+      FrameOptions: { FrameOption: "SAMEORIGIN", Override: true },
+      ReferrerPolicy: { ReferrerPolicy: "strict-origin-when-cross-origin", Override: true },
+      StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: false, Preload: false, Override: true }
+    },
     CustomHeadersConfig: {
-      Quantity: 1,
-      Items: [{
-        Header: "Content-Security-Policy-Report-Only",
-        Value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri ${reportUri}`,
-        Override: true
-      }]
+      Quantity: 2,
+      Items: [
+        {
+          Header: "Content-Security-Policy-Report-Only",
+          Value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri ${reportUri}`,
+          Override: true
+        },
+        {
+          Header: "Permissions-Policy",
+          Value: "accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+          Override: true
+        }
+      ]
     }
   };
+}
+
+async function hardenCloudFrontDistribution(deployment, responseHeadersPolicyId) {
+  const response = await cloudfront.send(new GetDistributionConfigCommand({ Id: deployment.distribution_id }));
+  const config = response.DistributionConfig;
+  if (!config || !response.ETag) throw httpError(502, "cloudfront_distribution_config_unavailable");
+  config.DefaultCacheBehavior.ResponseHeadersPolicyId = responseHeadersPolicyId;
+  config.Origins.Items = (config.Origins.Items || []).map((origin) => ({
+    ...origin,
+    CustomOriginConfig: origin.CustomOriginConfig ? {
+      ...origin.CustomOriginConfig,
+      OriginProtocolPolicy: "https-only",
+      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+    } : origin.CustomOriginConfig
+  }));
+  await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
 }
 
 async function findResponseHeadersPolicy(name) {
@@ -3975,13 +4079,41 @@ function toAwsWafRules(rules, domainId) {
           SearchString: Buffer.from(value, "utf8"),
           FieldToMatch: { SingleHeader: { Name: rule.header_name } },
           TextTransformations: [{ Priority: 0, Type: "NONE" }],
-          PositionalConstraint: "EXACTLY"
+          PositionalConstraint: rule.positional_constraint || "EXACTLY"
         }
       }));
       return {
         ...common,
         Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
         Statement: statements.length === 1 ? statements[0] : { OrStatement: { Statements: statements } }
+      };
+    }
+    if (rule.type === "uri_path_match") {
+      return {
+        ...common,
+        Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: {
+          ByteMatchStatement: {
+            SearchString: Buffer.from(rule.path, "utf8"),
+            FieldToMatch: { UriPath: {} },
+            TextTransformations: [{ Priority: 0, Type: "NONE" }],
+            PositionalConstraint: rule.positional_constraint || "EXACTLY"
+          }
+        }
+      };
+    }
+    if (rule.type === "query_string_match") {
+      return {
+        ...common,
+        Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
+        Statement: {
+          ByteMatchStatement: {
+            SearchString: Buffer.from(rule.value, "utf8"),
+            FieldToMatch: { QueryString: {} },
+            TextTransformations: [{ Priority: 0, Type: "URL_DECODE" }],
+            PositionalConstraint: rule.positional_constraint || "CONTAINS"
+          }
+        }
       };
     }
     if (rule.type === "ip_set_reference") {
@@ -4318,8 +4450,11 @@ function normalizeWafRateLimitConfig(body) {
 
 function normalizeWafAdvancedConfig(body) {
   const managedProtections = uniqueNormalizedValues(body.managed_protections, (value) => clean(value).toLowerCase());
-  const supportedProtections = new Set(["ip_reputation", "anonymous_ip"]);
+  const supportedProtections = new Set(["ip_reputation", "anonymous_ip", "wordpress", "php"]);
   if (managedProtections.some((value) => !supportedProtections.has(value))) throw httpError(400, "managed_protections_invalid");
+
+  const applicationProfile = clean(body.application_profile || "generic").toLowerCase();
+  if (!new Set(["generic", "wordpress_hardened"]).has(applicationProfile)) throw httpError(400, "application_profile_invalid");
 
   const blockedAsns = uniqueNormalizedValues(body.blocked_asns, (value) => clean(value)).map(Number);
   if (blockedAsns.length > 100 || blockedAsns.some((value) => !Number.isSafeInteger(value) || value < 1 || value > 4_294_967_295)) {
@@ -4335,6 +4470,7 @@ function normalizeWafAdvancedConfig(body) {
   const allowedIpCidrs = normalizeIpCidrs(body.allowed_ip_cidrs);
   const blockedIpCidrs = normalizeIpCidrs(body.blocked_ip_cidrs);
   return {
+    application_profile: applicationProfile,
     managed_protections: managedProtections,
     blocked_asns: blockedAsns,
     blocked_header_name: headerName,
@@ -4379,6 +4515,7 @@ async function requirePilotMonitorBaseline(changeSet, edgeDeployment) {
     item.domain_id === edgeDeployment.domain_id &&
     item.status === "applied" &&
     item.mode === "monitor" &&
+    item.derived_from_change_set_id === changeSet.change_set_id &&
     Date.parse(item.applied_at || "") <= cutoff
   ));
   if (!baseline) {
@@ -4392,6 +4529,7 @@ function compileWafRules(policy) {
   const action = policy.mode === "block" ? "BLOCK" : "COUNT";
   const managedOverride = action === "BLOCK" ? "none" : "count";
   const protections = new Set(Array.isArray(policy.managed_protections) ? policy.managed_protections : []);
+  const wordpressProfile = policy.application_profile === "wordpress_hardened";
   const baseRules = [];
   if (Array.isArray(policy.allowed_ip_cidrs) && policy.allowed_ip_cidrs.length) {
     baseRules.push({ name: "FortressNetAllowedSources", type: "ip_list", list_type: "allow", addresses: policy.allowed_ip_cidrs, action: "ALLOW" });
@@ -4430,6 +4568,24 @@ function compileWafRules(policy) {
       action
     }
   );
+  if (wordpressProfile || protections.has("wordpress")) {
+    baseRules.push({
+      name: "AWS-AWSManagedRulesWordPressRuleSet",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesWordPressRuleSet",
+      override_action: managedOverride
+    });
+  }
+  if (wordpressProfile || protections.has("php")) {
+    baseRules.push({
+      name: "AWS-AWSManagedRulesPHPRuleSet",
+      type: "managed_rule_group",
+      vendor: "AWS",
+      rule_group: "AWSManagedRulesPHPRuleSet",
+      override_action: managedOverride
+    });
+  }
   if (protections.has("ip_reputation")) {
     baseRules.push({
       name: "AWS-AWSManagedRulesAmazonIpReputationList",
@@ -4455,6 +4611,19 @@ function compileWafRules(policy) {
   if (Array.isArray(policy.blocked_ip_cidrs) && policy.blocked_ip_cidrs.length) {
     baseRules.push({ name: "FortressNetBlockedSources", type: "ip_list", list_type: "block", addresses: policy.blocked_ip_cidrs, action });
   }
+  if (wordpressProfile) {
+    baseRules.push(
+      { name: "FortressNetWordPressXmlRpc", type: "uri_path_match", path: "/xmlrpc.php", positional_constraint: "EXACTLY", action },
+      { name: "FortressNetWordPressReadme", type: "uri_path_match", path: "/readme.html", positional_constraint: "EXACTLY", action },
+      { name: "FortressNetWordPressPluginIndex", type: "uri_path_match", path: "/wp-content/plugins/", positional_constraint: "EXACTLY", action },
+      { name: "FortressNetWordPressThemeIndex", type: "uri_path_match", path: "/wp-content/themes/", positional_constraint: "EXACTLY", action },
+      { name: "FortressNetWordPressUsersRest", type: "uri_path_match", path: "/wp-json/wp/v2/users", positional_constraint: "STARTS_WITH", action },
+      { name: "FortressNetWordPressUsersRoute", type: "query_string_match", value: "/wp/v2/users", positional_constraint: "CONTAINS", action },
+      { name: "FortressNetWordPressAuthorEnum", type: "query_string_match", value: "author=", positional_constraint: "CONTAINS", action },
+      { name: "FortressNetWordPressLoginRate", type: "rate_based_rule", aggregate_key_type: "IP", limit: 100, evaluation_window_sec: 300, path: "/wp-login.php", methods: ["POST"], action },
+      { name: "FortressNetScannerUserAgents", type: "header_match", header_name: "user-agent", values: ["sqlmap", "wpscan", "nikto"], positional_constraint: "CONTAINS", action }
+    );
+  }
 
   return baseRules;
 }
@@ -4462,6 +4631,7 @@ function compileWafRules(policy) {
 function defaultWafBaseline() {
   return {
     name: "AWS Managed Security Baseline",
+    application_profile: "generic",
     mode: "monitor",
     scope: "all_domains",
     rate_limit: 2000,

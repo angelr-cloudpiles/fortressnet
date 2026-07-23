@@ -41,13 +41,15 @@ test("rejects origin URLs with invalid TCP ports", () => {
   assert.equal(normalizeOriginUrl("https://origin.example.com:8443").port, "8443");
 });
 
-test("creates client-side CSP telemetry in report-only mode", () => {
+test("creates enforced browser controls with CSP telemetry", () => {
   const policy = clientSecurityResponseHeadersPolicyConfig("fn-csp-test", "www.example.com", "client-token");
 
-  assert.equal(policy.SecurityHeadersConfig, undefined);
-  assert.deepEqual(policy.CustomHeadersConfig.Items, [{
+  assert.equal(policy.SecurityHeadersConfig.ContentTypeOptions.Override, true);
+  assert.equal(policy.SecurityHeadersConfig.StrictTransportSecurity.AccessControlMaxAgeSec, 31536000);
+  assert.deepEqual(policy.CustomHeadersConfig.Items[0], {
     Header: "Content-Security-Policy-Report-Only",
     Value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri https://app.fortressnet.app/api/client-security/reports/client-token",
     Override: true
-  }]);
+  });
+  assert.equal(policy.CustomHeadersConfig.Items[1].Header, "Permissions-Policy");
 });

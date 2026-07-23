@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -60,6 +60,25 @@ test("compiles opt-in managed protections and advanced WAF statements", () => {
   assert.equal(awsRules[1].Action.Block !== undefined, true);
 });
 
+test("compiles a WordPress hardened profile with focused edge controls", () => {
+  const rules = compileWafRules({
+    mode: "block",
+    application_profile: "wordpress_hardened",
+    rate_limit: 2000,
+    managed_protections: ["ip_reputation", "anonymous_ip"]
+  });
+  const managedGroups = rules.filter((rule) => rule.type === "managed_rule_group").map((rule) => rule.rule_group);
+  assert.equal(managedGroups.includes("AWSManagedRulesWordPressRuleSet"), true);
+  assert.equal(managedGroups.includes("AWSManagedRulesPHPRuleSet"), true);
+  assert.equal(rules.some((rule) => rule.name === "FortressNetWordPressXmlRpc" && rule.type === "uri_path_match"), true);
+  assert.equal(rules.some((rule) => rule.name === "FortressNetWordPressLoginRate" && rule.limit === 100), true);
+
+  const awsRules = toAwsWafRules(rules.filter((rule) => ["uri_path_match", "query_string_match", "header_match"].includes(rule.type)), "dom_wp");
+  assert.equal(awsRules.some((rule) => rule.Statement.ByteMatchStatement?.FieldToMatch.UriPath !== undefined), true);
+  assert.equal(awsRules.some((rule) => rule.Statement.ByteMatchStatement?.FieldToMatch.QueryString !== undefined), true);
+  assert.equal(awsRules.some((rule) => rule.Statement.OrStatement?.Statements?.[0]?.ByteMatchStatement?.PositionalConstraint === "CONTAINS"), true);
+});
+
 test("validates IP lists and header constraints", () => {
   const advanced = normalizeWafAdvancedConfig({
     managed_protections: ["ip_reputation"],
@@ -71,6 +90,8 @@ test("validates IP lists and header constraints", () => {
   assert.deepEqual(advanced.allowed_ip_cidrs, ["203.0.113.0/24", "2001:db8::/32"]);
   assert.throws(() => normalizeWafAdvancedConfig({ blocked_ip_cidrs: "10.0.0.1" }), { message: "ip_cidr_list_invalid" });
   assert.throws(() => normalizeWafAdvancedConfig({ blocked_header_name: "bad header", blocked_header_values: "x" }), { message: "blocked_header_invalid" });
+  assert.equal(normalizeWafAdvancedConfig({ application_profile: "wordpress_hardened", managed_protections: ["wordpress", "php"] }).application_profile, "wordpress_hardened");
+  assert.throws(() => normalizeWafAdvancedConfig({ application_profile: "unknown" }), { message: "application_profile_invalid" });
 });
 
 test("builds API inventory from real WAF event shape and validates OpenAPI 3", () => {
@@ -112,4 +133,12 @@ test("creates the AWS managed WAF baseline in monitor mode", () => {
   assert.equal(defaultWafBaseline().mode, "monitor");
   assert.equal(rules.length, 6);
   assert.equal(awsRules.every((rule) => rule.OverrideAction?.Count || rule.Action?.Count), true);
+});
+
+test("builds an enforcing browser baseline while retaining CSP telemetry", () => {
+  const policy = clientSecurityResponseHeadersPolicyConfig("fn-test", "www.example.test", "report-token");
+  assert.equal(policy.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy.includes("object-src 'none'"), true);
+  assert.equal(policy.SecurityHeadersConfig.ContentTypeOptions.Override, true);
+  assert.equal(policy.SecurityHeadersConfig.StrictTransportSecurity.AccessControlMaxAgeSec, 31536000);
+  assert.equal(policy.CustomHeadersConfig.Items.some((item) => item.Header === "Content-Security-Policy-Report-Only"), true);
 });

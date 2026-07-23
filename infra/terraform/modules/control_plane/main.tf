@@ -360,6 +360,8 @@ resource "aws_iam_role_policy" "task" {
           , "cloudfront:UpdateDistribution"
           , "cloudfront:CreateResponseHeadersPolicy"
           , "cloudfront:GetResponseHeadersPolicy"
+          , "cloudfront:GetResponseHeadersPolicyConfig"
+          , "cloudfront:UpdateResponseHeadersPolicy"
           , "cloudfront:ListResponseHeadersPolicies"
         ]
         Resource = "*"

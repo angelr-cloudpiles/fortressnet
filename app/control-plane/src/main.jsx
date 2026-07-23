@@ -1361,6 +1361,9 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
         onChanged={onCreated}
         setStatus={setStatus}
       />
+      <Panel title="Edge Hardening">
+        {deployments.length ? <div className="settings-list compact">{deployments.map((deployment) => <div key={deployment.deployment_id}><Shield size={18} /><span><strong>{deployment.domain_name}</strong><small>Browser headers and origin TLS are managed at the edge. Origin access: {humanizeWorkflowStatus(deployment.origin_access_status || "not_checked")}. Use a separate HTTPS origin hostname before running the bypass check.</small></span><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Copy origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-access-check`, "POST", token, setStatus, onCreated, "Direct origin access check completed.")}>Check origin lock</button><button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/security-refresh`, "POST", token, setStatus, onCreated, "CloudFront browser security controls and origin TLS have been refreshed.")}>Apply edge baseline</button></div></div>)}</div> : <EmptyState icon={Shield} title="No edge deployment yet" body="Provision the protected edge before applying browser hardening and sharing the origin verification header." />}
+      </Panel>
       <div className="two-column">
         <Panel id="origins-inventory" title="Origins">
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
@@ -2381,6 +2384,7 @@ function OriginPoolForm({ token, tenants, domains, origins, pools, selectedTenan
 
 function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
   const [name, setName] = useState("AWS Managed Security Baseline");
+  const [applicationProfile, setApplicationProfile] = useState("generic");
   const [mode, setMode] = useState("monitor");
   const [rateLimit, setRateLimit] = useState("2000");
   const [rateLimitPath, setRateLimitPath] = useState("");
@@ -2405,11 +2409,20 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
     setManagedProtections((current) => current.includes(protection) ? current.filter((item) => item !== protection) : [...current, protection]);
   };
 
+  const changeApplicationProfile = (value) => {
+    setApplicationProfile(value);
+    if (value === "wordpress_hardened") {
+      setName("WordPress Hardened Security Profile");
+      setManagedProtections((current) => Array.from(new Set([...current, "wordpress", "php"])));
+    }
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     await createResource("/api/policies", token, {
       tenant_id: selectedTenantId,
       name,
+      application_profile: applicationProfile,
       mode,
       scope: "all_domains",
       rate_limit: Number(rateLimit),
@@ -2424,6 +2437,7 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       blocked_ip_cidrs: blockedIpCidrs
     }, "Policy draft created.", setStatus, () => {
       setName("AWS Managed Security Baseline");
+      setApplicationProfile("generic");
       setRateLimit("2000");
       setRateLimitPath("");
       setRateLimitMethods([]);
@@ -2445,18 +2459,19 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   return (
     <form className="policy-editor" onSubmit={submit}>
       <div><label htmlFor="policy-name">Policy name</label><input id="policy-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
+      <div><label htmlFor="policy-application-profile">Application profile</label><select id="policy-application-profile" value={applicationProfile} onChange={(event) => changeApplicationProfile(event.target.value)}><option value="generic">Generic web application</option><option value="wordpress_hardened">WordPress hardened</option></select></div>
       <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="monitor">Monitor first</option><option value="block">Block after observation</option></select></div>
       <div><label htmlFor="policy-rate-limit">Requests per 5 minutes per IP</label><input id="policy-rate-limit" type="number" min="100" max="2000000" step="1" value={rateLimit} onChange={(event) => setRateLimit(event.target.value)} required /></div>
       <div><label htmlFor="policy-rate-path">Path prefix</label><input id="policy-rate-path" value={rateLimitPath} onChange={(event) => setRateLimitPath(event.target.value)} placeholder="/login" /></div>
       <div className="policy-scope-picker"><label>HTTP methods</label><div className="scope-picker">{rateLimitMethodOptions.map((method) => <label key={method}><input type="checkbox" checked={rateLimitMethods.includes(method)} onChange={() => toggleMethod(method)} /> {method}</label>)}</div></div>
       <div><label htmlFor="policy-rate-countries">Countries</label><select id="policy-rate-countries" multiple value={rateLimitCountries} onChange={selectCountries}>{rateLimitCountryOptions.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></div>
-      <div className="policy-scope-picker"><label>Managed protections</label><div className="scope-picker"><label><input type="checkbox" checked={managedProtections.includes("ip_reputation")} onChange={() => toggleManagedProtection("ip_reputation")} /> IP reputation</label><label><input type="checkbox" checked={managedProtections.includes("anonymous_ip")} onChange={() => toggleManagedProtection("anonymous_ip")} /> Anonymous IP</label></div></div>
+      <div className="policy-scope-picker"><label>Managed protections</label><div className="scope-picker"><label><input type="checkbox" checked={managedProtections.includes("ip_reputation")} onChange={() => toggleManagedProtection("ip_reputation")} /> IP reputation</label><label><input type="checkbox" checked={managedProtections.includes("anonymous_ip")} onChange={() => toggleManagedProtection("anonymous_ip")} /> Anonymous IP</label><label><input type="checkbox" checked={managedProtections.includes("wordpress")} onChange={() => toggleManagedProtection("wordpress")} /> WordPress exploit protection</label><label><input type="checkbox" checked={managedProtections.includes("php")} onChange={() => toggleManagedProtection("php")} /> PHP exploit protection</label></div></div>
       <div><label htmlFor="policy-blocked-asns">Blocked ASNs</label><input id="policy-blocked-asns" value={blockedAsns} onChange={(event) => setBlockedAsns(event.target.value)} placeholder="12345, 64496" /></div>
       <div><label htmlFor="policy-blocked-header-name">Blocked request header</label><input id="policy-blocked-header-name" value={blockedHeaderName} onChange={(event) => setBlockedHeaderName(event.target.value)} placeholder="x-forwarded-host" /></div>
       <div><label htmlFor="policy-blocked-header-values">Blocked header values</label><input id="policy-blocked-header-values" value={blockedHeaderValues} onChange={(event) => setBlockedHeaderValues(event.target.value)} placeholder="invalid.example, unknown.example" /></div>
       <div><label htmlFor="policy-allowed-cidrs">Allowed source CIDRs</label><textarea id="policy-allowed-cidrs" value={allowedIpCidrs} onChange={(event) => setAllowedIpCidrs(event.target.value)} placeholder="203.0.113.0/24\n2001:db8::/32" /></div>
       <div><label htmlFor="policy-blocked-cidrs">Blocked source CIDRs</label><textarea id="policy-blocked-cidrs" value={blockedIpCidrs} onChange={(event) => setBlockedIpCidrs(event.target.value)} placeholder="198.51.100.0/24" /></div>
-      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmanaged: ${managedProtections.length ? managedProtections.join(", ") : "baseline only"}\nASNs: ${blockedAsns || "none"}\nsource lists: ${allowedIpCidrs || blockedIpCidrs ? "configured" : "none"}\napproval_required: true`}</pre>
+      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nprofile: ${applicationProfile}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmanaged: ${managedProtections.length ? managedProtections.join(", ") : "baseline only"}\nWordPress profile: ${applicationProfile === "wordpress_hardened" ? "XML-RPC, user enumeration, directory index and scanner controls" : "not selected"}\nASNs: ${blockedAsns || "none"}\nsource lists: ${allowedIpCidrs || blockedIpCidrs ? "configured" : "none"}\napproval_required: true`}</pre>
       <button className="primary" disabled={!token || !selectedTenantId || !name || Number(rateLimit) < 100 || Number(rateLimit) > 2000000}><Plus size={16} /> Create policy</button>
     </form>
   );
@@ -2916,6 +2931,9 @@ function friendlyWorkflowError(message) {
   }
   if (message === "origin_matches_protected_domain") {
     return "The origin cannot use the protected hostname. Create or provide a separate HTTPS origin hostname that stays pointed at the application after the public hostname is switched to FortressNet.";
+  }
+  if (message === "dedicated_origin_required") {
+    return "A direct-origin check needs a separate HTTPS origin hostname. Configure a dedicated origin that does not resolve through FortressNet, then rerun the check to confirm the origin rejects unauthenticated traffic.";
   }
   if (message === "replacement_origin_unhealthy") {
     return "FortressNet could not reach the replacement origin health path. Verify its DNS, TLS certificate, firewall rules and health path before requesting the CloudFront update.";
