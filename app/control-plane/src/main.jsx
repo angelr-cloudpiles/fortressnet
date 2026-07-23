@@ -12,6 +12,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
+  Copy,
   CreditCard,
   FileText,
   Globe2,
@@ -691,14 +692,16 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const pendingWafChangeSet = tenantWafChangeSets
     .find((changeSet) => changeSet.status !== "applied" && (!changeSet.domain_id || changeSet.domain_id === latestDomain?.domain_id));
   const edgeReadyForCutover = ["ready_for_cutover", "active"].includes(latestDeployment?.status);
+  const ownershipVerified = verifiedDomainStatuses.has(latestDomain?.status);
+  const certificatePending = latestCertificate && latestCertificate.status !== "ISSUED";
   const checklist = [
     { step: "Tenant selected", value: selectedTenantId ? "Ready" : "Required", done: Boolean(selectedTenantId) },
-    { step: "Domain ownership", value: humanizeWorkflowStatus(latestDomain?.status), done: verifiedDomainStatuses.has(latestDomain?.status) },
+    { step: "Domain ownership", value: humanizeWorkflowStatus(latestDomain?.status), done: ownershipVerified },
     { step: "Primary origin", value: humanizeWorkflowStatus(primaryOrigin?.status), done: primaryOrigin?.status === "healthy" },
     { step: "Certificate", value: humanizeWorkflowStatus(latestCertificate?.status), done: latestCertificate?.status === "ISSUED" },
     { step: "Edge deployment", value: humanizeWorkflowStatus(latestDeployment?.status, "Not requested"), done: edgeReadyForCutover },
     { step: "WAF policy", value: appliedWafChangeSet ? "Applied" : humanizeWorkflowStatus(pendingWafChangeSet?.status, "Policy required"), done: Boolean(appliedWafChangeSet) },
-    { step: "Traffic DNS", value: humanizeWorkflowStatus(latestDomain?.status, "Pending"), done: latestDomain?.status === "active" }
+    { step: "Traffic DNS", value: latestDomain?.status === "active" ? "Active" : edgeReadyForCutover ? "Awaiting traffic CNAME" : "Blocked by edge deployment", done: latestDomain?.status === "active" }
   ];
   const currentStepIndex = checklist.findIndex((item) => !item.done);
   const verifyOwnership = () => {
@@ -732,7 +735,7 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
           </div>
         </Panel>
       </div>
-      <Panel title="DNS Instructions" action={latestDomain && <button className="primary compact" disabled={!token} onClick={verifyOwnership}><RefreshCw size={15} /> Check DNS</button>}>
+      <Panel title="DNS Instructions" action={latestDomain && !ownershipVerified ? <button className="primary compact" disabled={!token} onClick={verifyOwnership}><RefreshCw size={15} /> Check ownership DNS</button> : certificatePending && latestCertificate?.certificate_arn ? <button className="primary compact" disabled={!token} onClick={() => refreshCertificate(latestCertificate.certificate_id, token, setStatus, onCreated)}><RefreshCw size={15} /> Verify certificate</button> : latestDeployment?.status === "ready_for_cutover" ? <button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/domains/${latestDomain.domain_id}/verify-cutover`, "PATCH", token, setStatus, onCreated, "Traffic DNS checked.")}><RefreshCw size={15} /> Check traffic DNS</button> : null}>
         <DomainInstructions domain={latestDomain} certificate={latestCertificate} deployment={latestDeployment} />
       </Panel>
     </div>
@@ -743,6 +746,7 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   let title = "Create or select a tenant";
   let detail = "Select the customer tenant before creating a protected site.";
   let action = null;
+  let validationRecord = null;
 
   if (selectedTenantId && !domain) {
     title = "Register the protected site";
@@ -758,14 +762,15 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   } else if (domain && certificate?.status !== "ISSUED") {
     const hasValidationRecord = Boolean(certificate?.validation_records?.length);
     const hasCertificateRequest = Boolean(certificate?.certificate_arn);
-    title = "Validate the TLS certificate";
+    title = hasValidationRecord ? "Add the ACM validation record" : "Validate the TLS certificate";
     detail = !hasCertificateRequest
       ? "Domain ownership is verified, but no ACM certificate request is registered yet. Retry the request to obtain the validation CNAME."
       : hasValidationRecord
-      ? "Create the ACM validation CNAME shown below. Keep it in DNS while the certificate is in use, then refresh the certificate status."
+      ? "1. Create this CNAME at your DNS provider. 2. When it is published, select Verify certificate. ACM can take a few minutes to detect the record."
       : "AWS is preparing the ACM validation CNAME. Refresh the certificate status to retrieve the record, then publish it in the domain DNS zone.";
+    validationRecord = hasValidationRecord ? certificate.validation_records[0] : null;
     action = hasCertificateRequest
-      ? { label: "Refresh certificate", icon: RefreshCw, run: () => refreshCertificate(certificate.certificate_id, token, setStatus, onCreated) }
+      ? { label: "Verify certificate", icon: RefreshCw, run: () => refreshCertificate(certificate.certificate_id, token, setStatus, onCreated) }
       : { label: "Retry certificate request", icon: RefreshCw, run: () => verifyDomainDns(domain.domain_id, token, setStatus, onCreated) };
   } else if (domain && !deployment) {
     title = "Request the edge deployment";
@@ -807,10 +812,25 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   }
 
   const ActionIcon = action?.icon;
+  const copyValue = async (value, label) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setStatus({ type: "success", message: `${label} copied to the clipboard.` });
+    } catch {
+      setStatus({ type: "error", message: "Clipboard access is unavailable. Copy the value manually." });
+    }
+  };
   return (
-    <div className="onboarding-guidance">
+    <div className={`onboarding-guidance ${validationRecord ? "has-record" : ""}`}>
       <Activity size={19} />
-      <div><strong>Next action: {title}</strong><span>{detail}</span></div>
+      <div className="guidance-copy">
+        <strong>Next action: {title}</strong>
+        <span>{detail}</span>
+        {validationRecord && <div className="guidance-dns-record">
+          <div><small>CNAME host</small><span><code>{validationRecord.name}</code><button className="guidance-copy-button" type="button" title="Copy CNAME host" aria-label="Copy CNAME host" onClick={() => copyValue(validationRecord.name, "CNAME host")}><Copy size={15} /></button></span></div>
+          <div><small>CNAME target</small><span><code>{validationRecord.value}</code><button className="guidance-copy-button" type="button" title="Copy CNAME target" aria-label="Copy CNAME target" onClick={() => copyValue(validationRecord.value, "CNAME target")}><Copy size={15} /></button></span></div>
+        </div>}
+      </div>
       {action && <button className="primary compact" disabled={!token} onClick={action.run}>{ActionIcon && <ActionIcon size={15} />}{action.label}</button>}
     </div>
   );

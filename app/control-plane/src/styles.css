@@ -1389,6 +1389,63 @@ a {
   line-height: 1.45;
 }
 
+.onboarding-guidance.has-record {
+  align-items: start;
+}
+
+.guidance-dns-record {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.guidance-dns-record > div {
+  min-width: 0;
+}
+
+.guidance-dns-record small {
+  display: block;
+  margin-bottom: 4px;
+  color: #8a4b08;
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.guidance-dns-record > div > span {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+}
+
+.guidance-dns-record code {
+  min-width: 0;
+  flex: 1;
+  padding: 8px;
+  color: #8a4b08;
+  background: #fff;
+  border-color: #f1bd78;
+}
+
+.guidance-copy-button {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  margin-left: 5px;
+  padding: 0;
+  color: #8a4b08;
+  background: #fff;
+  border: 1px solid #f1bd78;
+  border-radius: 5px;
+}
+
+.guidance-copy-button:hover {
+  color: #fff;
+  background: #d97706;
+  border-color: #d97706;
+}
+
 .setup-steps div {
   min-height: 96px;
   padding: 14px;
@@ -2033,6 +2090,10 @@ code {
   .onboarding-guidance button {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .guidance-dns-record {
+    grid-template-columns: 1fr;
   }
 
   .modal-backdrop {
