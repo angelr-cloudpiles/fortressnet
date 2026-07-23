@@ -484,6 +484,7 @@ app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
     if (!originUrl) return res.status(400).json({ error: "valid_public_origin_url_required" });
     const domain = await getById(tables.domains, { domain_id: domainId });
     if (!domain || domain.tenant_id !== tenantId) return res.status(404).json({ error: "domain_not_found" });
+    await assertOriginConfigurationEditable(tenantId, domainId);
 
     const now = new Date().toISOString();
     const origin = {
@@ -516,6 +517,59 @@ app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) =
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const pools = tenantId ? await queryByTenant(tables.originPools, tenantId) : await scanTable(tables.originPools);
     res.json({ origin_pools: sortByDate(pools) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/origin-pools", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
+    const domainId = clean(body.domain_id);
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!domainId) return res.status(400).json({ error: "domain_id_required" });
+    const domain = await getById(tables.domains, { domain_id: domainId });
+    if (!domain || domain.tenant_id !== tenantId) return res.status(404).json({ error: "domain_not_found" });
+    await assertOriginConfigurationEditable(tenantId, domainId);
+    const existing = await queryByIndex(tables.originPools, "domain_id-index", "domain_id", domainId);
+    if (existing.some((pool) => pool.tenant_id === tenantId)) return res.status(409).json({ error: "origin_pool_already_exists" });
+    const configuration = await validateOriginPoolConfiguration(tenantId, domainId, body);
+    const now = new Date().toISOString();
+    const pool = {
+      pool_id: `pool_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      domain_id: domainId,
+      name: clean(body.name) || "primary-pool",
+      ...configuration,
+      created_at: now,
+      updated_at: now
+    };
+    await putUnique(tables.originPools, pool, "pool_id");
+    await audit("origin_pool.created", tenantId, publicOriginPool(pool), req.actor);
+    res.status(201).json({ origin_pool: pool });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/origin-pools/:poolId", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const pool = await getById(tables.originPools, { pool_id: clean(req.params.poolId) });
+    if (!pool) return res.status(404).json({ error: "origin_pool_not_found" });
+    tenantForActor(req.actor, pool.tenant_id);
+    await assertOriginConfigurationEditable(pool.tenant_id, pool.domain_id);
+    const configuration = await validateOriginPoolConfiguration(pool.tenant_id, pool.domain_id, req.body || {});
+    const now = new Date().toISOString();
+    const updated = {
+      ...pool,
+      name: clean(req.body?.name) || pool.name,
+      ...configuration,
+      updated_at: now
+    };
+    await dynamo.send(new PutCommand({ TableName: tables.originPools, Item: updated }));
+    await audit("origin_pool.updated", pool.tenant_id, { before: publicOriginPool(pool), after: publicOriginPool(updated) }, req.actor);
+    res.json({ origin_pool: updated });
   } catch (error) {
     next(error);
   }
@@ -557,11 +611,14 @@ app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:wr
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
     tenantForActor(req.actor, domain.tenant_id);
     const certificates = await queryByIndex(tables.certificates, "domain_id-index", "domain_id", domain.domain_id);
-    const origins = await queryByIndex(tables.origins, "domain_id-index", "domain_id", domain.domain_id);
+    const pools = await queryByIndex(tables.originPools, "domain_id-index", "domain_id", domain.domain_id);
     const certificate = certificates.find((item) => item.certificate_arn && item.status === "ISSUED");
-    const origin = origins.find((item) => item.status === "healthy");
+    const pool = pools.find((item) => item.tenant_id === domain.tenant_id);
+    const origins = pool ? await loadPoolOrigins(pool) : [];
+    const origin = origins[0];
     if (!certificate) return res.status(409).json({ error: "issued_certificate_required" });
-    if (!origin) return res.status(409).json({ error: "healthy_origin_required" });
+    if (!pool || !origin || origin.status !== "healthy") return res.status(409).json({ error: "healthy_origin_pool_required" });
+    if (pool.failover_enabled && (origins.length !== 2 || origins.some((item) => item.status !== "healthy"))) return res.status(409).json({ error: "healthy_failover_origin_required" });
     const existing = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domain.domain_id);
     if (existing.some((item) => !["failed", "rolled_back"].includes(item.status))) return res.status(409).json({ error: "edge_deployment_already_exists" });
 
@@ -572,6 +629,9 @@ app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:wr
       domain_id: domain.domain_id,
       domain_name: domain.domain_name,
       origin_id: origin.origin_id,
+      origin_pool_id: pool.pool_id,
+      origin_ids: origins.map((item) => item.origin_id),
+      failover_enabled: pool.failover_enabled === true,
       certificate_id: certificate.certificate_id,
       status: "pending_approval",
       requested_by: req.actor?.subject || "unknown",
@@ -640,8 +700,12 @@ app.post("/api/edge-deployments/:deploymentId/provision", requireScope("edge:wri
     const origin = await getById(tables.origins, { origin_id: deployment.origin_id });
     const certificate = await getById(tables.certificates, { certificate_id: deployment.certificate_id });
     if (!domain || !origin || !certificate || certificate.status !== "ISSUED") return res.status(409).json({ error: "edge_deployment_dependencies_not_ready" });
+    const pool = deployment.origin_pool_id ? await getById(tables.originPools, { pool_id: deployment.origin_pool_id }) : null;
+    const origins = pool ? await loadPoolOrigins(pool) : [origin];
+    if (!origins.length || origins[0].origin_id !== origin.origin_id || origins.some((item) => item.status !== "healthy")) return res.status(409).json({ error: "healthy_origin_pool_required" });
+    if (deployment.failover_enabled && origins.length !== 2) return res.status(409).json({ error: "healthy_failover_origin_required" });
 
-    const provisioned = await provisionTenantEdge(deployment, domain, origin, certificate);
+    const provisioned = await provisionTenantEdge(deployment, domain, origins, certificate);
     await audit("edge_deployment.provisioned", deployment.tenant_id, publicEdgeDeployment(provisioned), req.actor);
     res.status(202).json({ edge_deployment: publicEdgeDeployment(provisioned) });
   } catch (error) {
@@ -713,6 +777,7 @@ app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), asy
       },
       ReturnValues: "ALL_NEW"
     }));
+    await refreshOriginPoolStatuses(origin.tenant_id, origin.domain_id);
     await audit("origin.health_checked", origin.tenant_id, { origin_id: origin.origin_id, health }, req.actor);
     res.json({ origin: result.Attributes, health });
   } catch (error) {
@@ -1476,9 +1541,11 @@ app.use((error, _req, res, _next) => {
   res.status(error.statusCode || 500).json({ error: error.code || "internal_error", details: error.details || undefined });
 });
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`FortressNet control plane listening on ${port}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`FortressNet control plane listening on ${port}`);
+  });
+}
 
 async function requireManagementAccess(req, res, next) {
   if (!managementToken && !cognitoVerifier) return res.status(503).json({ error: "identity_not_configured" });
@@ -1998,7 +2065,7 @@ async function edgeDeploymentForDomain(domainId, tenantId) {
   return deployments.find((deployment) => deployment.tenant_id === tenantId) || null;
 }
 
-async function provisionTenantEdge(deployment, domain, origin, certificate) {
+async function provisionTenantEdge(deployment, domain, origins, certificate) {
   const now = new Date().toISOString();
   const logGroupName = deployment.log_group_name || tenantWafLogGroup(domain.domain_id);
   await ensureWafLogGroup(logGroupName);
@@ -2009,7 +2076,7 @@ async function provisionTenantEdge(deployment, domain, origin, certificate) {
   const distribution = deployment.distribution_id
     ? await cloudfront.send(new GetDistributionCommand({ Id: deployment.distribution_id }))
     : await cloudfront.send(new CreateDistributionCommand({
-      DistributionConfig: cloudFrontDistributionConfig(deployment, domain, origin, certificate, webAcl.ARN, originHeaderName, originHeaderValue)
+      DistributionConfig: cloudFrontDistributionConfig(deployment, domain, origins, certificate, webAcl.ARN, originHeaderName, originHeaderValue)
     }));
   const current = distribution.Distribution;
   const updated = {
@@ -2121,29 +2188,41 @@ async function ensureWafLogging(webAclArn, logGroupName) {
   }));
 }
 
-function cloudFrontDistributionConfig(deployment, domain, origin, certificate, webAclArn, originHeaderName, originHeaderValue) {
-  const originId = `origin-${domain.domain_id}`;
+function cloudFrontDistributionConfig(deployment, domain, origins, certificate, webAclArn, originHeaderName, originHeaderValue) {
+  const originItems = origins.map((origin) => ({
+    Id: `origin-${origin.origin_id}`,
+    DomainName: origin.hostname,
+    CustomHeaders: { Quantity: 1, Items: [{ HeaderName: originHeaderName, HeaderValue: originHeaderValue }] },
+    CustomOriginConfig: {
+      HTTPPort: 80,
+      HTTPSPort: Number(origin.port || 443),
+      OriginProtocolPolicy: "https-only",
+      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+    }
+  }));
+  const failoverEnabled = deployment.failover_enabled === true && originItems.length === 2;
+  const originGroupId = `origin-group-${domain.domain_id}`;
+  const targetOriginId = failoverEnabled ? originGroupId : originItems[0]?.Id;
+  if (!targetOriginId) throw httpError(409, "healthy_origin_pool_required");
   return {
     CallerReference: deployment.deployment_id,
     Comment: `FortressNet tenant edge ${domain.domain_name}`,
     Enabled: true,
     Aliases: { Quantity: 1, Items: [domain.domain_name] },
     Origins: {
+      Quantity: originItems.length,
+      Items: originItems
+    },
+    OriginGroups: failoverEnabled ? {
       Quantity: 1,
       Items: [{
-        Id: originId,
-        DomainName: origin.hostname,
-        CustomHeaders: { Quantity: 1, Items: [{ HeaderName: originHeaderName, HeaderValue: originHeaderValue }] },
-        CustomOriginConfig: {
-          HTTPPort: 80,
-          HTTPSPort: 443,
-          OriginProtocolPolicy: "https-only",
-          OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
-        }
+        Id: originGroupId,
+        FailoverCriteria: { StatusCodes: { Quantity: 4, Items: [500, 502, 503, 504] } },
+        Members: { Quantity: 2, Items: originItems.map((origin) => ({ OriginId: origin.Id })) }
       }]
-    },
+    } : { Quantity: 0 },
     DefaultCacheBehavior: {
-      TargetOriginId: originId,
+      TargetOriginId: targetOriginId,
       ViewerProtocolPolicy: "redirect-to-https",
       AllowedMethods: { Quantity: 7, Items: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"], CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } },
       Compress: true,
@@ -2165,6 +2244,70 @@ function cloudFrontDistributionConfig(deployment, domain, origin, certificate, w
       Bucket: process.env.EDGE_LOGS_BUCKET_DOMAIN_NAME,
       Prefix: `tenant/${deployment.tenant_id}/domain/${domain.domain_id}/`
     }
+  };
+}
+
+async function assertOriginConfigurationEditable(tenantId, domainId) {
+  const deployments = await queryByIndex(tables.edgeDeployments, "domain_id-index", "domain_id", domainId);
+  if (deployments.some((deployment) => deployment.tenant_id === tenantId && !["failed", "rolled_back"].includes(deployment.status))) {
+    throw httpError(409, "origin_configuration_locked_after_edge_request");
+  }
+}
+
+async function validateOriginPoolConfiguration(tenantId, domainId, body) {
+  const originIds = Array.from(new Set(normalizeList(body.origin_ids)));
+  const failoverEnabled = body.failover_enabled === true;
+  const strategy = clean(body.strategy) || "priority";
+  if (strategy !== "priority") throw httpError(400, "origin_pool_strategy_must_be_priority");
+  if (!originIds.length || originIds.length > 2) throw httpError(400, "origin_pool_requires_one_or_two_origins");
+  if (failoverEnabled !== (originIds.length === 2)) throw httpError(400, "failover_requires_exactly_two_origins");
+  const origins = await queryByIndex(tables.origins, "domain_id-index", "domain_id", domainId);
+  const selected = originIds.map((originId) => origins.find((origin) => origin.origin_id === originId && origin.tenant_id === tenantId)).filter(Boolean);
+  if (selected.length !== originIds.length) throw httpError(400, "origin_pool_origins_must_belong_to_domain");
+  if (selected.some((origin) => origin.status !== "healthy")) throw httpError(409, "healthy_origins_required_for_pool");
+  return {
+    origin_ids: originIds,
+    strategy,
+    failover_enabled: failoverEnabled,
+    status: failoverEnabled ? "failover_ready" : "ready"
+  };
+}
+
+async function loadPoolOrigins(pool) {
+  const origins = await queryByIndex(tables.origins, "domain_id-index", "domain_id", pool.domain_id);
+  return (pool.origin_ids || []).map((originId) => origins.find((origin) => origin.origin_id === originId && origin.tenant_id === pool.tenant_id)).filter(Boolean);
+}
+
+async function refreshOriginPoolStatuses(tenantId, domainId) {
+  const pools = await queryByIndex(tables.originPools, "domain_id-index", "domain_id", domainId);
+  const origins = await queryByIndex(tables.origins, "domain_id-index", "domain_id", domainId);
+  const now = new Date().toISOString();
+  await Promise.all(pools.filter((pool) => pool.tenant_id === tenantId).map(async (pool) => {
+    const selected = (pool.origin_ids || []).map((originId) => origins.find((origin) => origin.origin_id === originId && origin.tenant_id === tenantId)).filter(Boolean);
+    const expectedOrigins = pool.failover_enabled ? 2 : 1;
+    const healthy = selected.length === expectedOrigins && selected.every((origin) => origin.status === "healthy");
+    const status = healthy ? (pool.failover_enabled ? "failover_ready" : "ready") : "degraded";
+    if (pool.status === status) return;
+    await dynamo.send(new UpdateCommand({
+      TableName: tables.originPools,
+      Key: { pool_id: pool.pool_id },
+      UpdateExpression: "SET #status = :status, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":status": status, ":updated_at": now }
+    }));
+  }));
+}
+
+function publicOriginPool(pool) {
+  return {
+    pool_id: pool.pool_id,
+    tenant_id: pool.tenant_id,
+    domain_id: pool.domain_id,
+    name: pool.name,
+    origin_ids: pool.origin_ids || [],
+    strategy: pool.strategy,
+    failover_enabled: pool.failover_enabled === true,
+    status: pool.status
   };
 }
 
@@ -2507,6 +2650,8 @@ function normalizeOriginUrl(value) {
   try {
     const url = new URL(clean(value));
     if (url.protocol !== "https:") return null;
+    const port = url.port ? Number(url.port) : 443;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
     const host = url.hostname.toLowerCase();
     if (!host || host === "localhost" || host.endsWith(".local")) return null;
     if (isBlockedIpAddress(host)) return null;
@@ -2696,3 +2841,5 @@ function normalizeProfileLocale(value) {
   if (!supported.has(locale)) throw httpError(400, "profile_locale_invalid");
   return locale;
 }
+
+export { cloudFrontDistributionConfig, normalizeOriginUrl };

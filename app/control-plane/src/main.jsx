@@ -661,15 +661,24 @@ function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
+  const domains = filterByTenant(state.domains, selectedTenantId);
 
   return (
     <div className="screen">
-      <div className="dashboard-grid">
+      <div className="two-column">
         <Panel title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
+        <Panel title="Add Origin">
+          <OriginCreateForm token={token} tenants={state.tenants} domains={domains} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+        </Panel>
+      </div>
+      <div className="two-column">
         <Panel title="Origin Pools">
-          <OriginPoolTable pools={pools} />
+          <OriginPoolTable pools={pools} origins={origins} />
+        </Panel>
+        <Panel title="Failover Configuration">
+          <OriginPoolForm token={token} tenants={state.tenants} domains={domains} origins={origins} pools={pools} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
       </div>
       <Panel title="TLS Certificates">
@@ -1264,6 +1273,105 @@ function DomainCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
   );
 }
 
+function OriginCreateForm({ token, tenants, domains, selectedTenantId, onCreated, setStatus }) {
+  const [domainId, setDomainId] = useState("");
+  const [name, setName] = useState("");
+  const [originUrl, setOriginUrl] = useState("");
+  const [healthPath, setHealthPath] = useState("/");
+
+  useEffect(() => {
+    if (!domains.some((domain) => domain.domain_id === domainId)) setDomainId(domains[0]?.domain_id || "");
+  }, [domains, domainId]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    await createResource("/api/origins", token, {
+      tenant_id: selectedTenantId,
+      domain_id: domainId,
+      name,
+      origin_url: originUrl,
+      health_path: healthPath
+    }, "Origin added. Run a health check before adding it to a failover pool.", setStatus, () => {
+      setName("");
+      setOriginUrl("");
+      setHealthPath("/");
+      onCreated();
+    });
+  };
+
+  if (!tenants.length) return <EmptyState icon={Users} title="Create a tenant first" body="Origins are always attached to a protected tenant domain." />;
+  if (!domains.length) return <EmptyState icon={Globe2} title="Create a protected site first" body="Add an origin only after selecting the tenant domain it will serve." />;
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label htmlFor="origin-domain">Domain<select id="origin-domain" value={domainId} onChange={(event) => setDomainId(event.target.value)}>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></label>
+      <label htmlFor="additional-origin-name">Origin name<input id="additional-origin-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="secondary" /></label>
+      <label htmlFor="additional-origin-url">Origin URL<input id="additional-origin-url" value={originUrl} onChange={(event) => setOriginUrl(event.target.value)} placeholder="https://secondary.customer.com" /></label>
+      <label htmlFor="additional-origin-health-path">Health path<input id="additional-origin-health-path" value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/health" /></label>
+      <button className="primary" disabled={!token || !domainId || !originUrl}><Plus size={16} /> Add origin</button>
+    </form>
+  );
+}
+
+function OriginPoolForm({ token, tenants, domains, origins, pools, selectedTenantId, onCreated, setStatus }) {
+  const [domainId, setDomainId] = useState("");
+  const [name, setName] = useState("primary-pool");
+  const [originIds, setOriginIds] = useState([]);
+  const [failoverEnabled, setFailoverEnabled] = useState(false);
+  const domainOrigins = useMemo(() => origins.filter((origin) => origin.domain_id === domainId), [origins, domainId]);
+  const existingPool = useMemo(() => pools.find((pool) => pool.domain_id === domainId) || null, [pools, domainId]);
+
+  useEffect(() => {
+    if (!domains.some((domain) => domain.domain_id === domainId)) setDomainId(domains[0]?.domain_id || "");
+  }, [domains, domainId]);
+
+  useEffect(() => {
+    if (!domainId) return;
+    setName(existingPool?.name || "primary-pool");
+    setOriginIds(existingPool?.origin_ids || domainOrigins.slice(0, 1).map((origin) => origin.origin_id));
+    setFailoverEnabled(existingPool?.failover_enabled === true);
+  }, [domainId, existingPool?.pool_id, existingPool?.name, existingPool?.failover_enabled, existingPool?.origin_ids, domainOrigins]);
+
+  const toggleOrigin = (originId) => {
+    setOriginIds((current) => {
+      const next = current.includes(originId) ? current.filter((item) => item !== originId) : current.length < 2 ? [...current, originId] : current;
+      setFailoverEnabled(next.length === 2);
+      return next;
+    });
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      const payload = { tenant_id: selectedTenantId, domain_id: domainId, name, origin_ids: originIds, strategy: "priority", failover_enabled: failoverEnabled };
+      await apiRequest(existingPool ? `/api/origin-pools/${existingPool.pool_id}` : "/api/origin-pools", token, {
+        method: existingPool ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      setStatus({ type: "success", message: failoverEnabled ? "Failover pool saved. CloudFront will use it for the next edge provisioning." : "Origin pool saved." });
+      onCreated();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+
+  if (!tenants.length) return <EmptyState icon={Users} title="Create a tenant first" body="Origin pools are scoped to a tenant domain." />;
+  if (!domains.length) return <EmptyState icon={Globe2} title="Create a protected site first" body="A pool can be configured before the tenant edge is requested." />;
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label htmlFor="origin-pool-domain">Domain<select id="origin-pool-domain" value={domainId} onChange={(event) => setDomainId(event.target.value)}>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></label>
+      <label htmlFor="origin-pool-name">Pool name<input id="origin-pool-name" value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <div className="scope-picker">
+        {domainOrigins.map((origin) => <label key={origin.origin_id}><input type="checkbox" checked={originIds.includes(origin.origin_id)} onChange={() => toggleOrigin(origin.origin_id)} /> {origin.name} - {origin.status}</label>)}
+      </div>
+      <label className="check-row"><input type="checkbox" checked={failoverEnabled} disabled={originIds.length !== 2} onChange={(event) => setFailoverEnabled(event.target.checked)} /> Enable primary-to-secondary failover</label>
+      <button className="primary" disabled={!token || !domainId || !name || !originIds.length || (failoverEnabled && originIds.length !== 2) || (!failoverEnabled && originIds.length !== 1)}><Layers3 size={16} /> Save pool</button>
+    </form>
+  );
+}
+
 function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
   const [name, setName] = useState("");
   const [mode, setMode] = useState("monitor");
@@ -1376,20 +1484,20 @@ function OriginTable({ origins, token = "", onChanged = null, setStatus = null }
   );
 }
 
-function OriginPoolTable({ pools }) {
+function OriginPoolTable({ pools, origins }) {
   if (!pools.length) {
-    return <EmptyTable columns={["Pool", "Strategy", "Origins", "Status"]} message="No origin pools are configured." />;
+    return <EmptyTable columns={["Pool", "Routing", "Origins", "Status"]} message="No origin pools are configured." />;
   }
 
   return (
     <table className="data-table">
-      <thead><tr><th>Pool</th><th>Strategy</th><th>Origins</th><th>Status</th></tr></thead>
+      <thead><tr><th>Pool</th><th>Routing</th><th>Origins</th><th>Status</th></tr></thead>
       <tbody>
         {pools.map((pool) => (
           <tr key={pool.pool_id}>
             <td>{pool.name}</td>
-            <td>{pool.strategy}</td>
-            <td>{(pool.origin_ids || []).length}</td>
+            <td>{pool.failover_enabled ? "Primary -> secondary failover" : pool.strategy}</td>
+            <td>{(pool.origin_ids || []).map((originId) => origins.find((origin) => origin.origin_id === originId)?.name || originId).join(" -> ")}</td>
             <td><span className="health pending">{pool.status}</span></td>
           </tr>
         ))}

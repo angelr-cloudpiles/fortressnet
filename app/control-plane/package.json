@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server.js",
-    "check": "npm run build"
+    "test": "NODE_ENV=test node --test test/*.test.js",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "@aws-sdk/client-acm": "^3.1092.0",

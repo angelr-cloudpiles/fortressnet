@@ -107,7 +107,7 @@ Criterios de aceptacion:
 - Un origin caido queda reflejado en UI y eventos.
 - El failover no se activa sin pool alternativo validado.
 
-Estado implementado: hay health check HTTPS a demanda, con resolucion DNS fijada a una IP publica y rechazo de respuestas privadas o mixtas. Pool de failover y health checks programados siguen pendientes.
+Estado implementado: hay health check HTTPS a demanda, con resolucion DNS fijada a una IP publica y rechazo de respuestas privadas o mixtas. Antes de solicitar el edge, el tenant puede agregar un origin secundario, validar ambos origins, configurar un pool de prioridad y habilitar failover. El provisioner compila exactamente dos origins sanos como CloudFront Origin Group con failover para 500, 502, 503 y 504. La configuracion queda bloqueada una vez solicitada la distribucion; los health checks programados y la actualizacion controlada de distribuciones activas siguen pendientes.
 
 ### Epica 3. WAF Policy Compiler
 

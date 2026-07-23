@@ -20,11 +20,19 @@ This runbook defines the production workflow for connecting one tenant domain to
 - The tenant operator runs the origin health check. Resolution must contain only public addresses.
 - The tenant has an active entitlement. Pilot limits are enforced before any new domain, user, API key, IdP, DNS zone or policy is created.
 
+## Origin Pool And Failover
+
+1. Before requesting the tenant edge, add the secondary HTTPS origin from Origins > Add Origin.
+2. Run a health check for the primary and secondary origins. FortressNet rejects private, mixed public/private, or unhealthy origins.
+3. In Origins > Failover Configuration, select the two healthy origins in priority order and enable primary-to-secondary failover.
+4. FortressNet compiles that pool to a CloudFront Origin Group when the edge is provisioned. Failover is limited to origin 5xx responses: 500, 502, 503, and 504.
+5. Origin configuration becomes locked once an edge request exists. Do not claim or apply a failover change to an active distribution through this workflow; use a dedicated controlled edge update.
+
 ## Approval And Provisioning
 
 1. A user with `edge:write` requests the tenant edge for the validated domain.
 2. A different user with `edge:approve` approves it. A requester cannot approve their own request except for a platform actor.
-3. A user with `edge:write` provisions it. The control plane creates or reuses the tenant WAF ACL, a KMS-encrypted WAF log group with 365-day retention, and the CloudFront distribution.
+3. A user with `edge:write` provisions it. The control plane creates or reuses the tenant WAF ACL, a KMS-encrypted WAF log group with 365-day retention, and the CloudFront distribution. A validated failover pool is compiled as a CloudFront Origin Group.
 4. When the distribution is deployed, the console shows the CloudFront traffic target.
 5. The tenant retrieves the origin verification header from the console and configures its origin to require that header before allowing production traffic.
 
