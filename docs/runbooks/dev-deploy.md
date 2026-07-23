@@ -8,6 +8,8 @@ aws sts get-caller-identity
 
 Confirm the account and region before running Terraform.
 
+The `dev` provider and remote state are pinned to the `fortressnet` AWS CLI profile. Confirm it resolves to account `422128689549` before proceeding.
+
 ## 2. Configure Variables
 
 ```bash

@@ -337,6 +337,11 @@ resource "aws_iam_role_policy" "task" {
         }
       },
       {
+        Effect   = "Allow"
+        Action   = "kms:DescribeKey"
+        Resource = var.platform_kms_key_arn
+      },
+      {
         Effect = "Allow"
         Action = [
           "acm:DescribeCertificate"
@@ -361,6 +366,7 @@ resource "aws_iam_role_policy" "task" {
         Effect = "Allow"
         Action = [
           "wafv2:CreateWebACL",
+          "wafv2:TagResource",
           "wafv2:CreateIPSet",
           "wafv2:DeleteIPSet",
           "wafv2:GetIPSet",
@@ -380,10 +386,22 @@ resource "aws_iam_role_policy" "task" {
       {
         Effect = "Allow"
         Action = [
+          "s3:GetBucketAcl",
+          "s3:PutBucketAcl"
+        ]
+        Resource = "arn:aws:s3:::${trimsuffix(var.edge_logs_bucket_domain_name, ".s3.amazonaws.com")}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "logs:AssociateKmsKey",
           "logs:CreateLogGroup",
+          "logs:CreateLogDelivery",
+          "logs:DeleteLogDelivery",
           "logs:DescribeLogGroups",
+          "logs:DescribeResourcePolicies",
           "logs:FilterLogEvents",
+          "logs:PutResourcePolicy",
           "logs:PutRetentionPolicy"
         ]
         Resource = "*"
@@ -403,12 +421,12 @@ resource "aws_iam_role_policy" "task" {
           "ec2:DescribeVerifiedAccessTrustProviders",
           "ec2:ModifyVerifiedAccessEndpoint"
         ]
-        Resource = "*"
+        Resource  = "*"
         Condition = { StringEquals = { "aws:RequestedRegion" = data.aws_region.current.region } }
       },
       {
-        Effect = "Allow"
-        Action = ["aws-marketplace:BatchMeterUsage", "aws-marketplace:GetEntitlements", "aws-marketplace:ResolveCustomer"]
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:BatchMeterUsage", "aws-marketplace:GetEntitlements", "aws-marketplace:ResolveCustomer"]
         Resource = "*"
       },
       {

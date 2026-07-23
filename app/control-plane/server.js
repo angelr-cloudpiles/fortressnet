@@ -10,7 +10,7 @@ import express from "express";
 import { simpleParser } from "mailparser";
 import unzipper from "unzipper";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
-import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
+import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, ListResponseHeadersPoliciesCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -2802,12 +2802,14 @@ async function ensureTenantWebAcl(deployment, domain) {
 async function ensureWafLogging(webAclArn, logGroupName) {
   const accountId = webAclArn.split(":")[4];
   await waf.send(new PutLoggingConfigurationCommand({
-    ResourceArn: webAclArn,
-    LogDestinationConfigs: [`arn:aws:logs:us-east-1:${accountId}:log-group:${logGroupName}`],
-    RedactedFields: [
-      { SingleHeader: { Name: "authorization" } },
-      { SingleHeader: { Name: "cookie" } }
-    ]
+    LoggingConfiguration: {
+      ResourceArn: webAclArn,
+      LogDestinationConfigs: [`arn:aws:logs:us-east-1:${accountId}:log-group:${logGroupName}`],
+      RedactedFields: [
+        { SingleHeader: { Name: "authorization" } },
+        { SingleHeader: { Name: "cookie" } }
+      ]
+    }
   }));
 }
 
@@ -2871,10 +2873,13 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
 }
 
 async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
+  const name = `fn-csp-${deployment.deployment_id}`.slice(0, 128);
+  const existing = await findResponseHeadersPolicy(name);
+  if (existing?.Id) return existing.Id;
   const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
   const response = await cloudfront.send(new CreateResponseHeadersPolicyCommand({
     ResponseHeadersPolicyConfig: {
-      Name: `fn-csp-${deployment.deployment_id}`.slice(0, 128),
+      Name: name,
       Comment: `FortressNet report-only client security telemetry for ${domain.domain_name}`,
       SecurityHeadersConfig: {
         ContentSecurityPolicy: {
@@ -2884,12 +2889,28 @@ async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
       }
     }
   })).catch((error) => {
-    if (error?.name === "ResponseHeadersPolicyAlreadyExists") throw httpError(409, "client_security_policy_conflict");
+    if (error?.name === "ResponseHeadersPolicyAlreadyExists") return null;
     throw error;
   });
+  if (!response) {
+    const recovered = await findResponseHeadersPolicy(name);
+    if (recovered?.Id) return recovered.Id;
+    throw httpError(502, "client_security_policy_recovery_failed");
+  }
   const policyId = response.ResponseHeadersPolicy?.Id;
   if (!policyId) throw httpError(502, "client_security_policy_create_failed");
   return policyId;
+}
+
+async function findResponseHeadersPolicy(name) {
+  let marker;
+  do {
+    const page = await cloudfront.send(new ListResponseHeadersPoliciesCommand({ Type: "custom", Marker: marker }));
+    const match = page.ResponseHeadersPolicyList?.Items?.map((item) => item.ResponseHeadersPolicy).find((policy) => policy?.ResponseHeadersPolicyConfig?.Name === name);
+    if (match) return match;
+    marker = page.ResponseHeadersPolicyList?.NextMarker;
+  } while (marker);
+  return null;
 }
 
 async function updateCloudFrontOriginPool(deployment, pool, origins) {

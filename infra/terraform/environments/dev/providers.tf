@@ -1,5 +1,6 @@
 provider "aws" {
-  region = var.aws_region
+  region  = var.aws_region
+  profile = "fortressnet"
 
   default_tags {
     tags = local.tags
@@ -7,8 +8,9 @@ provider "aws" {
 }
 
 provider "aws" {
-  alias  = "us_east_1"
-  region = "us-east-1"
+  alias   = "us_east_1"
+  region  = "us-east-1"
+  profile = "fortressnet"
 
   default_tags {
     tags = local.tags
