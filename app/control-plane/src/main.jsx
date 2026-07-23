@@ -50,6 +50,7 @@ const navItems = [
   { id: "events", label: "Events", icon: ClipboardList },
   { id: "ai", label: "AI Analyst", icon: Sparkles, badge: "Beta" },
   { id: "reports", label: "Reports", icon: FileText },
+  { id: "dashboards", label: "Dashboards", icon: BarChart3 },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "profile", label: "Profile", icon: Users },
   { id: "settings", label: "Settings", icon: Settings }
@@ -405,6 +406,7 @@ function App() {
           {active === "events" && <EventsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
+          {active === "dashboards" && <DashboardsScreen token={token} state={state} selectedTenantId={selectedTenantId} onNavigate={setActive} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
@@ -669,16 +671,53 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
   }
 
   if (!guidance) return null;
+  const prerequisites = buildAssistantPrerequisites(active, {
+    selectedTenantId,
+    domains,
+    policies,
+    idpConnections,
+    ztnaApplications,
+    apiKeys,
+    verifiedDomain,
+    incompleteDomain,
+    activeIdp
+  }, guidance);
   return (
     <aside className="workflow-assistant" aria-label="Guided next step">
-      <Sparkles size={19} />
-      <div>
-        <strong>Next step: {guidance.title}</strong>
-        <span>{guidance.detail}</span>
+      <div className="workflow-assistant-intro">
+        <Sparkles size={20} />
+        <div>
+          <strong>{guidance.title}</strong>
+          <span>{guidance.detail}</span>
+        </div>
       </div>
-      {guidance.action && <button className="secondary compact" type="button" onClick={guidance.action.run}>{guidance.action.label}<ChevronRight size={15} /></button>}
+      <div className="workflow-checklist">
+        {prerequisites.map((item, index) => <div key={`${item.title}-${index}`} className={item.complete ? "complete" : item.current ? "current" : ""}><span>{item.complete ? <CheckCircle2 size={16} /> : index + 1}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div>{item.action && <button className="link-button" type="button" onClick={item.action.run}>{item.action.label}<ChevronRight size={14} /></button>}</div>)}
+      </div>
+      {guidance.action && <div className="workflow-assistant-footer"><button className="primary compact" type="button" onClick={guidance.action.run}>{guidance.action.label}<ChevronRight size={15} /></button></div>}
     </aside>
   );
+}
+
+function buildAssistantPrerequisites(active, context, guidance) {
+  const globalScopeAllowed = ["overview", "reports", "dashboards", "profile", "settings"].includes(active);
+  const tenant = {
+    complete: Boolean(context.selectedTenantId) || globalScopeAllowed,
+    title: "Tenant context",
+    detail: context.selectedTenantId ? "A customer workspace is selected and changes remain isolated to it." : globalScopeAllowed ? "Global platform scope is active. Select a tenant to narrow this view." : "Select a tenant before configuring a customer resource."
+  };
+  const requirements = {
+    onboarding: [tenant, { complete: Boolean(context.domains.length), title: "Protected site", detail: context.domains.length ? "A protected site exists in this workspace." : "Add the public hostname and origin to begin verification.", current: !context.domains.length }],
+    domains: [tenant, { complete: Boolean(context.domains.length), title: "Domain registration", detail: context.domains.length ? "Domain inventory is available." : "Register the first protected hostname.", current: !context.domains.length }, { complete: !context.incompleteDomain && Boolean(context.domains.length), title: "Go-live validation", detail: context.incompleteDomain ? "Complete the DNS, certificate, approval or traffic step shown in onboarding." : "All selected sites have completed the current workflow." }],
+    dns: [tenant, { complete: Boolean(context.verifiedDomain), title: "Domain ownership", detail: context.verifiedDomain ? "At least one domain has verified ownership." : "Ownership must be verified before DNS workflows are enabled.", current: !context.verifiedDomain }],
+    dmarc: [tenant, { complete: Boolean(context.verifiedDomain), title: "Verified sending domain", detail: context.verifiedDomain ? "A verified domain can receive a DMARC policy." : "Verify domain ownership before publishing DMARC.", current: !context.verifiedDomain }],
+    policies: [tenant, { complete: Boolean(context.domains.length), title: "Protected target", detail: context.domains.length ? "Policies can be scoped to the selected tenant resources." : "Register a protected site before compiling edge policy.", current: !context.domains.length }, { complete: Boolean(context.policies.length), title: "Policy draft", detail: context.policies.length ? "A draft exists and can enter the review workflow." : "Create a monitor-first policy before requesting enforcement." }],
+    access: [tenant, { complete: true, title: "Least-privilege profiles", detail: "Choose a predefined profile, then restrict module permissions only where necessary." }],
+    idp: [tenant, { complete: Boolean(context.idpConnections.length), title: "Identity provider connection", detail: context.idpConnections.length ? "An external identity provider is registered." : "Add OIDC or SAML metadata for this tenant.", current: !context.idpConnections.length }],
+    ztna: [tenant, { complete: Boolean(context.activeIdp), title: "Active identity provider", detail: context.activeIdp ? "An active tenant identity provider is available for access decisions." : "Activate a tenant OIDC or SAML connection first.", current: !context.activeIdp }, { complete: Boolean(context.ztnaApplications.length), title: "Private application", detail: context.ztnaApplications.length ? "A private application is registered for review." : "Register hostname, protocol and device posture before provisioning access." }],
+    "api-keys": [tenant, { complete: Boolean(context.apiKeys.length), title: "Scoped automation identity", detail: context.apiKeys.length ? "At least one tenant API key has been created." : "Create an API key with only the module scopes required by the integration.", current: !context.apiKeys.length }]
+  };
+  return requirements[active] || [tenant, { complete: false, current: true, title: guidance.title, detail: guidance.detail }];
 }
 
 function Overview({ range, setRange, token, state, selectedTenantId, onNavigate }) {
@@ -1679,6 +1718,85 @@ function ReportsScreen({ token, selectedTenantId, setStatus }) {
       </Panel>
     </div>
   );
+}
+
+function DashboardsScreen({ token, state, selectedTenantId, onNavigate, setStatus }) {
+  const [telemetry, setTelemetry] = useState({ events: [], findings: [], clientReports: [], dmarcReports: [] });
+  const [loading, setLoading] = useState(false);
+  const [selectedDashboard, setSelectedDashboard] = useState("");
+  const tenantQuery = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
+
+  const load = async () => {
+    if (!token) return;
+    setLoading(true);
+    const request = async (path, property) => {
+      try { return await apiRequest(path, token); } catch { return { [property]: [] }; }
+    };
+    const [eventData, clientData, dmarcData, findingData] = await Promise.all([
+      request(`/api/events?${selectedTenantId ? `tenant_id=${encodeURIComponent(selectedTenantId)}&` : ""}window_hours=24&limit=500`, "events"),
+      request(`/api/client-security/reports${tenantQuery}`, "reports"),
+      request(`/api/dmarc/reports${tenantQuery}`, "reports"),
+      selectedTenantId ? request(`/api/ai/findings?tenant_id=${encodeURIComponent(selectedTenantId)}`, "findings") : Promise.resolve({ findings: [] })
+    ]);
+    setTelemetry({ events: eventData.events || [], clientReports: clientData.reports || [], dmarcReports: dmarcData.reports || [], findings: findingData.findings || [] });
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [token, selectedTenantId]);
+  const dashboards = useMemo(() => buildDashboardViews(state, telemetry, selectedTenantId), [state, telemetry, selectedTenantId]);
+  const selected = dashboards.find((dashboard) => dashboard.id === selectedDashboard);
+
+  if (selected) return <DashboardDetail dashboard={selected} loading={loading} onBack={() => setSelectedDashboard("")} onRefresh={load} onNavigate={onNavigate} />;
+
+  return (
+    <div className="screen dashboards-screen">
+      <div className="dashboards-heading"><div><h2>Dashboards</h2><p>Saved analytical views for investigation and reporting. Values are derived from observed tenant telemetry and configured resources.</p></div><button className="secondary compact" disabled={loading} onClick={load}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh data"}</button></div>
+      <div className="dashboard-filter-row"><div className="dashboard-search"><Search size={16} /><span>{selectedTenantId ? "Tenant analytics catalog" : "Global analytics catalog"}</span></div><span className="mode-readonly">{dashboards.length} dashboards</span></div>
+      <div className="dashboard-catalog">
+        {dashboards.map((dashboard) => <button key={dashboard.id} className="dashboard-tile" onClick={() => setSelectedDashboard(dashboard.id)}><div><BarChart3 size={23} /><span className={dashboard.availability === "available" ? "health active" : "health pending"}>{dashboard.availability === "available" ? "Observed" : "Awaiting data"}</span></div><h3>{dashboard.title}</h3><p>{dashboard.description}</p><dl><div><dt>Default period</dt><dd>Last 24 hours</dd></div><div><dt>Metrics</dt><dd>{dashboard.metrics.length}</dd></div><div><dt>Data source</dt><dd>{dashboard.source}</dd></div><div><dt>Export</dt><dd>Available</dd></div></dl><span className="dashboard-open">Open dashboard <ChevronRight size={15} /></span></button>)}
+      </div>
+    </div>
+  );
+}
+
+function DashboardDetail({ dashboard, loading, onBack, onRefresh, onNavigate }) {
+  return (
+    <div className="screen dashboard-detail-screen">
+      <div className="dashboards-heading"><div><button className="back-link" onClick={onBack}><ChevronLeft size={15} /> All dashboards</button><h2>{dashboard.title}</h2><p>{dashboard.description}</p></div><button className="secondary compact" disabled={loading} onClick={onRefresh}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh"}</button></div>
+      <div className="dashboard-metrics">{dashboard.metrics.map((metric) => <article key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small></article>)}</div>
+      <Panel title="Observed evidence" footer={<PanelLink label={dashboard.destination.label} onClick={() => onNavigate(dashboard.destination.route)} />}>
+        {dashboard.rows.length ? <table className="data-table"><thead><tr>{dashboard.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{dashboard.rows.slice(0, 12).map((row, index) => <tr key={`${dashboard.id}-${index}`}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table> : <EmptyState icon={BarChart3} title="No observed data in this view" body={dashboard.emptyMessage} />}
+      </Panel>
+    </div>
+  );
+}
+
+function buildDashboardViews(state, telemetry, selectedTenantId) {
+  const scoped = (items) => filterByTenant(items || [], selectedTenantId);
+  const users = scoped(state.users);
+  const idps = scoped(state.idp_connections);
+  const applications = scoped(state.ztna_applications);
+  const policies = scoped(state.policies);
+  const domains = scoped(state.domains);
+  const dnsRecords = scoped(state.dns_records);
+  const findings = telemetry.findings || [];
+  const events = telemetry.events || [];
+  const clientReports = telemetry.clientReports || [];
+  const dmarcReports = telemetry.dmarcReports || [];
+  const blocked = events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length;
+  const ruleMatches = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action").length;
+  const base = (id, title, description, source, metrics, columns, rows, emptyMessage, route) => ({ id, title, description, source, metrics, columns, rows, emptyMessage, availability: rows.length || metrics.some((metric) => Number(metric.value) > 0) ? "available" : "waiting", destination: { label: `Open ${route.label}`, route: route.id } });
+  return [
+    base("saas", "SaaS posture analytics", "Inventory of connected identity services and private applications in the selected scope.", "Identity configuration", [{ label: "External IdPs", value: idps.length, detail: "Configured connections" }, { label: "Private applications", value: applications.length, detail: "Registered access targets" }, { label: "Active applications", value: applications.filter((item) => item.status === "active").length, detail: "Verified Access active" }], ["Resource", "Type", "Status"], [...idps.map((item) => [item.name, item.protocol?.toUpperCase() || "IdP", item.status]), ...applications.map((item) => [item.name, item.protocol?.toUpperCase() || "Application", item.status])], "No tenant identity connections or private applications have been registered.", { id: "ztna", label: "Zero Trust" }),
+    base("ai", "AI security report", "Evidence-based findings from the FortressNet analyst. Analysis never changes enforcement automatically.", "AI findings", [{ label: "Open findings", value: findings.filter((item) => item.status === "open").length, detail: "Persisted analyst findings" }, { label: "High severity", value: findings.filter((item) => item.severity === "high").length, detail: "Requires operator review" }, { label: "Evidence", value: findings.reduce((total, item) => total + Number(item.evidence_count || 0), 0), detail: "Observed WAF events" }], ["Severity", "Finding", "Evidence"], findings.map((item) => [item.severity, item.summary, `${item.evidence_count || 0} events`]), "Run the AI analysis after the protected edge has collected WAF events.", { id: "ai", label: "AI Analyst" }),
+    base("application-access", "Application access report", "Tenant members and private application posture for access review.", "Access inventory", [{ label: "Users", value: users.length, detail: "Tenant-scoped members" }, { label: "MFA required", value: users.filter((item) => item.mfa_required).length, detail: "Privileged user requirement" }, { label: "Applications", value: applications.length, detail: "Private access targets" }], ["Principal", "Profile", "Status"], users.map((item) => [item.display_name || item.email, item.roles?.[0] || "Unassigned", item.status]), "No tenant users are available for access reporting.", { id: "access", label: "Access" }),
+    base("access-events", "Access event analytics", "Identity access events from configured providers. FortressNet does not infer login activity from WAF traffic.", "Identity event collector", [{ label: "Identity events", value: 0, detail: "No identity event collector connected" }, { label: "Active IdPs", value: idps.filter((item) => item.status === "active").length, detail: "Available identity sources" }, { label: "MFA-required users", value: users.filter((item) => item.mfa_required).length, detail: "Configured requirement" }], ["Time", "Principal", "Outcome"], [], "Connect an IdP sign-in event feed to populate this dashboard. Existing WAF events are intentionally excluded.", { id: "idp", label: "External IdP" }),
+    base("http", "HTTP request analytics", "Observed CloudFront and AWS WAF requests for the selected tenant scope.", "WAF telemetry", [{ label: "Requests", value: events.length, detail: "Observed in last 24 hours" }, { label: "Blocked", value: blocked, detail: "Block, CAPTCHA or challenge" }, { label: "Rule matches", value: ruleMatches, detail: "Managed or custom rules" }], ["Time", "Method", "Path", "Action"], events.map((item) => [formatEventTime(item.timestamp), item.method || "-", item.uri || item.path || "-", item.action || "-"]), "No HTTP security events were observed during the selected window.", { id: "events", label: "Security events" }),
+    base("dns", "DNS query analytics", "DNS configuration posture and received DMARC reports. Query volumes require a DNS resolver telemetry source.", "DNS configuration", [{ label: "Managed records", value: dnsRecords.length, detail: "Configured DNS records" }, { label: "Protected domains", value: domains.length, detail: "Tenant domain inventory" }, { label: "DMARC reports", value: dmarcReports.length, detail: "Aggregate reports received" }], ["Record", "Type", "Value"], dnsRecords.map((item) => [item.name || item.record_name || "-", item.type || "-", item.value || item.record_value || "-"]), "No managed DNS records are available. External DNS query telemetry is not synthesized.", { id: "dns", label: "DNS & TLS" }),
+    base("network-policy", "Network policy analytics", "Configured security policies and their current operating mode.", "Policy inventory", [{ label: "Policies", value: policies.length, detail: "Tenant-scoped policies" }, { label: "Monitor mode", value: policies.filter((item) => item.mode === "monitor").length, detail: "Observing before enforcement" }, { label: "Block mode", value: policies.filter((item) => item.mode === "block").length, detail: "Approved enforcement candidates" }], ["Policy", "Mode", "Status"], policies.map((item) => [item.name, item.mode || "monitor", item.status || "draft"]), "No security policy has been created in this tenant scope.", { id: "policies", label: "Policies" }),
+    base("network-session", "Network session analytics", "Private application inventory. Session volumes appear only when a supported access telemetry collector is connected.", "Zero Trust inventory", [{ label: "Applications", value: applications.length, detail: "Private targets" }, { label: "Posture required", value: applications.filter((item) => item.device_posture_required).length, detail: "Device posture controls" }, { label: "Observed sessions", value: 0, detail: "No session collector connected" }], ["Application", "Protocol", "Private target"], applications.map((item) => [item.name, item.protocol?.toUpperCase() || "-", item.private_hostname || "-"]), "No private-access session telemetry has been received. Application inventory is shown instead of inferred sessions.", { id: "ztna", label: "Zero Trust" }),
+    base("data-security", "Data security analytics", "Client-side security reports received from protected applications and email aggregate-report intake.", "Client security telemetry", [{ label: "Client reports", value: clientReports.length, detail: "CSP or client-security reports" }, { label: "DMARC reports", value: dmarcReports.length, detail: "Aggregate email reports" }, { label: "Protected domains", value: domains.length, detail: "Available reporting scope" }], ["Received", "Type", "Domain"], [...clientReports.map((item) => [formatEventTime(item.created_at || item.timestamp), item.type || "Client security", item.document_uri || item.domain_name || "-"]), ...dmarcReports.map((item) => [formatEventTime(item.received_at), "DMARC aggregate", item.policy_domain || "-"])], "No client-security or DMARC reports have been received for this scope.", { id: "reports", label: "Reports" })
+  ];
 }
 
 function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, onChanged, setStatus }) {

@@ -1506,41 +1506,123 @@ a {
 
 .workflow-assistant {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
+  gap: 0;
   margin: 0 0 16px;
-  padding: 13px 14px;
-  color: #1f4d7a;
-  background: #f3f8fe;
-  border: 1px solid #b9d5f3;
+  color: #344054;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 6px;
+  overflow: hidden;
 }
 
-.workflow-assistant > svg {
-  color: #1769aa;
+.workflow-assistant-intro {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+  background: #f7fbff;
+  border-bottom: 1px solid var(--line-soft);
 }
 
-.workflow-assistant strong,
-.workflow-assistant span {
+.workflow-assistant-intro > svg {
+  color: var(--blue);
+  margin-top: 2px;
+}
+
+.workflow-assistant-intro strong,
+.workflow-assistant-intro span {
   display: block;
 }
 
-.workflow-assistant strong {
-  color: #174a78;
-  font-size: 13px;
+.workflow-assistant-intro strong {
+  color: var(--ink);
+  font-size: 15px;
 }
 
-.workflow-assistant span {
+.workflow-assistant-intro span {
   margin-top: 4px;
-  color: #42627f;
-  font-size: 12px;
-  font-weight: 550;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 540;
   line-height: 1.45;
 }
 
-.workflow-assistant .secondary {
+.workflow-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(235px, 1fr));
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.workflow-checklist > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  min-height: 72px;
+  padding: 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.workflow-checklist > div > span {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  color: #667085;
+  background: #eef2f6;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.workflow-checklist > div.complete {
+  background: #f5fbf8;
+  border-color: #b9dbc9;
+}
+
+.workflow-checklist > div.complete > span {
+  color: #fff;
+  background: var(--green);
+}
+
+.workflow-checklist > div.current {
+  background: #fff8ed;
+  border-color: #f1bd78;
+}
+
+.workflow-checklist > div.current > span {
+  color: #fff;
+  background: var(--orange);
+}
+
+.workflow-checklist strong,
+.workflow-checklist small {
+  display: block;
+}
+
+.workflow-checklist strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.workflow-checklist small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workflow-checklist .link-button {
+  align-self: center;
   white-space: nowrap;
+}
+
+.workflow-assistant-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 16px 14px;
 }
 
 .onboarding-guidance > svg {
@@ -2038,6 +2120,165 @@ code {
 .report-card svg,
 .marketplace-box svg {
   color: var(--blue);
+}
+
+.dashboards-screen,
+.dashboard-detail-screen {
+  gap: 14px;
+}
+
+.dashboards-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dashboards-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 24px;
+}
+
+.dashboards-heading p {
+  max-width: 780px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dashboard-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dashboard-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 13px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.dashboard-catalog {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dashboard-tile {
+  display: grid;
+  align-content: start;
+  min-height: 244px;
+  padding: 17px;
+  color: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+}
+
+.dashboard-tile:hover {
+  border-color: #a8c8ed;
+  box-shadow: 0 4px 12px rgba(16, 24, 40, .1);
+}
+
+.dashboard-tile > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dashboard-tile > div > svg {
+  color: var(--blue);
+}
+
+.dashboard-tile h3 {
+  margin: 14px 0 5px;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.dashboard-tile p {
+  min-height: 38px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dashboard-tile dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 18px;
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.dashboard-tile dl div { min-width: 0; }
+.dashboard-tile dt { color: var(--muted); font-size: 11px; }
+.dashboard-tile dd { margin: 3px 0 0; overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+
+.dashboard-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 14px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 0 8px;
+  padding: 0;
+  color: var(--blue);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.dashboard-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dashboard-metrics article {
+  min-height: 130px;
+  padding: 17px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+}
+
+.dashboard-metrics span,
+.dashboard-metrics small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dashboard-metrics strong {
+  display: block;
+  margin: 9px 0 5px;
+  color: var(--ink);
+  font-size: 28px;
 }
 
 .plan-box span {
@@ -2850,6 +3091,10 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .dashboard-catalog {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .event-inspector {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2859,6 +3104,31 @@ code {
   .event-metric-grid,
   .event-inspector {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboards-heading,
+  .dashboard-filter-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-catalog,
+  .dashboard-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-checklist {
+    grid-template-columns: 1fr;
+    padding: 12px;
+  }
+
+  .workflow-checklist > div {
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .workflow-checklist .link-button {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .event-controls {
