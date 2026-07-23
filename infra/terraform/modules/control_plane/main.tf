@@ -326,7 +326,8 @@ resource "aws_iam_role_policy" "task" {
       {
         Effect = "Allow"
         Action = [
-          "acm:RequestCertificate"
+          "acm:RequestCertificate",
+          "acm:AddTagsToCertificate"
         ]
         Resource = "*"
         Condition = {
