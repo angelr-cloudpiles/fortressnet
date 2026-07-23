@@ -1390,8 +1390,8 @@ app.put("/api/profile", requireScope("profile:write"), async (req, res, next) =>
       // Cognito owns the authenticated email address. Keeping it immutable here
       // prevents the console profile from diverging from the login identity.
       email: req.actor?.type === "cognito" ? req.actor.email : normalizeEmail(body.email),
-      timezone: clean(body.timezone) || "UTC",
-      locale: clean(body.locale) || "en-US",
+      timezone: normalizeProfileTimezone(body.timezone),
+      locale: normalizeProfileLocale(body.locale),
       notification_email: body.notification_email !== false,
       notification_security: body.notification_security !== false,
       mfa_enrolled_at: existing.Item?.mfa_enrolled_at || "",
@@ -2677,4 +2677,22 @@ function defaultProfile(profileId, actor = null) {
     notification_email: true,
     notification_security: true
   };
+}
+
+function normalizeProfileTimezone(value) {
+  const timezone = clean(value) || "UTC";
+  if (timezone === "UTC" || /^UTC[+-](?:[0-9]|1[0-9]|2[0-3])(?::[0-5][0-9])?$/.test(timezone)) return timezone;
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    return timezone;
+  } catch {
+    throw httpError(400, "profile_timezone_invalid");
+  }
+}
+
+function normalizeProfileLocale(value) {
+  const locale = clean(value) || "en-US";
+  const supported = new Set(["en-US", "en-GB", "es-ES", "es-AR", "pt-BR", "fr-FR", "de-DE", "it-IT", "ja-JP"]);
+  if (!supported.has(locale)) throw httpError(400, "profile_locale_invalid");
+  return locale;
 }

@@ -49,6 +49,38 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
+const profileLocaleOptions = [
+  { value: "en-US", label: "English (United States)" },
+  { value: "en-GB", label: "English (United Kingdom)" },
+  { value: "es-ES", label: "Espanol (Espana)" },
+  { value: "es-AR", label: "Espanol (Argentina)" },
+  { value: "pt-BR", label: "Portugues (Brasil)" },
+  { value: "fr-FR", label: "Francais (France)" },
+  { value: "de-DE", label: "Deutsch (Deutschland)" },
+  { value: "it-IT", label: "Italiano (Italia)" },
+  { value: "ja-JP", label: "Japanese (Japan)" }
+];
+
+const fallbackTimezoneOptions = [
+  "UTC",
+  "America/Argentina/Buenos_Aires",
+  "America/Los_Angeles",
+  "America/New_York",
+  "America/Sao_Paulo",
+  "Asia/Dubai",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "Europe/London",
+  "Europe/Madrid",
+  "Europe/Paris"
+];
+
+const profileTimezoneOptions = Array.from(new Set([
+  "UTC",
+  ...(typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : fallbackTimezoneOptions)
+]));
+
 const emptyState = {
   tenants: [],
   domains: [],
@@ -940,6 +972,10 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
   const [totpSecret, setTotpSecret] = useState("");
   const [totpQrCode, setTotpQrCode] = useState("");
   const [totpCode, setTotpCode] = useState("");
+  const timezoneOptions = useMemo(() => {
+    const timezone = profile.timezone || "UTC";
+    return profileTimezoneOptions.includes(timezone) ? profileTimezoneOptions : [...profileTimezoneOptions, timezone];
+  }, [profile.timezone]);
 
   useEffect(() => {
     if (!token) return;
@@ -1011,8 +1047,8 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
         <form className="form-grid" onSubmit={submit}>
           <label htmlFor="profile-name">Display name<input id="profile-name" value={profile.display_name || ""} onChange={(event) => setProfile({ ...profile, display_name: event.target.value })} /></label>
           <label htmlFor="profile-email">Email<input id="profile-email" value={profile.email || ""} readOnly aria-readonly="true" /></label>
-          <label htmlFor="profile-timezone">Timezone<input id="profile-timezone" value={profile.timezone || "UTC"} onChange={(event) => setProfile({ ...profile, timezone: event.target.value })} /></label>
-          <label htmlFor="profile-locale">Locale<input id="profile-locale" value={profile.locale || "en-US"} onChange={(event) => setProfile({ ...profile, locale: event.target.value })} /></label>
+          <label htmlFor="profile-timezone">Timezone<select id="profile-timezone" value={profile.timezone || "UTC"} onChange={(event) => setProfile({ ...profile, timezone: event.target.value })}>{timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{profileTimezoneOptions.includes(timezone) ? timezone : `${timezone} (legacy)`}</option>)}</select></label>
+          <label htmlFor="profile-locale">Locale<select id="profile-locale" value={profile.locale || "en-US"} onChange={(event) => setProfile({ ...profile, locale: event.target.value })}>{profileLocaleOptions.map((locale) => <option key={locale.value} value={locale.value}>{locale.label}</option>)}</select></label>
           <label className="check-row"><input type="checkbox" checked={profile.notification_email !== false} onChange={(event) => setProfile({ ...profile, notification_email: event.target.checked })} /> Email notifications</label>
           <label className="check-row"><input type="checkbox" checked={profile.notification_security !== false} onChange={(event) => setProfile({ ...profile, notification_security: event.target.checked })} /> Security notifications</label>
           <button className="primary" disabled={!token}><CheckCircle2 size={16} /> Save profile</button>
