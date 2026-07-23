@@ -53,7 +53,7 @@ The current verifier is intentionally limited to direct CNAME records. Apex reco
 
 ## WAF Changes
 
-1. Start the first tenant policy in `monitor` mode and compile it to a change set.
+1. Start the first tenant policy in `monitor` mode. Set the IP threshold and, when required, limit it to a path prefix, HTTP methods and selected countries before compiling the change set.
 2. A different authorized operator approves the change set.
 3. Select the exact tenant domain in the console and apply the change.
 4. Keep monitor mode applied for at least 24 hours before applying a `block` policy to the same domain.

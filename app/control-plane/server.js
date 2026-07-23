@@ -84,6 +84,10 @@ const planCatalog = Object.freeze({
   }
 });
 
+const supportedWafCountries = new Set([
+  "AR", "AU", "BE", "BR", "CA", "CH", "CL", "CO", "DE", "DK", "ES", "FI", "FR", "GB", "HK", "IE", "IN", "IT", "JP", "KR", "MX", "NL", "NO", "NZ", "PE", "PL", "PT", "SE", "SG", "US", "ZA"
+]);
+
 const allowedScopes = Array.from(new Set(Object.values(roleScopes).flat())).filter((scope) => scope !== "*").sort();
 
 const platformConfig = parseJson(process.env.PLATFORM_CONFIG_SECRET, {});
@@ -953,6 +957,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
     await enforceTenantLimit(tenantId, "policies", (await queryByTenant(tables.policies, tenantId)).length);
     const mode = normalizeWafMode(body.mode);
     if (!mode) return res.status(400).json({ error: "supported_waf_mode_required" });
+    const rateLimit = normalizeWafRateLimitConfig(body);
 
     const now = new Date().toISOString();
     const policy = {
@@ -961,6 +966,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
       name,
       scope: clean(body.scope) || "all_domains",
       mode,
+      ...rateLimit,
       approval_required: true,
       status: "draft",
       created_at: now,
@@ -2534,14 +2540,58 @@ function toAwsWafRules(rules, domainId) {
       };
     }
     if (rule.type === "rate_based_rule") {
+      const rateBasedStatement = {
+        AggregateKeyType: rule.aggregate_key_type || "IP",
+        Limit: Number(rule.limit || 2000),
+        EvaluationWindowSec: Number(rule.evaluation_window_sec || 300)
+      };
+      const scopeDownStatement = rateLimitScopeDownStatement(rule);
+      if (scopeDownStatement) rateBasedStatement.ScopeDownStatement = scopeDownStatement;
       return {
         ...common,
         Action: rule.action === "COUNT" ? { Count: {} } : { Block: {} },
-        Statement: { RateBasedStatement: { AggregateKeyType: rule.aggregate_key_type || "IP", Limit: Number(rule.limit || 2000) } }
+        Statement: { RateBasedStatement: rateBasedStatement }
       };
     }
     throw httpError(409, "unsupported_waf_rule_type");
   });
+}
+
+function rateLimitScopeDownStatement(rule) {
+  const statements = [];
+  if (rule.path) {
+    statements.push({
+      ByteMatchStatement: {
+        SearchString: Buffer.from(rule.path, "utf8"),
+        FieldToMatch: { UriPath: {} },
+        TextTransformations: [{ Priority: 0, Type: "NONE" }],
+        PositionalConstraint: "STARTS_WITH"
+      }
+    });
+  }
+
+  const methods = Array.isArray(rule.methods) ? rule.methods : [];
+  if (methods.length === 1) {
+    statements.push(wafMethodStatement(methods[0]));
+  } else if (methods.length > 1) {
+    statements.push({ OrStatement: { Statements: methods.map(wafMethodStatement) } });
+  }
+
+  const countries = Array.isArray(rule.countries) ? rule.countries : [];
+  if (countries.length) statements.push({ GeoMatchStatement: { CountryCodes: countries } });
+  if (!statements.length) return null;
+  return statements.length === 1 ? statements[0] : { AndStatement: { Statements: statements } };
+}
+
+function wafMethodStatement(method) {
+  return {
+    ByteMatchStatement: {
+      SearchString: Buffer.from(method, "utf8"),
+      FieldToMatch: { Method: {} },
+      TextTransformations: [{ Priority: 0, Type: "NONE" }],
+      PositionalConstraint: "EXACTLY"
+    }
+  };
 }
 
 async function collectSecurityEvents(deployments, limit) {
@@ -2700,6 +2750,38 @@ function normalizeWafMode(value) {
   return { managed_defaults: "monitor", count: "monitor", monitor: "monitor", block: "block", emergency_lockdown: "emergency_lockdown" }[mode] || "";
 }
 
+function normalizeWafRateLimitConfig(body) {
+  const limit = Number(body.rate_limit ?? 2000);
+  if (!Number.isSafeInteger(limit) || limit < 100 || limit > 2_000_000) throw httpError(400, "rate_limit_invalid");
+
+  const path = clean(body.rate_limit_path);
+  if (path && (!path.startsWith("/") || path.startsWith("//") || path.length > 512 || /[?#\r\n]/.test(path))) {
+    throw httpError(400, "rate_limit_path_invalid");
+  }
+
+  const methods = uniqueNormalizedValues(body.rate_limit_methods, (value) => clean(value).toUpperCase());
+  const supportedMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+  if (methods.length > supportedMethods.size || methods.some((method) => !supportedMethods.has(method))) {
+    throw httpError(400, "rate_limit_methods_invalid");
+  }
+
+  const countries = uniqueNormalizedValues(body.rate_limit_countries, (value) => clean(value).toUpperCase());
+  if (countries.length > supportedWafCountries.size || countries.some((country) => !supportedWafCountries.has(country))) {
+    throw httpError(400, "rate_limit_countries_invalid");
+  }
+
+  return {
+    rate_limit: limit,
+    rate_limit_path: path,
+    rate_limit_methods: methods,
+    rate_limit_countries: countries
+  };
+}
+
+function uniqueNormalizedValues(value, normalize) {
+  return Array.from(new Set(normalizeList(value).map(normalize).filter(Boolean)));
+}
+
 async function requirePilotMonitorBaseline(changeSet, edgeDeployment) {
   const minimumAgeMs = 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - minimumAgeMs;
@@ -2749,6 +2831,9 @@ function compileWafRules(policy) {
       aggregate_key_type: "IP",
       limit: Number(policy.rate_limit || 2000),
       evaluation_window_sec: 300,
+      path: policy.rate_limit_path || "",
+      methods: Array.isArray(policy.rate_limit_methods) ? policy.rate_limit_methods : [],
+      countries: Array.isArray(policy.rate_limit_countries) ? policy.rate_limit_countries : [],
       action
     }
   ];
@@ -2842,4 +2927,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { cloudFrontDistributionConfig, normalizeOriginUrl };
+export { cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafRateLimitConfig, toAwsWafRules };

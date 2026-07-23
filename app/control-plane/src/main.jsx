@@ -81,6 +81,11 @@ const profileTimezoneOptions = Array.from(new Set([
   ...(typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : fallbackTimezoneOptions)
 ]));
 
+const rateLimitMethodOptions = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const rateLimitCountryOptions = [
+  ["AR", "Argentina"], ["AU", "Australia"], ["BE", "Belgium"], ["BR", "Brazil"], ["CA", "Canada"], ["CH", "Switzerland"], ["CL", "Chile"], ["CO", "Colombia"], ["DE", "Germany"], ["DK", "Denmark"], ["ES", "Spain"], ["FI", "Finland"], ["FR", "France"], ["GB", "United Kingdom"], ["HK", "Hong Kong"], ["IE", "Ireland"], ["IN", "India"], ["IT", "Italy"], ["JP", "Japan"], ["KR", "South Korea"], ["MX", "Mexico"], ["NL", "Netherlands"], ["NO", "Norway"], ["NZ", "New Zealand"], ["PE", "Peru"], ["PL", "Poland"], ["PT", "Portugal"], ["SE", "Sweden"], ["SG", "Singapore"], ["US", "United States"], ["ZA", "South Africa"]
+];
+
 const emptyState = {
   tenants: [],
   domains: [],
@@ -1375,6 +1380,18 @@ function OriginPoolForm({ token, tenants, domains, origins, pools, selectedTenan
 function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
   const [name, setName] = useState("");
   const [mode, setMode] = useState("monitor");
+  const [rateLimit, setRateLimit] = useState("2000");
+  const [rateLimitPath, setRateLimitPath] = useState("");
+  const [rateLimitMethods, setRateLimitMethods] = useState([]);
+  const [rateLimitCountries, setRateLimitCountries] = useState([]);
+
+  const toggleMethod = (method) => {
+    setRateLimitMethods((current) => current.includes(method) ? current.filter((item) => item !== method) : [...current, method]);
+  };
+
+  const selectCountries = (event) => {
+    setRateLimitCountries(Array.from(event.target.selectedOptions, (option) => option.value));
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1382,9 +1399,17 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       tenant_id: selectedTenantId,
       name,
       mode,
-      scope: "all_domains"
+      scope: "all_domains",
+      rate_limit: Number(rateLimit),
+      rate_limit_path: rateLimitPath,
+      rate_limit_methods: rateLimitMethods,
+      rate_limit_countries: rateLimitCountries
     }, "Policy draft created.", setStatus, () => {
       setName("");
+      setRateLimit("2000");
+      setRateLimitPath("");
+      setRateLimitMethods([]);
+      setRateLimitCountries([]);
       onCreated();
     });
   };
@@ -1397,8 +1422,12 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
     <form className="policy-editor" onSubmit={submit}>
       <div><label htmlFor="policy-name">Policy name</label><input id="policy-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
       <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="monitor">Monitor first</option><option value="block">Block after observation</option></select></div>
-      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\napproval_required: true`}</pre>
-      <button className="primary" disabled={!token || !selectedTenantId || !name}><Plus size={16} /> Create policy</button>
+      <div><label htmlFor="policy-rate-limit">Requests per 5 minutes per IP</label><input id="policy-rate-limit" type="number" min="100" max="2000000" step="1" value={rateLimit} onChange={(event) => setRateLimit(event.target.value)} required /></div>
+      <div><label htmlFor="policy-rate-path">Path prefix</label><input id="policy-rate-path" value={rateLimitPath} onChange={(event) => setRateLimitPath(event.target.value)} placeholder="/login" /></div>
+      <div className="policy-scope-picker"><label>HTTP methods</label><div className="scope-picker">{rateLimitMethodOptions.map((method) => <label key={method}><input type="checkbox" checked={rateLimitMethods.includes(method)} onChange={() => toggleMethod(method)} /> {method}</label>)}</div></div>
+      <div><label htmlFor="policy-rate-countries">Countries</label><select id="policy-rate-countries" multiple value={rateLimitCountries} onChange={selectCountries}>{rateLimitCountryOptions.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></div>
+      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmethods: ${rateLimitMethods.length ? rateLimitMethods.join(", ") : "all methods"}\ncountries: ${rateLimitCountries.length ? rateLimitCountries.join(", ") : "all countries"}\napproval_required: true`}</pre>
+      <button className="primary" disabled={!token || !selectedTenantId || !name || Number(rateLimit) < 100 || Number(rateLimit) > 2000000}><Plus size={16} /> Create policy</button>
     </form>
   );
 }

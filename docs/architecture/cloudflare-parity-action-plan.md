@@ -135,7 +135,7 @@ Criterios de aceptacion:
 - El modo `monitor` registra eventos sin bloquear.
 - El modo `block` se puede activar solo con confirmacion.
 
-Estado implementado: los change sets se compilan, requieren aprobacion separada, se aplican contra un dominio seleccionado de forma explicita y conservan reglas previas para rollback. Los tipos compilados en esta fase son managed rule groups y rate-based rules; custom rules y despliegue gradual siguen pendientes.
+Estado implementado: los change sets se compilan, requieren aprobacion separada, se aplican contra un dominio seleccionado de forma explicita y conservan reglas previas para rollback. El rate limit se configura por IP en ventanas de cinco minutos y puede acotarse por prefijo de path, uno o mas metodos HTTP y los paises soportados en la consola; el compilador lo traduce a `ScopeDownStatement` de AWS WAF. Los tipos compilados en esta fase son managed rule groups y rate-based rules; ASN, headers, allow/block lists, custom rules y despliegue gradual siguen pendientes.
 
 ### Epica 4. Security Events Reales
 

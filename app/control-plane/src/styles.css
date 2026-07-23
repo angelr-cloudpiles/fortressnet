@@ -1233,6 +1233,16 @@ code {
   color: var(--ink);
 }
 
+.policy-editor select[multiple] {
+  height: 132px;
+  padding: 6px;
+}
+
+.policy-scope-picker .scope-picker {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: 132px;
+}
+
 .policy-editor pre {
   grid-column: 1 / -1;
   margin: 0;
