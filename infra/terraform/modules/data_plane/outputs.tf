@@ -138,6 +138,15 @@ output "ztna_applications_table_name" {
   value       = aws_dynamodb_table.ztna_applications.name
 }
 
+output "api_inventory_table_name" { value = aws_dynamodb_table.api_inventory.name }
+output "api_schemas_table_name" { value = aws_dynamodb_table.api_schemas.name }
+output "waf_events_table_name" { value = aws_dynamodb_table.waf_events.name }
+output "dmarc_configurations_table_name" { value = aws_dynamodb_table.dmarc_configurations.name }
+output "dmarc_reports_table_name" { value = aws_dynamodb_table.dmarc_reports.name }
+output "client_security_events_table_name" { value = aws_dynamodb_table.client_security_events.name }
+output "marketplace_usage_table_name" { value = aws_dynamodb_table.marketplace_usage.name }
+output "dnssec_kms_key_arn" { value = aws_kms_key.dnssec.arn }
+
 output "audit_logs_bucket_name" {
   description = "Audit logs bucket name."
   value       = aws_s3_bucket.this["audit_logs"].bucket
@@ -172,4 +181,8 @@ output "reports_bucket_name" {
 output "ai_events_bucket_name" {
   description = "AI events bucket name."
   value       = aws_s3_bucket.this["ai_events"].bucket
+}
+
+output "dmarc_intake_bucket_name" {
+  value = aws_s3_bucket.this["dmarc_intake"].bucket
 }

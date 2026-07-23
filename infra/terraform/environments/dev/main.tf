@@ -29,6 +29,14 @@ module "identity" {
   additional_domain_urls = ["https://${var.domain_name}"]
 }
 
+resource "aws_verifiedaccess_instance" "sase" {
+  description = "FortressNet multi-tenant ZTNA enforcement plane"
+  tags = merge(local.tags, {
+    Name      = "${local.name}-verified-access"
+    ManagedBy = "FortressNet"
+  })
+}
+
 resource "random_password" "origin_verify_header" {
   length  = 32
   special = false
@@ -37,6 +45,55 @@ resource "random_password" "origin_verify_header" {
 data "aws_route53_zone" "platform" {
   name         = var.hosted_zone_name
   private_zone = false
+}
+
+resource "aws_ses_domain_identity" "dmarc_receiver" {
+  domain = "reports.${var.domain_name}"
+}
+
+resource "aws_route53_record" "dmarc_receiver_verification" {
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = "_amazonses.reports.${var.domain_name}"
+  type    = "TXT"
+  ttl     = 300
+  records = [aws_ses_domain_identity.dmarc_receiver.verification_token]
+}
+
+resource "aws_route53_record" "dmarc_receiver_mx" {
+  zone_id = data.aws_route53_zone.platform.zone_id
+  name    = "reports.${var.domain_name}"
+  type    = "MX"
+  ttl     = 300
+  records = ["10 inbound-smtp.${var.aws_region}.amazonaws.com"]
+}
+
+resource "aws_ses_receipt_rule_set" "dmarc" {
+  rule_set_name = "${local.name}-dmarc"
+}
+
+resource "aws_ses_active_receipt_rule_set" "dmarc" {
+  rule_set_name = aws_ses_receipt_rule_set.dmarc.rule_set_name
+}
+
+resource "aws_ses_receipt_rule" "dmarc" {
+  name          = "store-dmarc-reports"
+  rule_set_name = aws_ses_receipt_rule_set.dmarc.rule_set_name
+  recipients    = ["reports.${var.domain_name}"]
+  enabled       = true
+  scan_enabled  = true
+
+  s3_action {
+    bucket_name       = module.data_plane.dmarc_intake_bucket_name
+    object_key_prefix = "raw/"
+    position          = 1
+  }
+
+  depends_on = [
+    aws_ses_domain_identity.dmarc_receiver,
+    aws_route53_record.dmarc_receiver_verification,
+    aws_route53_record.dmarc_receiver_mx,
+    module.data_plane
+  ]
 }
 
 resource "aws_acm_certificate" "origin" {
@@ -72,48 +129,58 @@ resource "aws_acm_certificate_validation" "origin" {
 module "control_plane" {
   source = "../../modules/control_plane"
 
-  name                            = local.name
-  vpc_id                          = module.network.vpc_id
-  public_subnet_ids               = module.network.public_subnet_ids
-  private_subnet_ids              = module.network.private_subnet_ids
-  app_image                       = "${aws_ecr_repository.control_plane.repository_url}:${var.app_image_tag}"
-  container_port                  = var.app_container_port
-  desired_count                   = var.desired_count
-  database_secret_arn             = module.data_plane.database_secret_arn
-  database_secret_version         = module.data_plane.database_secret_version_id
-  database_host                   = module.data_plane.database_address
-  database_port                   = module.data_plane.database_port
-  database_security_group_id      = module.data_plane.database_security_group_id
-  platform_config_secret          = module.data_plane.platform_config_secret_arn
-  platform_kms_key_arn            = module.data_plane.kms_key_arn
-  alb_certificate_arn             = aws_acm_certificate_validation.origin.certificate_arn
-  origin_verify_header_name       = local.origin_verify_header_name
-  origin_verify_header_value      = random_password.origin_verify_header.result
-  log_bucket_name                 = module.data_plane.audit_logs_bucket_name
-  tenants_table_name              = module.data_plane.tenants_table_name
-  domains_table_name              = module.data_plane.domains_table_name
-  entitlements_table_name         = module.data_plane.entitlements_table_name
-  security_policies_table_name    = module.data_plane.security_policies_table_name
-  users_table_name                = module.data_plane.users_table_name
-  api_keys_table_name             = module.data_plane.api_keys_table_name
-  idp_connections_table_name      = module.data_plane.idp_connections_table_name
-  profiles_table_name             = module.data_plane.profiles_table_name
-  origins_table_name              = module.data_plane.origins_table_name
-  origin_health_events_table_name = module.data_plane.origin_health_events_table_name
-  operation_locks_table_name      = module.data_plane.operation_locks_table_name
-  origin_pools_table_name         = module.data_plane.origin_pools_table_name
-  certificates_table_name         = module.data_plane.certificates_table_name
-  waf_change_sets_table_name      = module.data_plane.waf_change_sets_table_name
-  edge_deployments_table_name     = module.data_plane.edge_deployments_table_name
-  approvals_table_name            = module.data_plane.approvals_table_name
-  dns_zones_table_name            = module.data_plane.dns_zones_table_name
-  dns_records_table_name          = module.data_plane.dns_records_table_name
-  ai_findings_table_name          = module.data_plane.ai_findings_table_name
-  ztna_applications_table_name    = module.data_plane.ztna_applications_table_name
-  edge_logs_bucket_domain_name    = module.data_plane.edge_logs_bucket_domain_name
-  cognito_user_pool_id            = module.identity.user_pool_id
-  cognito_app_client_id           = module.identity.app_client_id
-  cognito_hosted_ui_url           = module.identity.hosted_ui_url
+  name                              = local.name
+  vpc_id                            = module.network.vpc_id
+  public_subnet_ids                 = module.network.public_subnet_ids
+  private_subnet_ids                = module.network.private_subnet_ids
+  app_image                         = "${aws_ecr_repository.control_plane.repository_url}:${var.app_image_tag}"
+  container_port                    = var.app_container_port
+  desired_count                     = var.desired_count
+  database_secret_arn               = module.data_plane.database_secret_arn
+  database_secret_version           = module.data_plane.database_secret_version_id
+  database_host                     = module.data_plane.database_address
+  database_port                     = module.data_plane.database_port
+  database_security_group_id        = module.data_plane.database_security_group_id
+  platform_config_secret            = module.data_plane.platform_config_secret_arn
+  platform_kms_key_arn              = module.data_plane.kms_key_arn
+  alb_certificate_arn               = aws_acm_certificate_validation.origin.certificate_arn
+  origin_verify_header_name         = local.origin_verify_header_name
+  origin_verify_header_value        = random_password.origin_verify_header.result
+  log_bucket_name                   = module.data_plane.audit_logs_bucket_name
+  tenants_table_name                = module.data_plane.tenants_table_name
+  domains_table_name                = module.data_plane.domains_table_name
+  entitlements_table_name           = module.data_plane.entitlements_table_name
+  security_policies_table_name      = module.data_plane.security_policies_table_name
+  users_table_name                  = module.data_plane.users_table_name
+  api_keys_table_name               = module.data_plane.api_keys_table_name
+  idp_connections_table_name        = module.data_plane.idp_connections_table_name
+  profiles_table_name               = module.data_plane.profiles_table_name
+  origins_table_name                = module.data_plane.origins_table_name
+  origin_health_events_table_name   = module.data_plane.origin_health_events_table_name
+  operation_locks_table_name        = module.data_plane.operation_locks_table_name
+  origin_pools_table_name           = module.data_plane.origin_pools_table_name
+  certificates_table_name           = module.data_plane.certificates_table_name
+  waf_change_sets_table_name        = module.data_plane.waf_change_sets_table_name
+  edge_deployments_table_name       = module.data_plane.edge_deployments_table_name
+  approvals_table_name              = module.data_plane.approvals_table_name
+  dns_zones_table_name              = module.data_plane.dns_zones_table_name
+  dns_records_table_name            = module.data_plane.dns_records_table_name
+  ai_findings_table_name            = module.data_plane.ai_findings_table_name
+  ztna_applications_table_name      = module.data_plane.ztna_applications_table_name
+  api_inventory_table_name          = module.data_plane.api_inventory_table_name
+  api_schemas_table_name            = module.data_plane.api_schemas_table_name
+  waf_events_table_name             = module.data_plane.waf_events_table_name
+  dmarc_configurations_table_name   = module.data_plane.dmarc_configurations_table_name
+  dmarc_reports_table_name          = module.data_plane.dmarc_reports_table_name
+  client_security_events_table_name = module.data_plane.client_security_events_table_name
+  marketplace_usage_table_name      = module.data_plane.marketplace_usage_table_name
+  dnssec_kms_key_arn                = module.data_plane.dnssec_kms_key_arn
+  verified_access_instance_id       = aws_verifiedaccess_instance.sase.id
+  dmarc_receiver_domain             = "reports.${var.domain_name}"
+  edge_logs_bucket_domain_name      = module.data_plane.edge_logs_bucket_domain_name
+  cognito_user_pool_id              = module.identity.user_pool_id
+  cognito_app_client_id             = module.identity.app_client_id
+  cognito_hosted_ui_url             = module.identity.hosted_ui_url
 }
 
 resource "aws_route53_record" "origin_ipv4" {
@@ -234,7 +301,8 @@ resource "aws_vpc_endpoint" "interface" {
     "ecr.dkr",
     "logs",
     "secretsmanager",
-    "kms"
+    "kms",
+    "ec2"
   ])
 
   vpc_id              = module.network.vpc_id

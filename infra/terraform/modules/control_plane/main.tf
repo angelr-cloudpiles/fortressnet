@@ -266,6 +266,13 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ztna_applications_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.api_inventory_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.api_schemas_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_events_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_configurations_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_reports_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.client_security_events_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.marketplace_usage_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.users_table_name}/index/*",
@@ -282,6 +289,13 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dns_records_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ai_findings_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.ztna_applications_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.api_inventory_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.api_schemas_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.waf_events_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_configurations_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_reports_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.client_security_events_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.marketplace_usage_table_name}/index/*"
         ]
       },
       {
@@ -302,6 +316,10 @@ resource "aws_iam_role_policy" "task" {
           "route53:ChangeResourceRecordSets",
           "route53:CreateHostedZone",
           "route53:GetDNSSEC"
+          , "route53:ListResourceRecordSets"
+          , "route53:GetChange"
+          , "route53:CreateKeySigningKey"
+          , "route53:EnableHostedZoneDNSSEC"
         ]
         Resource = "*"
       },
@@ -331,6 +349,10 @@ resource "aws_iam_role_policy" "task" {
           "cloudfront:GetDistribution",
           "cloudfront:GetDistributionConfig",
           "cloudfront:ListDistributions"
+          , "cloudfront:UpdateDistribution"
+          , "cloudfront:CreateResponseHeadersPolicy"
+          , "cloudfront:GetResponseHeadersPolicy"
+          , "cloudfront:ListResponseHeadersPolicies"
         ]
         Resource = "*"
       },
@@ -369,6 +391,24 @@ resource "aws_iam_role_policy" "task" {
             "aws:RequestedRegion" = "us-east-1"
           }
         }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateVerifiedAccessTrustProvider",
+          "ec2:CreateVerifiedAccessEndpoint",
+          "ec2:DeleteVerifiedAccessEndpoint",
+          "ec2:DescribeVerifiedAccessEndpoints",
+          "ec2:DescribeVerifiedAccessTrustProviders",
+          "ec2:ModifyVerifiedAccessEndpoint"
+        ]
+        Resource = "*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = data.aws_region.current.region } }
+      },
+      {
+        Effect = "Allow"
+        Action = ["aws-marketplace:BatchMeterUsage", "aws-marketplace:GetEntitlements", "aws-marketplace:ResolveCustomer"]
+        Resource = "*"
       },
       {
         Effect = "Allow"
@@ -536,6 +576,46 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "ZTNA_APPLICATIONS_TABLE"
           value = var.ztna_applications_table_name
+        },
+        {
+          name  = "API_INVENTORY_TABLE"
+          value = var.api_inventory_table_name
+        },
+        {
+          name  = "API_SCHEMAS_TABLE"
+          value = var.api_schemas_table_name
+        },
+        {
+          name  = "WAF_EVENTS_TABLE"
+          value = var.waf_events_table_name
+        },
+        {
+          name  = "DMARC_CONFIGURATIONS_TABLE"
+          value = var.dmarc_configurations_table_name
+        },
+        {
+          name  = "DMARC_REPORTS_TABLE"
+          value = var.dmarc_reports_table_name
+        },
+        {
+          name  = "CLIENT_SECURITY_EVENTS_TABLE"
+          value = var.client_security_events_table_name
+        },
+        {
+          name  = "MARKETPLACE_USAGE_TABLE"
+          value = var.marketplace_usage_table_name
+        },
+        {
+          name  = "DNSSEC_KMS_KEY_ARN"
+          value = var.dnssec_kms_key_arn
+        },
+        {
+          name  = "VERIFIED_ACCESS_INSTANCE_ID"
+          value = var.verified_access_instance_id
+        },
+        {
+          name  = "DMARC_RECEIVER_DOMAIN"
+          value = var.dmarc_receiver_domain
         },
         {
           name  = "EDGE_LOGS_BUCKET_DOMAIN_NAME"

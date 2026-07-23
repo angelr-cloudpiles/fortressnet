@@ -188,6 +188,16 @@ variable "ztna_applications_table_name" {
   description = "Zero Trust private application catalog table name."
   type        = string
 }
+variable "api_inventory_table_name" { type = string }
+variable "api_schemas_table_name" { type = string }
+variable "waf_events_table_name" { type = string }
+variable "dmarc_configurations_table_name" { type = string }
+variable "dmarc_reports_table_name" { type = string }
+variable "client_security_events_table_name" { type = string }
+variable "marketplace_usage_table_name" { type = string }
+variable "dnssec_kms_key_arn" { type = string }
+variable "verified_access_instance_id" { type = string }
+variable "dmarc_receiver_domain" { type = string }
 
 variable "edge_logs_bucket_domain_name" {
   description = "S3 bucket domain name for tenant CloudFront access logs."

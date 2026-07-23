@@ -75,6 +75,95 @@ resource "aws_glue_catalog_table" "control_plane_audit_events" {
   }
 }
 
+resource "aws_glue_catalog_table" "waf_events" {
+  name          = "waf_events"
+  database_name = aws_glue_catalog_database.security_lake.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    classification               = "json"
+    "projection.enabled"        = "true"
+    "projection.year.type"      = "integer"
+    "projection.year.range"     = "2025,NOW"
+    "projection.month.type"     = "integer"
+    "projection.month.range"    = "1,12"
+    "projection.month.digits"   = "2"
+    "projection.day.type"       = "integer"
+    "projection.day.range"      = "1,31"
+    "projection.day.digits"     = "2"
+    "storage.location.template" = "s3://${var.audit_logs_bucket_name}/waf-events/year=$${year}/month=$${month}/day=$${day}/"
+  }
+
+  partition_keys {
+    name = "year"
+    type = "string"
+  }
+  partition_keys {
+    name = "month"
+    type = "string"
+  }
+  partition_keys {
+    name = "day"
+    type = "string"
+  }
+
+  storage_descriptor {
+    location      = "s3://${var.audit_logs_bucket_name}/waf-events/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      name                  = "openx_json"
+      serialization_library = "org.openx.data.jsonserde.JsonSerDe"
+    }
+
+    columns {
+      name = "event_id"
+      type = "string"
+    }
+    columns {
+      name = "tenant_id"
+      type = "string"
+    }
+    columns {
+      name = "domain_id"
+      type = "string"
+    }
+    columns {
+      name = "timestamp"
+      type = "bigint"
+    }
+    columns {
+      name = "action"
+      type = "string"
+    }
+    columns {
+      name = "rule_id"
+      type = "string"
+    }
+    columns {
+      name = "method"
+      type = "string"
+    }
+    columns {
+      name = "uri"
+      type = "string"
+    }
+    columns {
+      name = "country"
+      type = "string"
+    }
+    columns {
+      name = "client_ip_hash"
+      type = "string"
+    }
+    columns {
+      name = "archived_at"
+      type = "string"
+    }
+  }
+}
+
 resource "aws_athena_workgroup" "security_lake" {
   name          = "${var.name}-security-lake"
   force_destroy = false

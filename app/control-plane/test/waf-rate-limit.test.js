@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compileWafRules, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules } from "../server.js";
+import { buildApiInventory, compileWafRules, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -71,4 +71,13 @@ test("validates IP lists and header constraints", () => {
   assert.deepEqual(advanced.allowed_ip_cidrs, ["203.0.113.0/24", "2001:db8::/32"]);
   assert.throws(() => normalizeWafAdvancedConfig({ blocked_ip_cidrs: "10.0.0.1" }), { message: "ip_cidr_list_invalid" });
   assert.throws(() => normalizeWafAdvancedConfig({ blocked_header_name: "bad header", blocked_header_values: "x" }), { message: "blocked_header_invalid" });
+});
+
+test("builds API inventory from real WAF event shape and validates OpenAPI 3", () => {
+  const inventory = buildApiInventory("tenant_test", [{ domain_id: "dom_test", method: "GET", uri: "/v1/orders/123", action: "ALLOW", timestamp: Date.now() }, { domain_id: "dom_test", method: "GET", uri: "/v1/orders/456", action: "BLOCK", timestamp: Date.now() }]);
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].path_template, "/v1/orders/{id}");
+  assert.equal(inventory[0].blocked_requests, 1);
+  assert.deepEqual(validateOpenApiDocument({ openapi: "3.0.3", info: { title: "Orders", version: "1" }, paths: { "/v1/orders/{id}": { get: {} } } }).endpoints, [{ method: "GET", path_template: "/v1/orders/{id}" }]);
+  assert.throws(() => validateOpenApiDocument({ openapi: "2.0", info: { title: "Old" }, paths: {} }), { message: "openapi_3_document_required" });
 });

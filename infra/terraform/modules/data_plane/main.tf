@@ -40,7 +40,8 @@ data "aws_iam_policy_document" "platform_key" {
       type = "Service"
       identifiers = [
         "logs.${data.aws_region.current.region}.amazonaws.com",
-        "sns.amazonaws.com"
+        "sns.amazonaws.com",
+        "ses.amazonaws.com"
       ]
     }
 
@@ -138,6 +139,23 @@ data "aws_iam_policy_document" "edge_logs_bucket" {
   }
 }
 
+data "aws_iam_policy_document" "dmarc_intake_bucket" {
+  statement {
+    sid = "AllowSesDmarcDelivery"
+    principals {
+      type        = "Service"
+      identifiers = ["ses.amazonaws.com"]
+    }
+    actions = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.this["dmarc_intake"].arn}/raw/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
 locals {
   bucket_suffix = lower(data.aws_caller_identity.current.account_id)
 
@@ -146,6 +164,7 @@ locals {
     edge_logs  = "${var.name}-edge-logs-${local.bucket_suffix}"
     reports    = "${var.name}-reports-${local.bucket_suffix}"
     ai_events  = "${var.name}-ai-events-${local.bucket_suffix}"
+    dmarc_intake = "${var.name}-dmarc-intake-${local.bucket_suffix}"
   }
 
 }
@@ -160,6 +179,42 @@ resource "aws_kms_key" "platform" {
 resource "aws_kms_alias" "platform" {
   name          = "alias/${var.name}-platform"
   target_key_id = aws_kms_key.platform.key_id
+}
+
+# Route 53 DNSSEC requires an asymmetric signing key; it is intentionally
+# separate from the platform's symmetric encryption key.
+resource "aws_kms_key" "dnssec" {
+  description              = "FortressNet ${var.name} Route 53 DNSSEC signing key"
+  deletion_window_in_days  = 7
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "ECC_NIST_P256"
+  enable_key_rotation      = false
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableAccountAdministration"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowRoute53Dnssec"
+        Effect    = "Allow"
+        Principal = { Service = "dnssec-route53.amazonaws.com" }
+        Action    = ["kms:DescribeKey", "kms:GetPublicKey", "kms:Sign"]
+        Resource  = "*"
+        Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id } }
+      }
+    ]
+  })
+}
+
+resource "aws_kms_alias" "dnssec" {
+  name          = "alias/${var.name}-route53-dnssec"
+  target_key_id = aws_kms_key.dnssec.key_id
 }
 
 resource "random_password" "database" {
@@ -1073,6 +1128,234 @@ resource "aws_dynamodb_table" "ztna_applications" {
   }
 }
 
+resource "aws_dynamodb_table" "api_inventory" {
+  name         = "${var.name}-api-inventory"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "endpoint_id"
+  attribute {
+    name = "endpoint_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "api_schemas" {
+  name         = "${var.name}-api-schemas"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "schema_id"
+  attribute {
+    name = "schema_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "waf_events" {
+  name         = "${var.name}-waf-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "event_id"
+
+  attribute {
+    name = "event_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "dmarc_configurations" {
+  name         = "${var.name}-dmarc-configurations"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "configuration_id"
+
+  attribute {
+    name = "configuration_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+  attribute {
+    name = "report_token"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+  global_secondary_index {
+    name            = "report_token-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "report_token"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "dmarc_reports" {
+  name         = "${var.name}-dmarc-reports"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "report_id"
+
+  attribute {
+    name = "report_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "client_security_events" {
+  name         = "${var.name}-client-security-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "event_id"
+
+  attribute {
+    name = "event_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+resource "aws_dynamodb_table" "marketplace_usage" {
+  name         = "${var.name}-marketplace-usage"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "usage_id"
+
+  attribute {
+    name = "usage_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
 resource "aws_s3_bucket" "this" {
   for_each = local.buckets
 
@@ -1173,6 +1456,11 @@ resource "aws_s3_bucket_policy" "audit_logs" {
 resource "aws_s3_bucket_policy" "edge_logs" {
   bucket = aws_s3_bucket.this["edge_logs"].id
   policy = data.aws_iam_policy_document.edge_logs_bucket.json
+}
+
+resource "aws_s3_bucket_policy" "dmarc_intake" {
+  bucket = aws_s3_bucket.this["dmarc_intake"].id
+  policy = data.aws_iam_policy_document.dmarc_intake_bucket.json
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "logs" {

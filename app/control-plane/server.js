@@ -7,12 +7,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
-import { CloudFrontClient, CreateDistributionCommand, GetDistributionCommand } from "@aws-sdk/client-cloudfront";
+import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, GetDNSSECCommand, Route53Client } from "@aws-sdk/client-route-53";
+import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, CreateKeySigningKeyCommand, EnableHostedZoneDNSSECCommand, GetDNSSECCommand, ListResourceRecordSetsCommand, Route53Client } from "@aws-sdk/client-route-53";
+import { CreateVerifiedAccessEndpointCommand, CreateVerifiedAccessTrustProviderCommand, DescribeVerifiedAccessEndpointsCommand, EC2Client } from "@aws-sdk/client-ec2";
+import { BatchMeterUsageCommand, MarketplaceMeteringClient } from "@aws-sdk/client-marketplace-metering";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateIPSetCommand, CreateWebACLCommand, DeleteIPSetCommand, GetIPSetCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
 import { CognitoJwtVerifier } from "aws-jwt-verify";
@@ -31,6 +33,8 @@ const waf = new WAFV2Client({ region: "us-east-1" });
 const cloudwatchLogs = new CloudWatchLogsClient({ region: "us-east-1" });
 const cognito = new CognitoIdentityProviderClient({ region });
 const route53 = new Route53Client({ region });
+const ec2 = new EC2Client({ region });
+const marketplaceMetering = new MarketplaceMeteringClient({ region });
 const cognitoVerifier = process.env.COGNITO_USER_POOL_ID && process.env.COGNITO_APP_CLIENT_ID
   ? CognitoJwtVerifier.create({ userPoolId: process.env.COGNITO_USER_POOL_ID, tokenUse: "id", clientId: process.env.COGNITO_APP_CLIENT_ID })
   : null;
@@ -58,7 +62,14 @@ const tables = {
   dnsZones: process.env.DNS_ZONES_TABLE,
   dnsRecords: process.env.DNS_RECORDS_TABLE,
   aiFindings: process.env.AI_FINDINGS_TABLE,
-  ztnaApplications: process.env.ZTNA_APPLICATIONS_TABLE
+  ztnaApplications: process.env.ZTNA_APPLICATIONS_TABLE,
+  apiInventory: process.env.API_INVENTORY_TABLE,
+  apiSchemas: process.env.API_SCHEMAS_TABLE,
+  wafEvents: process.env.WAF_EVENTS_TABLE,
+  dmarcConfigurations: process.env.DMARC_CONFIGURATIONS_TABLE,
+  dmarcReports: process.env.DMARC_REPORTS_TABLE,
+  clientSecurityEvents: process.env.CLIENT_SECURITY_EVENTS_TABLE,
+  marketplaceUsage: process.env.MARKETPLACE_USAGE_TABLE
 };
 
 const roleScopes = {
@@ -100,7 +111,7 @@ const cognitoHostedUiOrigin = safeHttpsOrigin(process.env.COGNITO_HOSTED_UI_URL)
 
 app.disable("x-powered-by");
 app.use(securityHeaders);
-app.use(express.json({ limit: "256kb" }));
+app.use(express.json({ type: ["application/json", "application/csp-report", "application/reports+json"], limit: "256kb" }));
 
 app.get("/healthz", (_req, res) => {
   res.type("text/plain").send("ok\n");
@@ -124,11 +135,29 @@ app.get("/api/auth/session", requireManagementAccess, (req, res) => {
   res.json({ actor: publicActor(req.actor) });
 });
 
+// Browsers send CSP reports without a console session. The random deployment
+// token and exact protected-domain validation keep this ingestion path scoped.
+app.post("/api/client-security/reports/:token", async (req, res) => {
+  try {
+    const deployment = (await scanTable(tables.edgeDeployments)).find((item) => timingSafeEqual(item.client_security_token || "", clean(req.params.token)));
+    if (!deployment) return res.status(404).end();
+    const report = normalizeClientSecurityReport(req.body, deployment);
+    if (!report) return res.status(204).end();
+    await putUnique(tables.clientSecurityEvents, report, "event_id").catch((error) => {
+      if (error?.name !== "ConditionalCheckFailedException") throw error;
+    });
+    res.status(204).end();
+  } catch (error) {
+    console.warn("client_security_report_rejected", error?.message || error);
+    res.status(204).end();
+  }
+});
+
 app.use("/api", requireManagementAccess);
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications] = await Promise.all([
+    const [tenants, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications, dmarcConfigurations] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.domains),
       scanTable(tables.policies),
@@ -146,7 +175,8 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       scanTable(tables.dnsZones),
       scanTable(tables.dnsRecords),
       scanTable(tables.aiFindings),
-      scanTable(tables.ztnaApplications)
+      scanTable(tables.ztnaApplications),
+      scanTable(tables.dmarcConfigurations)
     ]);
 
     res.json({
@@ -167,7 +197,8 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       dns_zones: sortByDate(scopeItems(req.actor, dnsZones)),
       dns_records: sortByDate(scopeItems(req.actor, dnsRecords)),
       ai_findings: sortByDate(scopeItems(req.actor, aiFindings)),
-      ztna_applications: sortByDate(scopeItems(req.actor, ztnaApplications))
+      ztna_applications: sortByDate(scopeItems(req.actor, ztnaApplications)),
+      dmarc_configurations: sortByDate(scopeItems(req.actor, dmarcConfigurations))
     });
   } catch (error) {
     next(error);
@@ -333,6 +364,36 @@ app.get("/api/billing/summary", requireScope("billing:read"), async (req, res, n
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/api/marketplace/status", requirePlatformActor, requireScope("billing:read"), async (_req, res) => {
+  res.json({
+    integration: "aws_marketplace_saas",
+    enabled: Boolean(process.env.MARKETPLACE_PRODUCT_CODE),
+    product_code_configured: Boolean(process.env.MARKETPLACE_PRODUCT_CODE),
+    required_before_live_metering: process.env.MARKETPLACE_PRODUCT_CODE ? [] : ["AWS Marketplace SaaS product code"],
+    metering_dimensions: ["protected_domains", "protected_requests"]
+  });
+});
+
+app.post("/api/marketplace/usage/submit", requirePlatformActor, requireScope("billing:write"), async (req, res, next) => {
+  try {
+    const tenantId = clean(req.body?.tenant_id);
+    const dimension = clean(req.body?.dimension);
+    if (!tenantId || !["protected_domains", "protected_requests"].includes(dimension)) return res.status(400).json({ error: "tenant_id_and_supported_dimension_required" });
+    const entitlement = await getTenantEntitlement(tenantId);
+    if (!entitlement?.marketplace_customer_identifier || !process.env.MARKETPLACE_PRODUCT_CODE) return res.status(409).json({ error: "marketplace_customer_and_product_code_required" });
+    const summary = await buildMarketplaceUsage(tenantId, dimension);
+    const response = await marketplaceMetering.send(new BatchMeterUsageCommand({
+      ProductCode: process.env.MARKETPLACE_PRODUCT_CODE,
+      UsageRecords: [{ CustomerIdentifier: entitlement.marketplace_customer_identifier, Dimension: dimension, Quantity: summary.quantity, Timestamp: new Date() }]
+    }));
+    const now = new Date().toISOString();
+    const usage = { usage_id: `mpu_${crypto.randomUUID()}`, tenant_id: tenantId, dimension, quantity: summary.quantity, period: currentUsagePeriod(), status: response.UnprocessedRecords?.length ? "unprocessed" : "submitted", marketplace_response: { unprocessed_records: response.UnprocessedRecords?.length || 0 }, created_at: now, updated_at: now };
+    await putUnique(tables.marketplaceUsage, usage, "usage_id");
+    await audit("marketplace.usage_submitted", tenantId, { usage_id: usage.usage_id, dimension, quantity: usage.quantity, status: usage.status }, req.actor);
+    res.status(202).json({ usage });
+  } catch (error) { next(error); }
 });
 
 app.put("/api/tenants/:tenantId/entitlement", requirePlatformActor, requireScope("billing:write"), async (req, res, next) => {
@@ -750,6 +811,72 @@ app.patch("/api/edge-deployments/:deploymentId/refresh", requireScope("edge:read
   }
 });
 
+app.post("/api/edge-deployments/:deploymentId/origin-update-request", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (!deployment.distribution_id || !["ready_for_cutover", "active"].includes(deployment.status)) return res.status(409).json({ error: "active_edge_deployment_required" });
+    if (deployment.origin_update_status === "pending_approval") return res.status(409).json({ error: "origin_update_already_pending" });
+    const requested = await validateOriginPoolConfiguration(deployment.tenant_id, deployment.domain_id, req.body || {});
+    const now = new Date().toISOString();
+    const approval = createApproval(deployment.tenant_id, "origin_update", deployment.deployment_id, req.actor, now);
+    const updated = {
+      ...deployment,
+      origin_update: requested,
+      origin_update_status: "pending_approval",
+      origin_update_requested_by: req.actor?.subject || "unknown",
+      origin_update_requested_at: now,
+      updated_at: now
+    };
+    await Promise.all([
+      dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated })),
+      putUnique(tables.approvals, approval, "approval_id")
+    ]);
+    await audit("edge_deployment.origin_update_requested", deployment.tenant_id, { deployment_id: deployment.deployment_id, origin_update: requested, approval }, req.actor);
+    res.status(201).json({ edge_deployment: publicEdgeDeployment(updated), approval });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireScope("edge:approve"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (deployment.origin_update_status !== "pending_approval") return res.status(409).json({ error: "origin_update_not_pending" });
+    if (!isPlatformActor(req.actor) && deployment.origin_update_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    const now = new Date().toISOString();
+    const updated = { ...deployment, origin_update_status: "approved", origin_update_approved_by: req.actor?.subject || "unknown", origin_update_approved_at: now, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: updated }));
+    await approveSubject(deployment.tenant_id, "origin_update", deployment.deployment_id, req.actor, now);
+    await audit("edge_deployment.origin_update_approved", deployment.tenant_id, { deployment_id: deployment.deployment_id }, req.actor);
+    res.json({ edge_deployment: publicEdgeDeployment(updated) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/edge-deployments/:deploymentId/origin-update-apply", requireScope("edge:write"), async (req, res, next) => {
+  try {
+    const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
+    if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
+    tenantForActor(req.actor, deployment.tenant_id);
+    if (deployment.origin_update_status !== "approved" || !deployment.origin_update) return res.status(409).json({ error: "approved_origin_update_required" });
+    const pool = await getById(tables.originPools, { pool_id: deployment.origin_pool_id });
+    if (!pool) return res.status(409).json({ error: "origin_pool_not_found" });
+    const proposedPool = { ...pool, ...deployment.origin_update };
+    const origins = await loadPoolOrigins(proposedPool);
+    if (!origins.length || origins.some((origin) => origin.status !== "healthy")) return res.status(409).json({ error: "healthy_origin_pool_required" });
+    await updateCloudFrontOriginPool(deployment, proposedPool, origins);
+    const now = new Date().toISOString();
+    const completed = { ...deployment, origin_ids: proposedPool.origin_ids, failover_enabled: proposedPool.failover_enabled, origin_id: origins[0].origin_id, origin_update_status: "applied", origin_update_applied_at: now, origin_update: undefined, updated_at: now };
+    await Promise.all([
+      dynamo.send(new PutCommand({ TableName: tables.originPools, Item: { ...proposedPool, updated_at: now } })),
+      dynamo.send(new PutCommand({ TableName: tables.edgeDeployments, Item: completed }))
+    ]);
+    await audit("edge_deployment.origin_update_applied", deployment.tenant_id, { deployment_id: deployment.deployment_id, origin_ids: completed.origin_ids }, req.actor);
+    res.status(202).json({ edge_deployment: publicEdgeDeployment(completed) });
+  } catch (error) { next(error); }
+});
+
 app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
@@ -890,6 +1017,86 @@ app.post("/api/dns/zones/:zoneId/records", requireScope("domain:write"), async (
   }
 });
 
+app.get("/api/dns/zones/:zoneId/records", requireScope("domain:read"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    const records = [];
+    let StartRecordName;
+    do {
+      const page = await route53.send(new ListResourceRecordSetsCommand({ HostedZoneId: zone.route53_zone_id, StartRecordName, MaxItems: "300" }));
+      records.push(...(page.ResourceRecordSets || []).map(publicRoute53Record));
+      StartRecordName = page.IsTruncated ? page.NextRecordName : undefined;
+    } while (StartRecordName);
+    res.json({ records });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/dns/zones/:zoneId/export", requireScope("domain:read"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    const response = await route53.send(new ListResourceRecordSetsCommand({ HostedZoneId: zone.route53_zone_id }));
+    res.json({ version: 1, zone_name: zone.zone_name, exported_at: new Date().toISOString(), records: (response.ResourceRecordSets || []).filter((record) => record.Type !== "NS" && record.Type !== "SOA").map(publicRoute53Record) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/dns/zones/:zoneId/import", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    const requested = Array.isArray(req.body?.records) ? req.body.records.slice(0, 100) : [];
+    const changes = requested.map((record) => normalizeImportDnsRecord(record, zone.zone_name)).filter(Boolean).map((record) => ({ Action: "UPSERT", ResourceRecordSet: record }));
+    if (!changes.length) return res.status(400).json({ error: "valid_dns_import_records_required" });
+    const change = await route53.send(new ChangeResourceRecordSetsCommand({ HostedZoneId: zone.route53_zone_id, ChangeBatch: { Comment: `FortressNet import for ${zone.tenant_id}`, Changes: changes } }));
+    await audit("dns_zone.imported", zone.tenant_id, { zone_id: zone.zone_id, records: changes.length, change_id: clean(change.ChangeInfo?.Id) }, req.actor);
+    res.status(202).json({ imported_records: changes.length, change_id: clean(change.ChangeInfo?.Id), status: clean(change.ChangeInfo?.Status) || "PENDING" });
+  } catch (error) { next(error); }
+});
+
+app.delete("/api/dns/zones/:zoneId/records/:recordId", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    const record = await getById(tables.dnsRecords, { record_id: clean(req.params.recordId) });
+    if (!zone || !record || record.zone_id !== zone.zone_id) return res.status(404).json({ error: "dns_record_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    await route53.send(new ChangeResourceRecordSetsCommand({
+      HostedZoneId: zone.route53_zone_id,
+      ChangeBatch: { Comment: `FortressNet delete for ${zone.tenant_id}`, Changes: [{ Action: "DELETE", ResourceRecordSet: { Name: record.name, Type: record.type, TTL: record.ttl, ResourceRecords: record.values.map((Value) => ({ Value })) } }] }
+    }));
+    await dynamo.send(new UpdateCommand({ TableName: tables.dnsRecords, Key: { record_id: record.record_id }, UpdateExpression: "SET #status = :status, updated_at = :updated_at", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":status": "deleted", ":updated_at": new Date().toISOString() } }));
+    await audit("dns_record.deleted", zone.tenant_id, { record_id: record.record_id }, req.actor);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
+
+app.post("/api/dns/zones/:zoneId/dnssec/enable", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
+    if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
+    tenantForActor(req.actor, zone.tenant_id);
+    if (zone.mode !== "route53_delegated" || !zone.route53_zone_id || !process.env.DNSSEC_KMS_KEY_ARN) return res.status(409).json({ error: "route53_delegated_zone_required" });
+    const kskName = `fn-${zone.zone_id.slice(-20)}`;
+    await route53.send(new CreateKeySigningKeyCommand({ HostedZoneId: zone.route53_zone_id, KeyManagementServiceArn: process.env.DNSSEC_KMS_KEY_ARN, Name: kskName, Status: "ACTIVE" })).catch((error) => {
+      if (!["KeySigningKeyAlreadyExists", "InvalidKeySigningKeyStatus"].includes(error?.name)) throw error;
+    });
+    await route53.send(new EnableHostedZoneDNSSECCommand({ HostedZoneId: zone.route53_zone_id })).catch((error) => {
+      if (error?.name !== "HostedZonePartiallyDelegated") throw error;
+    });
+    const now = new Date().toISOString();
+    await dynamo.send(new PutCommand({ TableName: tables.dnsZones, Item: { ...zone, dnssec_status: "enabling", dnssec_requested_at: now, updated_at: now } }));
+    await audit("dns_zone.dnssec_enable_requested", zone.tenant_id, { zone_id: zone.zone_id, ksk_name: kskName }, req.actor);
+    res.status(202).json({ zone_id: zone.zone_id, dnssec_status: "enabling", ksk_name: kskName });
+  } catch (error) { next(error); }
+});
+
 app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
@@ -903,6 +1110,61 @@ app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async
   }
 });
 
+app.get("/api/dmarc/configurations", requireScope("domain:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    res.json({ configurations: sortByDate(tenantId ? await queryByTenant(tables.dmarcConfigurations, tenantId) : await scanTable(tables.dmarcConfigurations)) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/dmarc/reports", requireScope("reports:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    res.json({ reports: sortByDate(tenantId ? await queryByTenant(tables.dmarcReports, tenantId) : await scanTable(tables.dmarcReports)) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/domains/:domainId/dmarc", requireScope("domain:write"), async (req, res, next) => {
+  try {
+    const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
+    if (!domain) return res.status(404).json({ error: "domain_not_found" });
+    tenantForActor(req.actor, domain.tenant_id);
+    if (!isVerifiedDomainStatus(domain.status)) return res.status(409).json({ error: "verified_domain_required" });
+    const policy = clean(req.body?.policy || "none").toLowerCase();
+    const alignment = clean(req.body?.alignment || "r").toLowerCase();
+    const percentage = Math.min(Math.max(Number(req.body?.percentage ?? 100), 1), 100);
+    if (!new Set(["none", "quarantine", "reject"]).has(policy) || !new Set(["r", "s"]).has(alignment)) return res.status(400).json({ error: "dmarc_policy_or_alignment_invalid" });
+    const reportToken = crypto.randomBytes(18).toString("base64url");
+    const rua = `dmarc+${reportToken}@${process.env.DMARC_RECEIVER_DOMAIN || "reports.fortressnet.app"}`;
+    const value = `v=DMARC1; p=${policy}; rua=mailto:${rua}; adkim=${alignment}; aspf=${alignment}; pct=${percentage}`;
+    const zone = (await queryByTenant(tables.dnsZones, domain.tenant_id)).find((item) => item.domain_id === domain.domain_id);
+    const now = new Date().toISOString();
+    const configuration = {
+      configuration_id: `dmc_${crypto.randomUUID()}`,
+      tenant_id: domain.tenant_id,
+      domain_id: domain.domain_id,
+      domain_name: domain.domain_name,
+      report_token: reportToken,
+      rua,
+      record_name: `_dmarc.${domain.domain_name}`,
+      record_value: value,
+      policy,
+      alignment,
+      percentage,
+      status: zone?.mode === "route53_delegated" ? "publishing" : "awaiting_external_dns",
+      created_at: now,
+      updated_at: now
+    };
+    if (zone?.mode === "route53_delegated" && zone.route53_zone_id) {
+      await route53.send(new ChangeResourceRecordSetsCommand({ HostedZoneId: zone.route53_zone_id, ChangeBatch: { Comment: `FortressNet DMARC for ${domain.tenant_id}`, Changes: [{ Action: "UPSERT", ResourceRecordSet: { Name: `${configuration.record_name}.`, Type: "TXT", TTL: 300, ResourceRecords: [{ Value: `"${value}"` }] } }] } }));
+      configuration.status = "published_pending_dns";
+    }
+    await putUnique(tables.dmarcConfigurations, configuration, "configuration_id");
+    await audit("dmarc.configuration_created", domain.tenant_id, { configuration_id: configuration.configuration_id, domain_id: domain.domain_id, policy, status: configuration.status }, req.actor);
+    res.status(201).json({ configuration });
+  } catch (error) { next(error); }
+});
+
 app.get("/api/ztna/applications", requireScope("identity:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
@@ -911,6 +1173,48 @@ app.get("/api/ztna/applications", requireScope("identity:read"), async (req, res
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/api-shield/inventory/refresh", requireScope("policy:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    const deployments = await queryByTenant(tables.edgeDeployments, tenantId);
+    const inventory = buildApiInventory(tenantId, await collectSecurityEvents(deployments, 500));
+    for (const endpoint of inventory) await dynamo.send(new PutCommand({ TableName: tables.apiInventory, Item: endpoint }));
+    await audit("api_shield.inventory_refreshed", tenantId, { endpoints: inventory.length }, req.actor);
+    res.json({ mode: "read_only", observed_events: inventory.reduce((total, endpoint) => total + endpoint.observed_requests, 0), inventory });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/api-shield/inventory", requireScope("policy:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    res.json({ inventory: sortByDate(tenantId ? await queryByTenant(tables.apiInventory, tenantId) : await scanTable(tables.apiInventory)) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/api-shield/schemas", requireScope("policy:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    res.json({ schemas: sortByDate(tenantId ? await queryByTenant(tables.apiSchemas, tenantId) : await scanTable(tables.apiSchemas)) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/api-shield/schemas", requireScope("policy:write"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
+    const name = clean(req.body?.name);
+    const document = req.body?.document;
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!name || name.length > 100) return res.status(400).json({ error: "schema_name_invalid" });
+    const openapi = validateOpenApiDocument(document);
+    const now = new Date().toISOString();
+    const schema = { schema_id: `oas_${crypto.randomUUID()}`, tenant_id: tenantId, name, version: clean(document.info?.version) || "unversioned", mode: "report_only", status: "draft", endpoint_count: openapi.endpoints.length, endpoints: openapi.endpoints, document, created_at: now, updated_at: now };
+    await putUnique(tables.apiSchemas, schema, "schema_id");
+    await audit("api_shield.openapi_imported", tenantId, { schema_id: schema.schema_id, endpoint_count: schema.endpoint_count, mode: schema.mode }, req.actor);
+    res.status(201).json({ schema });
+  } catch (error) { next(error); }
 });
 
 app.post("/api/ztna/applications", requireScope("identity:write"), async (req, res, next) => {
@@ -948,6 +1252,108 @@ app.post("/api/ztna/applications", requireScope("identity:write"), async (req, r
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/ztna/applications/:applicationId/verified-access-request", requireScope("identity:write"), async (req, res, next) => {
+  try {
+    const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
+    if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
+    tenantForActor(req.actor, application.tenant_id);
+    if (!process.env.VERIFIED_ACCESS_INSTANCE_ID) return res.status(503).json({ error: "verified_access_not_configured" });
+    if (!application.idp_connection_id) return res.status(409).json({ error: "external_oidc_idp_required" });
+    const connection = await getById(tables.idpConnections, { idp_id: application.idp_connection_id });
+    if (!connection || connection.tenant_id !== application.tenant_id || connection.status !== "active" || connection.protocol !== "oidc") return res.status(409).json({ error: "active_oidc_idp_required" });
+    const request = normalizeVerifiedAccessRequest(req.body, application, connection);
+    if (application.verified_access_status === "pending_approval") return res.status(409).json({ error: "verified_access_request_already_pending" });
+    const now = new Date().toISOString();
+    const approval = createApproval(application.tenant_id, "verified_access_endpoint", application.application_id, req.actor, now);
+    const updated = { ...application, verified_access_request: request, verified_access_status: "pending_approval", verified_access_requested_by: req.actor?.subject || "unknown", verified_access_requested_at: now, updated_at: now };
+    await Promise.all([dynamo.send(new PutCommand({ TableName: tables.ztnaApplications, Item: updated })), putUnique(tables.approvals, approval, "approval_id")]);
+    await audit("ztna.verified_access_requested", application.tenant_id, { application_id: application.application_id, request, approval }, req.actor);
+    res.status(201).json({ application: updated, approval });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/ztna/applications/:applicationId/verified-access-approve", requireScope("edge:approve"), async (req, res, next) => {
+  try {
+    const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
+    if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
+    tenantForActor(req.actor, application.tenant_id);
+    if (application.verified_access_status !== "pending_approval") return res.status(409).json({ error: "verified_access_request_not_pending" });
+    if (!isPlatformActor(req.actor) && application.verified_access_requested_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    const now = new Date().toISOString();
+    const updated = { ...application, verified_access_status: "approved", verified_access_approved_by: req.actor?.subject || "unknown", verified_access_approved_at: now, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.ztnaApplications, Item: updated }));
+    await approveSubject(application.tenant_id, "verified_access_endpoint", application.application_id, req.actor, now);
+    await audit("ztna.verified_access_approved", application.tenant_id, { application_id: application.application_id }, req.actor);
+    res.json({ application: updated });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/ztna/applications/:applicationId/verified-access-provision", requireScope("identity:write"), async (req, res, next) => {
+  try {
+    const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
+    if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
+    tenantForActor(req.actor, application.tenant_id);
+    if (application.verified_access_status !== "approved" || !application.verified_access_request) return res.status(409).json({ error: "approved_verified_access_request_required" });
+    const connection = await getById(tables.idpConnections, { idp_id: application.idp_connection_id });
+    const clientSecret = clean(req.body?.client_secret);
+    if (!connection || !clientSecret) return res.status(400).json({ error: "oidc_client_secret_required_for_provisioning" });
+    const request = application.verified_access_request;
+    const trustProvider = await ec2.send(new CreateVerifiedAccessTrustProviderCommand({
+      VerifiedAccessInstanceId: process.env.VERIFIED_ACCESS_INSTANCE_ID,
+      TrustProviderType: "user",
+      UserTrustProviderType: "oidc",
+      OidcOptions: {
+        Issuer: connection.issuer_url,
+        AuthorizationEndpoint: request.authorization_endpoint,
+        TokenEndpoint: request.token_endpoint,
+        UserInfoEndpoint: request.user_info_endpoint,
+        ClientId: connection.client_id,
+        ClientSecret: clientSecret,
+        Scope: request.scope
+      },
+      Description: `FortressNet tenant ${application.tenant_id} application ${application.application_id}`,
+      TagSpecifications: [{ ResourceType: "verified-access-trust-provider", Tags: [{ Key: "ManagedBy", Value: "FortressNet" }, { Key: "TenantId", Value: application.tenant_id }] }]
+    }));
+    const trustProviderId = trustProvider.VerifiedAccessTrustProvider?.VerifiedAccessTrustProviderId;
+    if (!trustProviderId) throw httpError(502, "verified_access_trust_provider_create_failed");
+    const endpoint = await ec2.send(new CreateVerifiedAccessEndpointCommand({
+      VerifiedAccessInstanceId: process.env.VERIFIED_ACCESS_INSTANCE_ID,
+      VerifiedAccessTrustProviderId: trustProviderId,
+      EndpointType: "network-interface",
+      AttachmentType: "vpc",
+      ApplicationDomain: application.private_hostname,
+      DomainCertificateArn: request.certificate_arn,
+      SecurityGroupIds: request.security_group_ids,
+      NetworkInterfaceOptions: { NetworkInterfaceId: request.network_interface_id, Protocol: request.protocol, Port: request.port },
+      Description: `FortressNet ZTNA: ${application.name}`,
+      TagSpecifications: [{ ResourceType: "verified-access-endpoint", Tags: [{ Key: "ManagedBy", Value: "FortressNet" }, { Key: "TenantId", Value: application.tenant_id }, { Key: "ApplicationId", Value: application.application_id }] }]
+    }));
+    const verifiedEndpoint = endpoint.VerifiedAccessEndpoint;
+    if (!verifiedEndpoint?.VerifiedAccessEndpointId) throw httpError(502, "verified_access_endpoint_create_failed");
+    const now = new Date().toISOString();
+    const updated = { ...application, status: "provisioning", verified_access_status: "provisioning", verified_access_trust_provider_id: trustProviderId, verified_access_endpoint_id: verifiedEndpoint.VerifiedAccessEndpointId, verified_access_endpoint_domain: verifiedEndpoint.EndpointDomain, verified_access_provisioned_at: now, updated_at: now };
+    delete updated.verified_access_request;
+    await dynamo.send(new PutCommand({ TableName: tables.ztnaApplications, Item: updated }));
+    await audit("ztna.verified_access_provisioned", application.tenant_id, { application_id: application.application_id, endpoint_id: updated.verified_access_endpoint_id }, req.actor);
+    res.status(202).json({ application: updated });
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/ztna/applications/:applicationId/verified-access-refresh", requireScope("identity:read"), async (req, res, next) => {
+  try {
+    const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
+    if (!application?.verified_access_endpoint_id) return res.status(404).json({ error: "verified_access_endpoint_not_found" });
+    tenantForActor(req.actor, application.tenant_id);
+    const response = await ec2.send(new DescribeVerifiedAccessEndpointsCommand({ VerifiedAccessEndpointIds: [application.verified_access_endpoint_id] }));
+    const endpoint = response.VerifiedAccessEndpoints?.[0];
+    if (!endpoint) return res.status(404).json({ error: "verified_access_endpoint_not_found" });
+    const now = new Date().toISOString();
+    const updated = { ...application, status: endpoint.Status?.Code === "active" ? "active" : endpoint.Status?.Code || "provisioning", verified_access_status: endpoint.Status?.Code || "provisioning", verified_access_endpoint_domain: endpoint.EndpointDomain || application.verified_access_endpoint_domain, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.ztnaApplications, Item: updated }));
+    res.json({ application: updated });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/ai/findings", requireScope("ai:read"), async (req, res, next) => {
@@ -1206,6 +1612,22 @@ app.get("/api/events", requireScope("events:read"), async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/api/waf-history", requireScope("events:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const events = tenantId ? await queryByTenant(tables.wafEvents, tenantId) : await scanTable(tables.wafEvents);
+    res.json({ events: events.sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0)).slice(0, Math.min(Math.max(Number(req.query.limit || 100), 1), 500)) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/client-security/reports", requireScope("events:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const events = tenantId ? await queryByTenant(tables.clientSecurityEvents, tenantId) : await scanTable(tables.clientSecurityEvents);
+    res.json({ reports: sortByDate(events).slice(0, Math.min(Math.max(Number(req.query.limit || 100), 1), 500)) });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/reports", requireScope("reports:read"), async (req, res, next) => {
@@ -2140,10 +2562,12 @@ async function provisionTenantEdge(deployment, domain, origins, certificate) {
   await ensureWafLogging(webAcl.ARN, logGroupName);
   const originHeaderName = deployment.origin_header_name || "X-FortressNet-Origin-Verify";
   const originHeaderValue = deployment.origin_header_value || crypto.randomBytes(24).toString("base64url");
+  const clientSecurityToken = deployment.client_security_token || crypto.randomBytes(24).toString("base64url");
+  const responseHeadersPolicyId = deployment.response_headers_policy_id || await ensureClientSecurityResponsePolicy(deployment, domain, clientSecurityToken);
   const distribution = deployment.distribution_id
     ? await cloudfront.send(new GetDistributionCommand({ Id: deployment.distribution_id }))
     : await cloudfront.send(new CreateDistributionCommand({
-      DistributionConfig: cloudFrontDistributionConfig(deployment, domain, origins, certificate, webAcl.ARN, originHeaderName, originHeaderValue)
+      DistributionConfig: cloudFrontDistributionConfig({ ...deployment, response_headers_policy_id: responseHeadersPolicyId }, domain, origins, certificate, webAcl.ARN, originHeaderName, originHeaderValue)
     }));
   const current = distribution.Distribution;
   const updated = {
@@ -2157,6 +2581,8 @@ async function provisionTenantEdge(deployment, domain, origins, certificate) {
     log_group_name: logGroupName,
     origin_header_name: originHeaderName,
     origin_header_value: originHeaderValue,
+    client_security_token: clientSecurityToken,
+    response_headers_policy_id: responseHeadersPolicyId,
     provisioned_at: now,
     updated_at: now
   };
@@ -2295,7 +2721,7 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
       Compress: true,
       CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
       OriginRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
-      ResponseHeadersPolicyId: "67f7725c-6f97-4210-82d7-5512b31e9d03",
+      ResponseHeadersPolicyId: deployment.response_headers_policy_id || "67f7725c-6f97-4210-82d7-5512b31e9d03",
       TrustedSigners: { Enabled: false, Quantity: 0 },
       TrustedKeyGroups: { Enabled: false, Quantity: 0 }
     },
@@ -2312,6 +2738,58 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
       Prefix: `tenant/${deployment.tenant_id}/domain/${domain.domain_id}/`
     }
   };
+}
+
+async function ensureClientSecurityResponsePolicy(deployment, domain, token) {
+  const reportUri = `https://${process.env.PUBLIC_APP_FQDN || "app.fortressnet.app"}/api/client-security/reports/${token}`;
+  const response = await cloudfront.send(new CreateResponseHeadersPolicyCommand({
+    ResponseHeadersPolicyConfig: {
+      Name: `fn-csp-${deployment.deployment_id}`.slice(0, 128),
+      Comment: `FortressNet report-only client security telemetry for ${domain.domain_name}`,
+      SecurityHeadersConfig: {
+        ContentSecurityPolicy: {
+          ContentSecurityPolicy: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; report-uri ${reportUri}`,
+          Override: false
+        }
+      }
+    }
+  })).catch((error) => {
+    if (error?.name === "ResponseHeadersPolicyAlreadyExists") throw httpError(409, "client_security_policy_conflict");
+    throw error;
+  });
+  const policyId = response.ResponseHeadersPolicy?.Id;
+  if (!policyId) throw httpError(502, "client_security_policy_create_failed");
+  return policyId;
+}
+
+async function updateCloudFrontOriginPool(deployment, pool, origins) {
+  const response = await cloudfront.send(new GetDistributionConfigCommand({ Id: deployment.distribution_id }));
+  const config = response.DistributionConfig;
+  if (!config || !response.ETag) throw httpError(502, "cloudfront_distribution_config_unavailable");
+  const originItems = origins.map((origin) => ({
+    Id: `origin-${origin.origin_id}`,
+    DomainName: origin.hostname,
+    CustomHeaders: { Quantity: 1, Items: [{ HeaderName: deployment.origin_header_name, HeaderValue: deployment.origin_header_value }] },
+    CustomOriginConfig: {
+      HTTPPort: 80,
+      HTTPSPort: Number(origin.port || 443),
+      OriginProtocolPolicy: "https-only",
+      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+    }
+  }));
+  const failoverEnabled = pool.failover_enabled === true && originItems.length === 2;
+  const originGroupId = `origin-group-${deployment.domain_id}`;
+  config.Origins = { Quantity: originItems.length, Items: originItems };
+  config.OriginGroups = failoverEnabled ? {
+    Quantity: 1,
+    Items: [{
+      Id: originGroupId,
+      FailoverCriteria: { StatusCodes: { Quantity: 4, Items: [500, 502, 503, 504] } },
+      Members: { Quantity: 2, Items: originItems.map((origin) => ({ OriginId: origin.Id })) }
+    }]
+  } : { Quantity: 0 };
+  config.DefaultCacheBehavior.TargetOriginId = failoverEnabled ? originGroupId : originItems[0].Id;
+  await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
 }
 
 async function assertOriginConfigurationEditable(tenantId, domainId) {
@@ -2468,6 +2946,35 @@ async function runOriginHealthSweep() {
   if (!await acquireOperationLock("origin-health-sweep", 4 * 60)) return;
   const origins = await scanTable(tables.origins);
   for (const origin of origins) await recordOriginHealthCheck(origin, { type: "system", subject: "origin_health_scheduler" }, "scheduled");
+  await archiveRecentWafEvents();
+}
+
+async function archiveRecentWafEvents() {
+  if (!tables.wafEvents || !process.env.AUDIT_LOG_BUCKET) return;
+  const deployments = (await scanTable(tables.edgeDeployments)).filter((deployment) => deployment.log_group_name);
+  const since = Date.now() - (20 * 60 * 1000);
+  for (const deployment of deployments) {
+    const response = await cloudwatchLogs.send(new FilterLogEventsCommand({ logGroupName: deployment.log_group_name, startTime: since, limit: 500 })).catch((error) => {
+      if (["ResourceNotFoundException", "AccessDeniedException"].includes(error?.name)) return { events: [] };
+      throw error;
+    });
+    const archived = [];
+    for (const event of response.events || []) {
+      const normalized = normalizeWafLogEvent(event, deployment);
+      if (!normalized) continue;
+      const item = { ...normalized, raw_log: event.message, archived_at: new Date().toISOString(), created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60) };
+      try {
+        await putUnique(tables.wafEvents, item, "event_id");
+        archived.push(item);
+      } catch (error) {
+        if (error?.name !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+    if (!archived.length) continue;
+    const now = new Date();
+    const key = ["waf-events", `year=${now.getUTCFullYear()}`, `month=${String(now.getUTCMonth() + 1).padStart(2, "0")}`, `day=${String(now.getUTCDate()).padStart(2, "0")}`, `tenant=${deployment.tenant_id}`, `${Date.now()}-${crypto.randomUUID()}.ndjson`].join("/");
+    await s3.send(new PutObjectCommand({ Bucket: process.env.AUDIT_LOG_BUCKET, Key: key, ContentType: "application/x-ndjson", Body: archived.map((item) => JSON.stringify(item)).join("\n") }));
+  }
 }
 
 async function acquireOperationLock(lockId, leaseSeconds) {
@@ -2543,6 +3050,81 @@ function normalizeDnsRecordValues(value, type) {
   const values = normalizeList(value).map((item) => clean(item)).filter((item) => item && item.length <= 1024 && !/[\r\n]/.test(item));
   if (type === "TXT") return values.map((item) => item.startsWith('"') && item.endsWith('"') ? item : `"${item.replaceAll('"', '\\"')}"`);
   return values;
+}
+
+function publicRoute53Record(record) {
+  return {
+    name: clean(record.Name),
+    type: clean(record.Type),
+    ttl: Number(record.TTL || 0),
+    values: (record.ResourceRecords || []).map((item) => clean(item.Value)).filter(Boolean),
+    alias_target: record.AliasTarget ? { dns_name: clean(record.AliasTarget.DNSName), hosted_zone_id: clean(record.AliasTarget.HostedZoneId), evaluate_target_health: record.AliasTarget.EvaluateTargetHealth === true } : null
+  };
+}
+
+function normalizeImportDnsRecord(record, zoneName) {
+  const type = clean(record?.type).toUpperCase();
+  const name = normalizeDnsRecordName(record?.name, zoneName);
+  const values = normalizeDnsRecordValues(record?.values, type);
+  const ttl = Math.min(Math.max(Number(record?.ttl || 300), 60), 86400);
+  if (!name || !["A", "AAAA", "CAA", "CNAME", "MX", "SRV", "TXT"].includes(type) || !values.length) return null;
+  return { Name: name, Type: type, TTL: ttl, ResourceRecords: values.map((Value) => ({ Value })) };
+}
+
+function isVerifiedDomainStatus(status) {
+  return ["verified_pending_certificate", "certificate_validation", "certificate_issued_pending_edge", "edge_provisioning", "pending_traffic_dns", "active"].includes(clean(status));
+}
+
+function normalizeVerifiedAccessRequest(body, application, connection) {
+  const networkInterfaceId = clean(body?.network_interface_id);
+  const certificateArn = clean(body?.certificate_arn);
+  const securityGroupIds = Array.from(new Set(normalizeList(body?.security_group_ids))).filter((item) => /^sg-[a-z0-9]+$/i.test(item)).slice(0, 5);
+  const protocol = application.protocol === "https" ? "https" : clean(body?.protocol).toLowerCase();
+  const port = Number(body?.port || (protocol === "https" ? 443 : 22));
+  const authorizationEndpoint = clean(body?.authorization_endpoint);
+  const tokenEndpoint = clean(body?.token_endpoint);
+  const userInfoEndpoint = clean(body?.user_info_endpoint);
+  const scope = clean(body?.scope) || "openid profile email";
+  if (!/^eni-[a-z0-9]+$/i.test(networkInterfaceId) || !/^arn:aws:acm:us-east-1:\d{12}:certificate\//.test(certificateArn) || !securityGroupIds.length || !["https", "ssh", "rdp", "tcp"].includes(protocol) || !Number.isInteger(port) || port < 1 || port > 65535 || !isHttpsUrl(connection.issuer_url) || !isHttpsUrl(authorizationEndpoint) || !isHttpsUrl(tokenEndpoint) || !isHttpsUrl(userInfoEndpoint)) {
+    throw httpError(400, "verified_access_request_invalid");
+  }
+  if (application.protocol === "https" && protocol !== "https") throw httpError(400, "verified_access_protocol_mismatch");
+  return { network_interface_id: networkInterfaceId, security_group_ids: securityGroupIds, certificate_arn: certificateArn, protocol, port, authorization_endpoint: authorizationEndpoint, token_endpoint: tokenEndpoint, user_info_endpoint: userInfoEndpoint, scope };
+}
+
+function normalizeClientSecurityReport(body, deployment) {
+  const source = Array.isArray(body) ? body[0] : body;
+  const report = source?.["csp-report"] || source?.body || source;
+  const documentUri = clean(report?.["document-uri"] || report?.documentURL);
+  let hostname = "";
+  try { hostname = new URL(documentUri).hostname; } catch { return null; }
+  if (hostname !== deployment.domain_name) return null;
+  const now = new Date().toISOString();
+  const signature = hashSecret(JSON.stringify({ documentUri, blocked: clean(report?.["blocked-uri"] || report?.blockedURL), directive: clean(report?.["violated-directive"] || report?.effectiveDirective), original: clean(report?.["original-policy"] || report?.originalPolicy) }));
+  return {
+    event_id: `cse_${deployment.deployment_id}_${signature.slice(0, 24)}`,
+    tenant_id: deployment.tenant_id,
+    domain_id: deployment.domain_id,
+    deployment_id: deployment.deployment_id,
+    document_uri: documentUri.slice(0, 2048),
+    blocked_uri: clean(report?.["blocked-uri"] || report?.blockedURL).slice(0, 2048),
+    effective_directive: clean(report?.["effective-directive"] || report?.effectiveDirective).slice(0, 256),
+    violated_directive: clean(report?.["violated-directive"] || report?.violatedDirective).slice(0, 512),
+    source_file: clean(report?.["source-file"] || report?.sourceFile).slice(0, 2048),
+    line_number: Number(report?.["line-number"] || report?.lineNumber || 0),
+    received_at: now,
+    created_at: now,
+    expires_at: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60)
+  };
+}
+
+async function buildMarketplaceUsage(tenantId, dimension) {
+  if (dimension === "protected_domains") {
+    return { quantity: Math.max(1, (await queryByTenant(tables.domains, tenantId)).filter((domain) => domain.status === "active").length) };
+  }
+  const deployments = await queryByTenant(tables.edgeDeployments, tenantId);
+  const events = await collectSecurityEvents(deployments, 500);
+  return { quantity: Math.max(1, events.length) };
 }
 
 function isHttpsUrl(value) {
@@ -2992,6 +3574,37 @@ function normalizeWafMode(value) {
   return { managed_defaults: "monitor", count: "monitor", monitor: "monitor", block: "block" }[mode] || "";
 }
 
+function buildApiInventory(tenantId, events) {
+  const now = new Date().toISOString();
+  const endpoints = new Map();
+  for (const event of events.filter((item) => item.method && item.uri)) {
+    const path = normalizeApiPath(event.uri);
+    const key = `${event.domain_id}:${event.method}:${path}`;
+    const current = endpoints.get(key) || { endpoint_id: `api_${hashSecret(`${tenantId}:${key}`).slice(0, 24)}`, tenant_id: tenantId, domain_id: event.domain_id, method: event.method, path_template: path, classification: "unknown", auth_posture: "unknown", observed_requests: 0, blocked_requests: 0, first_seen_at: now, created_at: now };
+    current.observed_requests += 1;
+    if (event.action === "BLOCK") current.blocked_requests += 1;
+    current.last_seen_at = new Date(event.timestamp || Date.now()).toISOString();
+    current.updated_at = now;
+    endpoints.set(key, current);
+  }
+  return [...endpoints.values()];
+}
+
+function normalizeApiPath(value) {
+  const path = clean(value).split("?")[0] || "/";
+  return path.split("/").map((segment) => (/^\d+$/.test(segment) || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segment) ? "{id}" : segment)).join("/");
+}
+
+function validateOpenApiDocument(document) {
+  if (!document || typeof document !== "object" || Array.isArray(document) || !String(document.openapi || "").startsWith("3.")) throw httpError(400, "openapi_3_document_required");
+  if (!document.info || typeof document.info !== "object" || !clean(document.info.title)) throw httpError(400, "openapi_info_required");
+  if (!document.paths || typeof document.paths !== "object" || Array.isArray(document.paths)) throw httpError(400, "openapi_paths_required");
+  if (Buffer.byteLength(JSON.stringify(document), "utf8") > 180000) throw httpError(400, "openapi_document_too_large");
+  const endpoints = Object.entries(document.paths).flatMap(([path, operations]) => Object.keys(operations || {}).filter((method) => ["get", "post", "put", "patch", "delete", "head", "options"].includes(method)).map((method) => ({ method: method.toUpperCase(), path_template: path })));
+  if (!endpoints.length || endpoints.length > 500) throw httpError(400, "openapi_endpoints_invalid");
+  return { endpoints };
+}
+
 function normalizeWafRateLimitConfig(body) {
   const limit = Number(body.rate_limit ?? 2000);
   if (!Number.isSafeInteger(limit) || limit < 100 || limit > 2_000_000) throw httpError(400, "rate_limit_invalid");
@@ -3240,4 +3853,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules };
+export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules, validateOpenApiDocument };
