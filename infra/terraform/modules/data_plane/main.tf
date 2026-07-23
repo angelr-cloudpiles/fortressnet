@@ -264,6 +264,7 @@ resource "aws_secretsmanager_secret_version" "platform_config" {
   secret_string = jsonencode({
     ai_analyst_mode            = "read_only"
     billing_mode               = "saas"
+    marketplace_product_code   = ""
     management_bootstrap_token = random_password.management_bootstrap_token.result
     shield_advanced            = false
   })

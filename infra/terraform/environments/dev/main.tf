@@ -177,6 +177,7 @@ module "control_plane" {
   dnssec_kms_key_arn                = module.data_plane.dnssec_kms_key_arn
   verified_access_instance_id       = aws_verifiedaccess_instance.sase.id
   dmarc_receiver_domain             = "reports.${var.domain_name}"
+  dmarc_intake_bucket_name          = module.data_plane.dmarc_intake_bucket_name
   edge_logs_bucket_domain_name      = module.data_plane.edge_logs_bucket_domain_name
   cognito_user_pool_id              = module.identity.user_pool_id
   cognito_app_client_id             = module.identity.app_client_id

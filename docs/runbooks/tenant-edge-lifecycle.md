@@ -51,6 +51,25 @@ The current verifier is intentionally limited to direct CNAME records. Apex reco
 3. Run DNS posture to review CAA, DNSSEC, DMARC, SPF and possible origin IP exposure.
 4. Do not create or modify a hosted zone for a domain that has not passed FortressNet ownership verification.
 
+## DMARC Management
+
+1. Con un dominio verificado, abra DMARC y cree primero una politica `p=none` con alineacion relajada y `pct=100`.
+2. Si el DNS es externo, publique exactamente el TXT que presenta FortressNet en `_dmarc.<dominio>`. Si la zona Route 53 esta delegada, FortressNet lo publica y mantiene el estado de DNS.
+3. La politica asigna una direccion RUA unica por dominio en `reports.fortressnet.app`. SES recibe el correo, lo cifra en el bucket de intake y el control plane procesa solo XML DMARC valido contenido en adjuntos `.xml`, `.gz` o `.zip`.
+4. Revise durante al menos una semana organizaciones, volumen y disposiciones de los reportes agregados antes de cambiar a `quarantine` o `reject`.
+5. El correo original se retiene para trazabilidad; los reportes normalizados se conservan 365 dias. Un adjunto malformado no se interpreta ni se descarta del intake.
+
+El MVP procesa informes agregados RUA. Los informes forenses RUF no se habilitan por defecto, porque pueden incluir datos personales o de mensajes y requieren una evaluacion contractual y de privacidad por tenant.
+
+## API Shield
+
+1. Con un edge activo y trafico real, abra API Shield y ejecute Discover. El inventario se forma solo con eventos WAF observados durante las ultimas 24 horas.
+2. Importe un documento OpenAPI 3.x JSON. El import queda como borrador `report_only`; no cambia el trafico.
+3. Inicie la observacion de 24 horas y compare endpoints observados contra la especificacion.
+4. Tras la ventana, un operador puede solicitar una revision de enforcement. Esta solicitud se audita, pero no introduce bloqueo automatico.
+
+FortressNet no debe afirmar enforcement OpenAPI completo hasta que el compilador pueda validar en edge paths, metodos, query strings, headers y cuerpos. La validacion parcial o no comprobada se mantiene en observacion para evitar bloquear APIs de clientes.
+
 ## WAF Changes
 
 1. Start the first tenant policy in `monitor` mode. Set the IP threshold and, when required, limit it to a path prefix, HTTP methods and selected countries before compiling the change set.

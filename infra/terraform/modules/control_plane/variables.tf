@@ -198,6 +198,7 @@ variable "marketplace_usage_table_name" { type = string }
 variable "dnssec_kms_key_arn" { type = string }
 variable "verified_access_instance_id" { type = string }
 variable "dmarc_receiver_domain" { type = string }
+variable "dmarc_intake_bucket_name" { type = string }
 
 variable "edge_logs_bucket_domain_name" {
   description = "S3 bucket domain name for tenant CloudFront access logs."

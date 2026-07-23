@@ -1331,6 +1331,7 @@ code {
 
 .form-grid input,
 .form-grid select,
+.form-grid textarea,
 .token-input input,
 .compact-select {
   width: 100%;
@@ -1341,6 +1342,15 @@ code {
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--ink);
+}
+
+.form-grid textarea {
+  min-height: 140px;
+  height: auto;
+  padding: 10px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.45;
 }
 
 .compact-select {

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import dns from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
@@ -6,6 +7,8 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { simpleParser } from "mailparser";
+import unzipper from "unzipper";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
 import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
@@ -15,7 +18,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanComma
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, CreateKeySigningKeyCommand, EnableHostedZoneDNSSECCommand, GetDNSSECCommand, ListResourceRecordSetsCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { CreateVerifiedAccessEndpointCommand, CreateVerifiedAccessTrustProviderCommand, DescribeVerifiedAccessEndpointsCommand, EC2Client } from "@aws-sdk/client-ec2";
 import { BatchMeterUsageCommand, MarketplaceMeteringClient } from "@aws-sdk/client-marketplace-metering";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateIPSetCommand, CreateWebACLCommand, DeleteIPSetCommand, GetIPSetCommand, GetWebACLCommand, ListWebACLsCommand, PutLoggingConfigurationCommand, UpdateWebACLCommand, WAFV2Client } from "@aws-sdk/client-wafv2";
 import { CognitoJwtVerifier } from "aws-jwt-verify";
 
@@ -74,7 +77,7 @@ const tables = {
 
 const roleScopes = {
   platform_owner: ["*"],
-  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "billing:read", "profile:write", "ai:read"],
+  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "events:read", "reports:read", "billing:read", "profile:write", "ai:read"],
   security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "events:read", "reports:read", "profile:write", "ai:read"],
   security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write", "ai:read"],
   billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
@@ -367,12 +370,15 @@ app.get("/api/billing/summary", requireScope("billing:read"), async (req, res, n
 });
 
 app.get("/api/marketplace/status", requirePlatformActor, requireScope("billing:read"), async (_req, res) => {
+  const productCodeConfigured = Boolean(marketplaceProductCode());
   res.json({
     integration: "aws_marketplace_saas",
-    enabled: Boolean(process.env.MARKETPLACE_PRODUCT_CODE),
-    product_code_configured: Boolean(process.env.MARKETPLACE_PRODUCT_CODE),
-    required_before_live_metering: process.env.MARKETPLACE_PRODUCT_CODE ? [] : ["AWS Marketplace SaaS product code"],
-    metering_dimensions: ["protected_domains", "protected_requests"]
+    enabled: productCodeConfigured,
+    product_code_configured: productCodeConfigured,
+    metering_ready: productCodeConfigured,
+    required_before_live_metering: productCodeConfigured ? [] : ["AWS Marketplace SaaS product code in the platform configuration secret"],
+    metering_dimensions: ["protected_domains", "protected_requests"],
+    fulfillment_status: productCodeConfigured ? "product_code_configured" : "awaiting_product_code"
   });
 });
 
@@ -382,10 +388,11 @@ app.post("/api/marketplace/usage/submit", requirePlatformActor, requireScope("bi
     const dimension = clean(req.body?.dimension);
     if (!tenantId || !["protected_domains", "protected_requests"].includes(dimension)) return res.status(400).json({ error: "tenant_id_and_supported_dimension_required" });
     const entitlement = await getTenantEntitlement(tenantId);
-    if (!entitlement?.marketplace_customer_identifier || !process.env.MARKETPLACE_PRODUCT_CODE) return res.status(409).json({ error: "marketplace_customer_and_product_code_required" });
+    const productCode = marketplaceProductCode();
+    if (!entitlement?.marketplace_customer_identifier || !productCode) return res.status(409).json({ error: "marketplace_customer_and_product_code_required" });
     const summary = await buildMarketplaceUsage(tenantId, dimension);
     const response = await marketplaceMetering.send(new BatchMeterUsageCommand({
-      ProductCode: process.env.MARKETPLACE_PRODUCT_CODE,
+      ProductCode: productCode,
       UsageRecords: [{ CustomerIdentifier: entitlement.marketplace_customer_identifier, Dimension: dimension, Quantity: summary.quantity, Timestamp: new Date() }]
     }));
     const now = new Date().toISOString();
@@ -1214,6 +1221,36 @@ app.post("/api/api-shield/schemas", requireScope("policy:write"), async (req, re
     await putUnique(tables.apiSchemas, schema, "schema_id");
     await audit("api_shield.openapi_imported", tenantId, { schema_id: schema.schema_id, endpoint_count: schema.endpoint_count, mode: schema.mode }, req.actor);
     res.status(201).json({ schema });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/api-shield/schemas/:schemaId/observe", requireScope("policy:write"), async (req, res, next) => {
+  try {
+    const schema = await getById(tables.apiSchemas, { schema_id: clean(req.params.schemaId) });
+    if (!schema) return res.status(404).json({ error: "api_schema_not_found" });
+    tenantForActor(req.actor, schema.tenant_id);
+    if (!["draft", "report_only"].includes(schema.status)) return res.status(409).json({ error: "api_schema_not_observable" });
+    const now = new Date().toISOString();
+    const updated = { ...schema, status: "observing", mode: "report_only", observation_started_at: schema.observation_started_at || now, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.apiSchemas, Item: updated }));
+    await audit("api_shield.schema_observation_started", schema.tenant_id, { schema_id: schema.schema_id, endpoint_count: schema.endpoint_count, mode: updated.mode }, req.actor);
+    res.json({ schema: publicApiSchema(updated) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/api-shield/schemas/:schemaId/enforcement-request", requireScope("policy:write"), async (req, res, next) => {
+  try {
+    const schema = await getById(tables.apiSchemas, { schema_id: clean(req.params.schemaId) });
+    if (!schema) return res.status(404).json({ error: "api_schema_not_found" });
+    tenantForActor(req.actor, schema.tenant_id);
+    if (schema.status !== "observing" || !schema.observation_started_at) return res.status(409).json({ error: "api_schema_observation_required" });
+    const observedAt = Date.parse(schema.observation_started_at);
+    if (!Number.isFinite(observedAt) || Date.now() - observedAt < 24 * 60 * 60 * 1000) return res.status(409).json({ error: "api_schema_24h_observation_required" });
+    const now = new Date().toISOString();
+    const updated = { ...schema, status: "enforcement_review", enforcement_requested_at: now, enforcement_requested_by: req.actor.subject, updated_at: now };
+    await dynamo.send(new PutCommand({ TableName: tables.apiSchemas, Item: updated }));
+    await audit("api_shield.enforcement_requested", schema.tenant_id, { schema_id: schema.schema_id, endpoint_count: schema.endpoint_count }, req.actor);
+    res.json({ schema: publicApiSchema(updated) });
   } catch (error) { next(error); }
 });
 
@@ -2940,6 +2977,8 @@ function startOriginHealthScheduler() {
   const run = () => runOriginHealthSweep().catch((error) => console.warn("origin_health_sweep_failed", error?.message || error));
   setTimeout(run, 30_000).unref();
   setInterval(run, intervalMs).unref();
+  setTimeout(() => runDmarcReportSweep().catch((error) => console.warn("dmarc_report_sweep_failed", error?.message || error)), 60_000).unref();
+  setInterval(() => runDmarcReportSweep().catch((error) => console.warn("dmarc_report_sweep_failed", error?.message || error)), 10 * 60 * 1000).unref();
 }
 
 async function runOriginHealthSweep() {
@@ -2975,6 +3014,65 @@ async function archiveRecentWafEvents() {
     const key = ["waf-events", `year=${now.getUTCFullYear()}`, `month=${String(now.getUTCMonth() + 1).padStart(2, "0")}`, `day=${String(now.getUTCDate()).padStart(2, "0")}`, `tenant=${deployment.tenant_id}`, `${Date.now()}-${crypto.randomUUID()}.ndjson`].join("/");
     await s3.send(new PutObjectCommand({ Bucket: process.env.AUDIT_LOG_BUCKET, Key: key, ContentType: "application/x-ndjson", Body: archived.map((item) => JSON.stringify(item)).join("\n") }));
   }
+}
+
+async function runDmarcReportSweep() {
+  if (!process.env.DMARC_INTAKE_BUCKET || !tables.dmarcReports || !await acquireOperationLock("dmarc-report-sweep", 9 * 60)) return;
+  const listing = await s3.send(new ListObjectsV2Command({ Bucket: process.env.DMARC_INTAKE_BUCKET, Prefix: "raw/", MaxKeys: 100 }));
+  for (const object of listing.Contents || []) {
+    if (!object.Key) continue;
+    const reportId = `dmarc_${hashSecret(object.Key).slice(0, 28)}`;
+    if (await getById(tables.dmarcReports, { report_id: reportId })) continue;
+    const email = await s3.send(new GetObjectCommand({ Bucket: process.env.DMARC_INTAKE_BUCKET, Key: object.Key }));
+    const parsed = await simpleParser(await s3BodyToBuffer(email.Body));
+    const recipient = String(parsed.to?.value?.[0]?.address || "").toLowerCase();
+    const token = recipient.match(/^dmarc\+([a-z0-9_-]+)@/i)?.[1];
+    const configuration = token ? (await queryByIndex(tables.dmarcConfigurations, "report_token-index", "report_token", token))[0] : null;
+    if (!configuration) continue;
+    const xml = await extractDmarcXml(parsed.attachments || []);
+    if (!xml) continue;
+    const summary = parseDmarcAggregate(xml);
+    const now = new Date().toISOString();
+    await putUnique(tables.dmarcReports, { report_id: reportId, tenant_id: configuration.tenant_id, configuration_id: configuration.configuration_id, domain_id: configuration.domain_id, source_key: object.Key, report_type: "aggregate", ...summary, received_at: now, created_at: now, expires_at: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60 }, "report_id");
+  }
+}
+
+async function s3BodyToBuffer(body) {
+  if (!body) throw httpError(502, "s3_object_body_unavailable");
+  if (typeof body.transformToByteArray === "function") return Buffer.from(await body.transformToByteArray());
+  if (typeof body.transformToWebStream === "function") return Buffer.from(await new Response(body.transformToWebStream()).arrayBuffer());
+  if (typeof body[Symbol.asyncIterator] === "function") {
+    const chunks = [];
+    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+  throw httpError(502, "s3_object_body_unreadable");
+}
+
+async function extractDmarcXml(attachments) {
+  for (const attachment of attachments) {
+    let buffer = attachment.content;
+    const type = String(attachment.contentType || "").toLowerCase();
+    const name = String(attachment.filename || "").toLowerCase();
+    try {
+      if (type.includes("gzip") || name.endsWith(".gz")) buffer = zlib.gunzipSync(buffer);
+      if (type.includes("zip") || name.endsWith(".zip")) {
+        const archive = await unzipper.Open.buffer(buffer);
+        const entry = archive.files.find((file) => file.type === "File" && /\.xml$/i.test(file.path));
+        buffer = entry ? await entry.buffer() : null;
+      }
+      const text = buffer?.toString("utf8") || "";
+      if (text.includes("<feedback")) return text;
+    } catch { /* Skip malformed attachments and preserve the raw email in S3. */ }
+  }
+  return "";
+}
+
+function parseDmarcAggregate(xml) {
+  const field = (name) => clean(xml.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "i"))?.[1]);
+  const count = [...xml.matchAll(/<count>(\d+)<\/count>/gi)].reduce((total, match) => total + Number(match[1]), 0);
+  const disposition = [...xml.matchAll(/<disposition>([^<]+)<\/disposition>/gi)].map((match) => clean(match[1])).filter(Boolean);
+  return { organization: field("org_name"), report_id_external: field("report_id"), policy_domain: field("domain"), begin_at: field("begin"), end_at: field("end"), record_count: count, dispositions: Array.from(new Set(disposition)).slice(0, 10) };
 }
 
 async function acquireOperationLock(lockId, leaseSeconds) {
@@ -3603,6 +3701,15 @@ function validateOpenApiDocument(document) {
   const endpoints = Object.entries(document.paths).flatMap(([path, operations]) => Object.keys(operations || {}).filter((method) => ["get", "post", "put", "patch", "delete", "head", "options"].includes(method)).map((method) => ({ method: method.toUpperCase(), path_template: path })));
   if (!endpoints.length || endpoints.length > 500) throw httpError(400, "openapi_endpoints_invalid");
   return { endpoints };
+}
+
+function publicApiSchema(schema) {
+  const { document, ...publicSchema } = schema;
+  return publicSchema;
+}
+
+function marketplaceProductCode() {
+  return clean(platformConfig.marketplace_product_code);
 }
 
 function normalizeWafRateLimitConfig(body) {

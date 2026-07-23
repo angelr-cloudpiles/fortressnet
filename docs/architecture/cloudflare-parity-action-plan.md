@@ -164,6 +164,8 @@ Estado implementado: cada edge crea un log group WAF cifrado con KMS y retencion
 
 Actualizacion de operacion: existe una alarma CloudWatch sobre bloqueos WAF de la plataforma, enlazada al topic SNS existente. El analista read-only usa eventos WAF reales para generar hallazgos persistidos y recomendaciones revisables; no escribe reglas ni cambia enforcement.
 
+Actualizacion DMARC: el dominio receptor `reports.fortressnet.app` usa SES para almacenar los informes en un bucket S3 dedicado, cifrado con la clave KMS de plataforma. Un worker dentro del control plane toma el correo original, resuelve el token RUA por tenant, extrae de forma defensiva XML desde adjuntos normales, gzip o zip, y persiste solo resumentes agregados durante 365 dias. No se habilita RUF por defecto.
+
 ## Fase 2: API Shield MVP
 
 Objetivo: proteger APIs con modelo positivo, inventario y validacion.
@@ -204,6 +206,8 @@ Criterios de aceptacion:
 - Un schema importado queda asociado a dominio/API.
 - Violaciones se registran en `report-only`.
 - Enforcement se activa con version de schema aprobada.
+
+Estado implementado: API Shield descubre endpoints desde eventos WAF reales, importa OpenAPI 3.x con limite de tamano y endpoints, y conserva cada schema en `report_only`. La consola exige iniciar una observacion de 24 horas antes de permitir solicitar revision de enforcement y audita ambos pasos. El bloqueo positivo de OpenAPI aun no se activa: AWS WAF no valida por si solo cuerpos, headers y parametros OpenAPI completos, y FortressNet no habilitara una politica que no pueda verificar de extremo a extremo.
 
 ### Epica 7. JWT, mTLS y API Auth Posture
 

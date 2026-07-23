@@ -419,7 +419,9 @@ resource "aws_iam_role_policy" "task" {
         ]
         Resource = [
           "arn:aws:s3:::${var.log_bucket_name}",
-          "arn:aws:s3:::${var.log_bucket_name}/*"
+          "arn:aws:s3:::${var.log_bucket_name}/*",
+          "arn:aws:s3:::${var.dmarc_intake_bucket_name}",
+          "arn:aws:s3:::${var.dmarc_intake_bucket_name}/*"
         ]
       },
       {
@@ -616,6 +618,10 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "DMARC_RECEIVER_DOMAIN"
           value = var.dmarc_receiver_domain
+        },
+        {
+          name  = "DMARC_INTAKE_BUCKET"
+          value = var.dmarc_intake_bucket_name
         },
         {
           name  = "EDGE_LOGS_BUCKET_DOMAIN_NAME"

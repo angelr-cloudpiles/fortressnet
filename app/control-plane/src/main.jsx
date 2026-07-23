@@ -36,8 +36,10 @@ const navItems = [
   { id: "onboarding", label: "Onboarding", icon: CheckCircle2 },
   { id: "domains", label: "Domains", icon: Globe2 },
   { id: "dns", label: "DNS & TLS", icon: Globe2 },
+  { id: "dmarc", label: "DMARC", icon: FileText },
   { id: "origins", label: "Origins", icon: Layers3 },
   { id: "policies", label: "Policies", icon: Shield },
+  { id: "api-shield", label: "API Shield", icon: Shield },
   { id: "access", label: "Access", icon: Users },
   { id: "idp", label: "External IdP", icon: Link2 },
   { id: "ztna", label: "Zero Trust", icon: LockKeyhole },
@@ -280,6 +282,7 @@ function App() {
             />
           )}
           {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
+          {active === "dmarc" && <DmarcScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} setStatus={setStatus} />}
           {active === "origins" && (
             <OriginsScreen
               token={token}
@@ -300,6 +303,7 @@ function App() {
               setStatus={setStatus}
             />
           )}
+          {active === "api-shield" && <ApiShieldScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} setStatus={setStatus} />}
           {active === "access" && (
             <AccessScreen
               token={token}
@@ -665,6 +669,141 @@ function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
   );
 }
 
+function DmarcScreen({ token, state, selectedTenantId, setSelectedTenantId, setStatus }) {
+  const [configurations, setConfigurations] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [domainId, setDomainId] = useState("");
+  const [policy, setPolicy] = useState("none");
+  const [alignment, setAlignment] = useState("r");
+  const [percentage, setPercentage] = useState("100");
+  const domains = filterByTenant(state.domains, selectedTenantId).filter((domain) => ["verified", "certificate_pending", "edge_ready", "active"].includes(domain.status));
+  const load = async () => {
+    if (!token) return;
+    const query = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
+    try {
+      const [configurationData, reportData] = await Promise.all([
+        apiRequest(`/api/dmarc/configurations${query}`, token),
+        apiRequest(`/api/dmarc/reports${query}`, token)
+      ]);
+      setConfigurations(configurationData.configurations || []);
+      setReports(reportData.reports || []);
+      setStatus({ type: "success", message: "DMARC configuration and aggregate reports refreshed." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  useEffect(() => { load(); }, [selectedTenantId, token]);
+  useEffect(() => {
+    if (!domains.some((domain) => domain.domain_id === domainId)) setDomainId(domains[0]?.domain_id || "");
+  }, [domains, domainId]);
+  const createConfiguration = async (event) => {
+    event.preventDefault();
+    try {
+      await apiRequest(`/api/domains/${domainId}/dmarc`, token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy, alignment, percentage: Number(percentage) }) });
+      setStatus({ type: "success", message: "DMARC record generated. Publish the displayed TXT record when DNS is external." });
+      await load();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  return (
+    <div className="screen">
+      <div className="two-column">
+        <Panel title="DMARC Policy" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+          {domains.length ? <form className="form-grid" onSubmit={createConfiguration}>
+            <label htmlFor="dmarc-domain">Verified domain<select id="dmarc-domain" value={domainId} onChange={(event) => setDomainId(event.target.value)}>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></label>
+            <label htmlFor="dmarc-policy">Policy<select id="dmarc-policy" value={policy} onChange={(event) => setPolicy(event.target.value)}><option value="none">Monitor (p=none)</option><option value="quarantine">Quarantine</option><option value="reject">Reject</option></select></label>
+            <label htmlFor="dmarc-alignment">Alignment<select id="dmarc-alignment" value={alignment} onChange={(event) => setAlignment(event.target.value)}><option value="r">Relaxed</option><option value="s">Strict</option></select></label>
+            <label htmlFor="dmarc-percentage">Policy percentage<input id="dmarc-percentage" type="number" min="1" max="100" value={percentage} onChange={(event) => setPercentage(event.target.value)} /></label>
+            <button className="primary" disabled={!token || !domainId}><Shield size={16} /> Generate DMARC policy</button>
+          </form> : <EmptyState icon={FileText} title="No verified domain" body="Verify a tenant domain before generating a DMARC policy." />}
+        </Panel>
+        <Panel title="Aggregate Report Intake">
+          <div className="settings-list"><div><FileText size={18} /><span>Receiver</span><strong>reports.fortressnet.app</strong></div><div><Shield size={18} /><span>Processing</span><strong>Encrypted S3 intake</strong></div><div><Activity size={18} /><span>Retention</span><strong>365 days</strong></div></div>
+        </Panel>
+      </div>
+      <Panel title="Published Configurations" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+        {configurations.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Policy</th><th>Record</th><th>Delivery</th><th>Status</th></tr></thead><tbody>{configurations.map((configuration) => <tr key={configuration.configuration_id}><td>{configuration.domain_name}</td><td>{configuration.policy} / {configuration.alignment}</td><td><code>{configuration.record_name}</code></td><td><code>{configuration.rua}</code></td><td><span className="health pending">{configuration.status}</span></td></tr>)}</tbody></table> : <EmptyTable columns={["Domain", "Policy", "Record", "Delivery", "Status"]} message="No DMARC policy has been created for this tenant." />}
+      </Panel>
+      <Panel title="Aggregate Reports">
+        {reports.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Organization</th><th>Messages</th><th>Disposition</th><th>Received</th></tr></thead><tbody>{reports.map((report) => <tr key={report.report_id}><td>{report.policy_domain || "-"}</td><td>{report.organization || "-"}</td><td>{report.record_count ?? 0}</td><td>{(report.dispositions || []).join(", ") || "-"}</td><td>{report.received_at ? new Date(report.received_at).toLocaleString() : "-"}</td></tr>)}</tbody></table> : <EmptyTable columns={["Domain", "Organization", "Messages", "Disposition", "Received"]} message="Aggregate reports will appear only after a provider sends a valid DMARC report." />}
+      </Panel>
+    </div>
+  );
+}
+
+function ApiShieldScreen({ token, state, selectedTenantId, setSelectedTenantId, setStatus }) {
+  const [inventory, setInventory] = useState([]);
+  const [schemas, setSchemas] = useState([]);
+  const [name, setName] = useState("");
+  const [documentText, setDocumentText] = useState("");
+  const load = async () => {
+    if (!token) return;
+    const query = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
+    try {
+      const [inventoryData, schemaData] = await Promise.all([apiRequest(`/api/api-shield/inventory${query}`, token), apiRequest(`/api/api-shield/schemas${query}`, token)]);
+      setInventory(inventoryData.inventory || []);
+      setSchemas(schemaData.schemas || []);
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  useEffect(() => { load(); }, [selectedTenantId, token]);
+  const refreshInventory = async () => {
+    try {
+      const data = await apiRequest("/api/api-shield/inventory/refresh", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId }) });
+      setInventory(data.inventory || []);
+      setStatus({ type: "success", message: `Inventory refreshed from ${data.observed_events} observed WAF events.` });
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  const importSchema = async (event) => {
+    event.preventDefault();
+    try {
+      const document = JSON.parse(documentText);
+      await apiRequest("/api/api-shield/schemas", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId, name, document }) });
+      setName("");
+      setDocumentText("");
+      setStatus({ type: "success", message: "OpenAPI schema imported in report-only draft mode." });
+      await load();
+    } catch (error) { setStatus({ type: "error", message: error instanceof SyntaxError ? "openapi_json_invalid" : error.message }); }
+  };
+  const observeSchema = async (schemaId) => {
+    try {
+      await apiRequest(`/api/api-shield/schemas/${schemaId}/observe`, token, { method: "POST" });
+      setStatus({ type: "success", message: "Schema observation started. Enforcement cannot be requested for 24 hours." });
+      await load();
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  const requestEnforcement = async (schemaId) => {
+    try {
+      await apiRequest(`/api/api-shield/schemas/${schemaId}/enforcement-request`, token, { method: "POST" });
+      setStatus({ type: "success", message: "Enforcement review requested. No traffic behavior changed." });
+      await load();
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  const hasTenant = Boolean(selectedTenantId);
+  return (
+    <div className="screen">
+      <div className="two-column">
+        <Panel title="API Inventory" action={<span className="button-pair"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="secondary compact" disabled={!token || !hasTenant} onClick={refreshInventory}><RefreshCw size={15} /> Discover</button></span>}>
+          {inventory.length ? <table className="data-table"><thead><tr><th>Method</th><th>Path</th><th>Requests</th><th>Blocked</th><th>Classification</th></tr></thead><tbody>{inventory.map((endpoint) => <tr key={endpoint.endpoint_id}><td>{endpoint.method}</td><td><code>{endpoint.path_template}</code></td><td>{endpoint.observed_requests}</td><td>{endpoint.blocked_requests}</td><td>{endpoint.classification}</td></tr>)}</tbody></table> : <EmptyState icon={Activity} title="No observed API surface" body="Discovery reads real WAF events from a tenant edge; it does not invent endpoints." />}
+        </Panel>
+        <Panel title="OpenAPI Import">
+          <form className="form-grid" onSubmit={importSchema}>
+            <label htmlFor="api-schema-name">Schema name<input id="api-schema-name" value={name} onChange={(event) => setName(event.target.value)} maxLength="100" /></label>
+            <label htmlFor="api-schema-document">OpenAPI 3.x JSON<textarea id="api-schema-document" rows="8" value={documentText} onChange={(event) => setDocumentText(event.target.value)} spellCheck="false" /></label>
+            <button className="primary" disabled={!token || !hasTenant || !name || !documentText}><Plus size={16} /> Import report-only schema</button>
+          </form>
+        </Panel>
+      </div>
+      <Panel title="Schema Lifecycle" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
+        {schemas.length ? <table className="data-table"><thead><tr><th>Name</th><th>Version</th><th>Endpoints</th><th>Mode</th><th>Status</th><th>Action</th></tr></thead><tbody>{schemas.map((schema) => <tr key={schema.schema_id}><td>{schema.name}</td><td>{schema.version}</td><td>{schema.endpoint_count}</td><td>{schema.mode}</td><td><span className="health pending">{schema.status}</span></td><td>{schema.status === "draft" || schema.status === "report_only" ? <button className="secondary compact" onClick={() => observeSchema(schema.schema_id)}>Start 24h observation</button> : schema.status === "observing" ? <button className="secondary compact" onClick={() => requestEnforcement(schema.schema_id)}>Request enforcement</button> : <span className="mode-readonly">{schema.status === "enforcement_review" ? "Review pending" : "No action"}</span>}</td></tr>)}</tbody></table> : <EmptyTable columns={["Name", "Version", "Endpoints", "Mode", "Status", "Action"]} message="No OpenAPI schema has been imported for this tenant." />}
+      </Panel>
+      <Panel title="Enforcement Guardrail">
+        <EmptyState icon={Shield} title="No automatic blocking from schema drafts" body="FortressNet records the requested enforcement review, but does not claim full OpenAPI enforcement until the positive model can validate paths, methods, parameters, headers and bodies at the tenant edge." />
+      </Panel>
+    </div>
+  );
+}
+
 function OriginsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
@@ -937,6 +1076,7 @@ function ReportsScreen({ token, selectedTenantId, setStatus }) {
 
 function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, onChanged, setStatus }) {
   const [summary, setSummary] = useState(null);
+  const [marketplace, setMarketplace] = useState(null);
   const [plan, setPlan] = useState("");
   const load = async () => {
     if (!selectedTenantId || !token) return;
@@ -949,6 +1089,10 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
     }
   };
   useEffect(() => { load(); }, [selectedTenantId, token]);
+  useEffect(() => {
+    if (!token) return;
+    apiRequest("/api/marketplace/status", token).then(setMarketplace).catch(() => setMarketplace(null));
+  }, [token]);
   const updatePlan = async () => {
     try {
       await apiRequest(`/api/tenants/${selectedTenantId}/entitlement`, token, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }) });
@@ -972,7 +1116,7 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
     <div className="screen billing-grid">
       <Panel title="Current Plan" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
         <div className="plan-box">
-          {summary ? <><span>{summary.entitlement.plan_label} · {summary.entitlement.billing_status}</span><strong>{summary.entitlement.source}</strong><p>Limits are enforced by the control plane. Marketplace fulfillment is not connected yet.</p></> : <><span>No tenant selected</span><p>Select a tenant to view its real entitlement and observed usage.</p></>}
+          {summary ? <><span>{summary.entitlement.plan_label} · {summary.entitlement.billing_status}</span><strong>{summary.entitlement.source}</strong><p>Limits are enforced by the control plane. Marketplace metering is enabled only after product fulfillment identifies the customer.</p></> : <><span>No tenant selected</span><p>Select a tenant to view its real entitlement and observed usage.</p></>}
         </div>
       </Panel>
       <Panel title="Usage This Month">
@@ -983,8 +1127,9 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
       <Panel title="Marketplace">
         <div className="marketplace-box">
           <CircleDollarSign size={30} />
-          <h3>{summary?.entitlement.source === "aws_marketplace" ? "Marketplace entitlement" : "Direct pilot entitlement"}</h3>
+          <h3>{marketplace?.enabled ? "Marketplace metering ready" : "Marketplace activation pending"}</h3>
           <p>Observed WAF events: {summary?.usage.observed_waf_requests ?? "not available"}. Blocked events: {summary?.usage.blocked_waf_requests ?? "not available"}.</p>
+          <p>{marketplace?.enabled ? "The product code is held in the encrypted platform configuration. Usage submission remains restricted to platform billing operators." : "Create and publish the AWS Marketplace SaaS listing, then store its product code in the encrypted platform configuration."}</p>
           {summary && <div className="button-pair"><select className="compact-select" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select><button className="secondary compact" onClick={updatePlan}>Update limits</button></div>}
         </div>
       </Panel>
