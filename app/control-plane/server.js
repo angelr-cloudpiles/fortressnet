@@ -12,7 +12,7 @@ import unzipper from "unzipper";
 import { ACMClient, DescribeCertificateCommand, RequestCertificateCommand } from "@aws-sdk/client-acm";
 import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolicyCommand, GetDistributionCommand, GetDistributionConfigCommand, ListResponseHeadersPoliciesCommand, UpdateDistributionCommand } from "@aws-sdk/client-cloudfront";
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
-import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AdminRemoveUserFromGroupCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, CreateKeySigningKeyCommand, EnableHostedZoneDNSSECCommand, GetDNSSECCommand, ListResourceRecordSetsCommand, Route53Client } from "@aws-sdk/client-route-53";
@@ -79,14 +79,48 @@ const tables = {
   marketplaceUsage: process.env.MARKETPLACE_USAGE_TABLE
 };
 
-const roleScopes = {
-  platform_owner: ["*"],
-  tenant_admin: ["tenant:read", "tenant:write", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "identity:read", "identity:write", "events:read", "reports:read", "billing:read", "profile:write", "ai:read"],
-  security_admin: ["tenant:read", "domain:read", "domain:write", "policy:read", "policy:write", "edge:read", "edge:write", "edge:approve", "events:read", "reports:read", "profile:write", "ai:read"],
-  security_analyst: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "profile:write", "ai:read"],
-  billing_admin: ["tenant:read", "billing:read", "billing:write", "profile:write"],
-  read_only: ["tenant:read", "domain:read", "policy:read", "edge:read", "events:read", "reports:read", "billing:read", "identity:read", "profile:write"]
-};
+// Cognito groups establish an identity's broad trust boundary. Effective
+// permissions are assigned separately per tenant, so one person can hold a
+// different profile in each customer workspace without cross-tenant leakage.
+const permissionModules = Object.freeze([
+  { id: "tenant", label: "Tenant management" },
+  { id: "domain", label: "Domains" },
+  { id: "dns", label: "DNS & TLS" },
+  { id: "dmarc", label: "DMARC" },
+  { id: "origin", label: "Origins" },
+  { id: "waf", label: "WAF policies" },
+  { id: "api_shield", label: "API Shield" },
+  { id: "access", label: "Users & access" },
+  { id: "idp", label: "External IdP" },
+  { id: "ztna", label: "Zero Trust" },
+  { id: "api_keys", label: "API keys" },
+  { id: "events", label: "Security events" },
+  { id: "ai", label: "AI Analyst" },
+  { id: "reports", label: "Reports" },
+  { id: "billing", label: "Billing" }
+]);
+
+const modulePermissions = (module, actions = ["read", "write"]) => actions.map((action) => `${module}:${action}`);
+const allTenantPermissions = permissionModules.flatMap((module) => modulePermissions(module.id));
+const readOnlyPermissions = permissionModules.flatMap((module) => modulePermissions(module.id, ["read"]));
+
+const accessProfiles = Object.freeze({
+  platform_owner: { label: "Platform owner", scope: "platform", identity_role: "platform_owner", permissions: ["*"] },
+  platform_security_operator: { label: "Platform security operator", scope: "platform", identity_role: "platform_owner", permissions: ["tenant:read", "domain:read", "dns:read", "dmarc:read", "origin:read", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write"] },
+  platform_billing_admin: { label: "Platform billing administrator", scope: "platform", identity_role: "platform_owner", permissions: ["tenant:read", "billing:read", "billing:write", "reports:read"] },
+  platform_read_only: { label: "Platform viewer", scope: "platform", identity_role: "platform_owner", permissions: readOnlyPermissions },
+  tenant_admin: { label: "Tenant administrator", scope: "tenant", identity_role: "tenant_admin", permissions: [...allTenantPermissions] },
+  security_admin: { label: "Security administrator", scope: "tenant", identity_role: "security_admin", permissions: ["tenant:read", "domain:read", "domain:write", "dns:read", "dns:write", "dmarc:read", "dmarc:write", "origin:read", "origin:write", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write"] },
+  security_analyst: { label: "Security analyst", scope: "tenant", identity_role: "security_analyst", permissions: ["tenant:read", "domain:read", "dns:read", "dmarc:read", "origin:read", "waf:read", "api_shield:read", "events:read", "ai:read", "reports:read"] },
+  domain_dns_admin: { label: "Domain and DNS administrator", scope: "tenant", identity_role: "tenant_admin", permissions: ["tenant:read", "domain:read", "domain:write", "dns:read", "dns:write", "dmarc:read", "dmarc:write", "origin:read", "origin:write", "reports:read"] },
+  identity_admin: { label: "Identity administrator", scope: "tenant", identity_role: "tenant_admin", permissions: ["tenant:read", "access:read", "access:write", "idp:read", "idp:write", "ztna:read", "ztna:write", "api_keys:read", "api_keys:write", "reports:read"] },
+  billing_admin: { label: "Billing administrator", scope: "tenant", identity_role: "billing_admin", permissions: ["tenant:read", "billing:read", "billing:write", "reports:read"] },
+  read_only: { label: "Read-only", scope: "tenant", identity_role: "read_only", permissions: readOnlyPermissions }
+});
+
+// Kept as the compatibility source for legacy records and Cognito group
+// mappings. New records persist an access assignment instead of flat scopes.
+const roleScopes = Object.fromEntries(Object.entries(accessProfiles).map(([id, profile]) => [id, Array.from(new Set([...profile.permissions, "profile:write"]))]));
 
 const planCatalog = Object.freeze({
   pilot: {
@@ -161,6 +195,8 @@ app.get("/api/platform", (req, res) => {
     auth_mode: req.actor?.type || "authenticated",
     roles: Object.keys(roleScopes),
     scopes: allowedScopes,
+    permission_modules: permissionModules,
+    access_profiles: publicAccessProfiles(req.actor),
     is_platform_actor: isPlatformActor(req.actor),
     actor: publicActor(req.actor)
   });
@@ -192,26 +228,26 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
     ]);
 
     res.json({
-      tenants: sortByDate(scopeItems(req.actor, tenants)).map(publicTenant),
+      tenants: sortByDate(scopedItemsForPermission(req.actor, tenants, "tenant:read")).map(publicTenant),
       customers: sortByDate(scopeCustomers(req.actor, customers, tenants)).map(publicCustomer),
-      domains: sortByDate(scopeItems(req.actor, domains)),
-      policies: sortByDate(scopeItems(req.actor, policies)),
-      entitlements: sortByDate(scopeItems(req.actor, entitlements)),
-      users: sortByDate(scopeItems(req.actor, users)),
-      api_keys: sortByDate(scopeItems(req.actor, apiKeys)).map(publicApiKey),
-      idp_connections: sortByDate(scopeItems(req.actor, idpConnections)),
+      domains: sortByDate(scopedItemsForPermission(req.actor, domains, "domain:read")),
+      policies: sortByDate(scopedItemsForPermission(req.actor, policies, "waf:read")),
+      entitlements: sortByDate(scopedItemsForPermission(req.actor, entitlements, "billing:read")),
+      users: sortByDate(scopedItemsForPermission(req.actor, users, "access:read")),
+      api_keys: sortByDate(scopedItemsForPermission(req.actor, apiKeys, "api_keys:read")).map(publicApiKey),
+      idp_connections: sortByDate(scopedItemsForPermission(req.actor, idpConnections, "idp:read")),
       profiles: sortByDate(scopeProfiles(req.actor, profiles)),
-      origins: sortByDate(scopeItems(req.actor, origins)),
-      origin_pools: sortByDate(scopeItems(req.actor, originPools)),
-      certificates: sortByDate(scopeItems(req.actor, certificates)),
-      waf_change_sets: sortByDate(scopeItems(req.actor, wafChangeSets)),
-      edge_deployments: sortByDate(scopeItems(req.actor, edgeDeployments)),
-      approvals: sortByDate(scopeItems(req.actor, approvals)),
-      dns_zones: sortByDate(scopeItems(req.actor, dnsZones)),
-      dns_records: sortByDate(scopeItems(req.actor, dnsRecords)),
-      ai_findings: sortByDate(scopeItems(req.actor, aiFindings)),
-      ztna_applications: sortByDate(scopeItems(req.actor, ztnaApplications)),
-      dmarc_configurations: sortByDate(scopeItems(req.actor, dmarcConfigurations))
+      origins: sortByDate(scopedItemsForPermission(req.actor, origins, "origin:read")),
+      origin_pools: sortByDate(scopedItemsForPermission(req.actor, originPools, "origin:read")),
+      certificates: sortByDate(scopedItemsForPermission(req.actor, certificates, "dns:read")),
+      waf_change_sets: sortByDate(scopedItemsForPermission(req.actor, wafChangeSets, "waf:read")),
+      edge_deployments: sortByDate(scopedItemsForPermission(req.actor, edgeDeployments, "origin:read")),
+      approvals: sortByDate(scopedItemsForAnyPermission(req.actor, approvals, ["origin:read", "waf:read", "ztna:read"])),
+      dns_zones: sortByDate(scopedItemsForPermission(req.actor, dnsZones, "dns:read")),
+      dns_records: sortByDate(scopedItemsForPermission(req.actor, dnsRecords, "dns:read")),
+      ai_findings: sortByDate(scopedItemsForPermission(req.actor, aiFindings, "ai:read")),
+      ztna_applications: sortByDate(scopedItemsForPermission(req.actor, ztnaApplications, "ztna:read")),
+      dmarc_configurations: sortByDate(scopedItemsForPermission(req.actor, dmarcConfigurations, "dmarc:read"))
     });
   } catch (error) {
     next(error);
@@ -376,6 +412,13 @@ app.post("/api/customer-onboarding", requirePlatformActor, requireScope("tenant:
         status: "invited",
         roles: ["tenant_admin"],
         scopes: roleScopes.tenant_admin,
+        access_assignments: [{
+          tenant_id: tenant.tenant_id,
+          profile_id: "tenant_admin",
+          permissions: roleScopes.tenant_admin,
+          assigned_at: now,
+          assigned_by: req.actor?.subject || "platform"
+        }],
         idp_subject: "",
         mfa_required: true,
         created_at: now,
@@ -414,9 +457,9 @@ app.post("/api/customer-onboarding", requirePlatformActor, requireScope("tenant:
             Update: {
               TableName: tables.users,
               Key: { user_id: user.user_id },
-              UpdateExpression: "SET tenant_ids = list_append(if_not_exists(tenant_ids, :empty), :tenant_ids), updated_at = :updated_at",
+              UpdateExpression: "SET tenant_ids = list_append(if_not_exists(tenant_ids, :empty), :tenant_ids), access_assignments = list_append(if_not_exists(access_assignments, :empty), :assignments), updated_at = :updated_at",
               ConditionExpression: "customer_id = :customer_id AND (attribute_not_exists(tenant_ids) OR NOT contains(tenant_ids, :tenant_id))",
-              ExpressionAttributeValues: { ":empty": [], ":tenant_ids": [tenant.tenant_id], ":tenant_id": tenant.tenant_id, ":customer_id": customer.customer_id, ":updated_at": now }
+              ExpressionAttributeValues: { ":empty": [], ":tenant_ids": [tenant.tenant_id], ":assignments": [{ tenant_id: tenant.tenant_id, profile_id: "tenant_admin", permissions: roleScopes.tenant_admin, assigned_at: now, assigned_by: req.actor?.subject || "platform" }], ":tenant_id": tenant.tenant_id, ":customer_id": customer.customer_id, ":updated_at": now }
             }
           },
           {
@@ -667,7 +710,7 @@ app.patch("/api/domains/:domainId/verify-dns", requireScope("domain:write"), asy
   }
 });
 
-app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/origins", requireScope("origin:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const origins = tenantId ? await queryByTenant(tables.origins, tenantId) : await scanTable(tables.origins);
@@ -677,7 +720,7 @@ app.get("/api/origins", requireScope("edge:read"), async (req, res, next) => {
   }
 });
 
-app.get("/api/origin-health-events", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/origin-health-events", requireScope("origin:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
@@ -691,7 +734,7 @@ app.get("/api/origin-health-events", requireScope("edge:read"), async (req, res,
   }
 });
 
-app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/origins", requireScope("origin:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -731,7 +774,7 @@ app.post("/api/origins", requireScope("edge:write"), async (req, res, next) => {
   }
 });
 
-app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/origin-pools", requireScope("origin:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const pools = tenantId ? await queryByTenant(tables.originPools, tenantId) : await scanTable(tables.originPools);
@@ -741,7 +784,7 @@ app.get("/api/origin-pools", requireScope("edge:read"), async (req, res, next) =
   }
 });
 
-app.post("/api/origin-pools", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/origin-pools", requireScope("origin:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -772,7 +815,7 @@ app.post("/api/origin-pools", requireScope("edge:write"), async (req, res, next)
   }
 });
 
-app.put("/api/origin-pools/:poolId", requireScope("edge:write"), async (req, res, next) => {
+app.put("/api/origin-pools/:poolId", requireScope("origin:write"), async (req, res, next) => {
   try {
     const pool = await getById(tables.originPools, { pool_id: clean(req.params.poolId) });
     if (!pool) return res.status(404).json({ error: "origin_pool_not_found" });
@@ -794,7 +837,7 @@ app.put("/api/origin-pools/:poolId", requireScope("edge:write"), async (req, res
   }
 });
 
-app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/certificates", requireScope("dns:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const certificates = tenantId ? await queryByTenant(tables.certificates, tenantId) : await scanTable(tables.certificates);
@@ -804,7 +847,7 @@ app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) =
   }
 });
 
-app.get("/api/certificates/:certificateId/status", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/certificates/:certificateId/status", requireScope("dns:read"), async (req, res, next) => {
   try {
     const certificateId = clean(req.params.certificateId);
     if (!certificateId) return res.status(400).json({ error: "certificate_id_required" });
@@ -820,7 +863,7 @@ app.get("/api/certificates/:certificateId/status", requireScope("edge:read"), as
   }
 });
 
-app.patch("/api/certificates/:certificateId/refresh", requireScope("edge:write"), async (req, res, next) => {
+app.patch("/api/certificates/:certificateId/refresh", requireScope("dns:write"), async (req, res, next) => {
   try {
     const certificateId = clean(req.params.certificateId);
     if (!certificateId) return res.status(400).json({ error: "certificate_id_required" });
@@ -840,7 +883,7 @@ app.patch("/api/certificates/:certificateId/refresh", requireScope("edge:write")
   }
 });
 
-app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/domains/:domainId/edge-deployment-request", requireScope("origin:write"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
@@ -887,7 +930,7 @@ app.post("/api/domains/:domainId/edge-deployment-request", requireScope("edge:wr
   }
 });
 
-app.get("/api/edge-deployments", requireScope("edge:read"), async (req, res, next) => {
+app.get("/api/edge-deployments", requireScope("origin:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
@@ -897,7 +940,7 @@ app.get("/api/edge-deployments", requireScope("edge:read"), async (req, res, nex
   }
 });
 
-app.post("/api/edge-deployments/:deploymentId/approve", requireScope("edge:approve"), async (req, res, next) => {
+app.post("/api/edge-deployments/:deploymentId/approve", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -927,7 +970,7 @@ app.post("/api/edge-deployments/:deploymentId/approve", requireScope("edge:appro
   }
 });
 
-app.post("/api/edge-deployments/:deploymentId/provision", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/edge-deployments/:deploymentId/provision", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -950,7 +993,7 @@ app.post("/api/edge-deployments/:deploymentId/provision", requireScope("edge:wri
   }
 });
 
-app.patch("/api/edge-deployments/:deploymentId/refresh", requireScope("edge:read"), async (req, res, next) => {
+app.patch("/api/edge-deployments/:deploymentId/refresh", requireScope("origin:read"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -963,7 +1006,7 @@ app.patch("/api/edge-deployments/:deploymentId/refresh", requireScope("edge:read
   }
 });
 
-app.post("/api/edge-deployments/:deploymentId/origin-update-request", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/edge-deployments/:deploymentId/origin-update-request", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -990,7 +1033,7 @@ app.post("/api/edge-deployments/:deploymentId/origin-update-request", requireSco
   } catch (error) { next(error); }
 });
 
-app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireScope("edge:approve"), async (req, res, next) => {
+app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -1007,7 +1050,7 @@ app.post("/api/edge-deployments/:deploymentId/origin-update-approve", requireSco
   } catch (error) { next(error); }
 });
 
-app.post("/api/edge-deployments/:deploymentId/origin-update-apply", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/edge-deployments/:deploymentId/origin-update-apply", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deployment = await getById(tables.edgeDeployments, { deployment_id: clean(req.params.deploymentId) });
     if (!deployment) return res.status(404).json({ error: "edge_deployment_not_found" });
@@ -1030,7 +1073,7 @@ app.post("/api/edge-deployments/:deploymentId/origin-update-apply", requireScope
   } catch (error) { next(error); }
 });
 
-app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), async (req, res, next) => {
+app.patch("/api/domains/:domainId/verify-cutover", requireScope("origin:write"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
@@ -1065,7 +1108,7 @@ app.patch("/api/domains/:domainId/verify-cutover", requireScope("edge:write"), a
   }
 });
 
-app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), async (req, res, next) => {
+app.patch("/api/origins/:originId/health-check", requireScope("origin:write"), async (req, res, next) => {
   try {
     const origin = await getById(tables.origins, { origin_id: clean(req.params.originId) });
     if (!origin) return res.status(404).json({ error: "origin_not_found" });
@@ -1077,7 +1120,7 @@ app.patch("/api/origins/:originId/health-check", requireScope("edge:write"), asy
   }
 });
 
-app.get("/api/dns/zones", requireScope("domain:read"), async (req, res, next) => {
+app.get("/api/dns/zones", requireScope("dns:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const zones = tenantId ? await queryByTenant(tables.dnsZones, tenantId) : await scanTable(tables.dnsZones);
@@ -1087,7 +1130,7 @@ app.get("/api/dns/zones", requireScope("domain:read"), async (req, res, next) =>
   }
 });
 
-app.post("/api/domains/:domainId/dns-zone", requireScope("domain:write"), async (req, res, next) => {
+app.post("/api/domains/:domainId/dns-zone", requireScope("dns:write"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
@@ -1131,7 +1174,7 @@ app.post("/api/domains/:domainId/dns-zone", requireScope("domain:write"), async 
   }
 });
 
-app.post("/api/dns/zones/:zoneId/records", requireScope("domain:write"), async (req, res, next) => {
+app.post("/api/dns/zones/:zoneId/records", requireScope("dns:write"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
@@ -1174,7 +1217,7 @@ app.post("/api/dns/zones/:zoneId/records", requireScope("domain:write"), async (
   }
 });
 
-app.get("/api/dns/zones/:zoneId/records", requireScope("domain:read"), async (req, res, next) => {
+app.get("/api/dns/zones/:zoneId/records", requireScope("dns:read"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
@@ -1191,7 +1234,7 @@ app.get("/api/dns/zones/:zoneId/records", requireScope("domain:read"), async (re
   } catch (error) { next(error); }
 });
 
-app.get("/api/dns/zones/:zoneId/export", requireScope("domain:read"), async (req, res, next) => {
+app.get("/api/dns/zones/:zoneId/export", requireScope("dns:read"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
@@ -1202,7 +1245,7 @@ app.get("/api/dns/zones/:zoneId/export", requireScope("domain:read"), async (req
   } catch (error) { next(error); }
 });
 
-app.post("/api/dns/zones/:zoneId/import", requireScope("domain:write"), async (req, res, next) => {
+app.post("/api/dns/zones/:zoneId/import", requireScope("dns:write"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
@@ -1217,7 +1260,7 @@ app.post("/api/dns/zones/:zoneId/import", requireScope("domain:write"), async (r
   } catch (error) { next(error); }
 });
 
-app.delete("/api/dns/zones/:zoneId/records/:recordId", requireScope("domain:write"), async (req, res, next) => {
+app.delete("/api/dns/zones/:zoneId/records/:recordId", requireScope("dns:write"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     const record = await getById(tables.dnsRecords, { record_id: clean(req.params.recordId) });
@@ -1234,7 +1277,7 @@ app.delete("/api/dns/zones/:zoneId/records/:recordId", requireScope("domain:writ
   } catch (error) { next(error); }
 });
 
-app.post("/api/dns/zones/:zoneId/dnssec/enable", requireScope("domain:write"), async (req, res, next) => {
+app.post("/api/dns/zones/:zoneId/dnssec/enable", requireScope("dns:write"), async (req, res, next) => {
   try {
     const zone = await getById(tables.dnsZones, { zone_id: clean(req.params.zoneId) });
     if (!zone) return res.status(404).json({ error: "dns_zone_not_found" });
@@ -1254,7 +1297,7 @@ app.post("/api/dns/zones/:zoneId/dnssec/enable", requireScope("domain:write"), a
   } catch (error) { next(error); }
 });
 
-app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async (req, res, next) => {
+app.get("/api/domains/:domainId/dns-posture", requireScope("dns:read"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
@@ -1267,7 +1310,7 @@ app.get("/api/domains/:domainId/dns-posture", requireScope("domain:read"), async
   }
 });
 
-app.get("/api/dmarc/configurations", requireScope("domain:read"), async (req, res, next) => {
+app.get("/api/dmarc/configurations", requireScope("dmarc:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     res.json({ configurations: sortByDate(tenantId ? await queryByTenant(tables.dmarcConfigurations, tenantId) : await scanTable(tables.dmarcConfigurations)) });
@@ -1281,7 +1324,7 @@ app.get("/api/dmarc/reports", requireScope("reports:read"), async (req, res, nex
   } catch (error) { next(error); }
 });
 
-app.post("/api/domains/:domainId/dmarc", requireScope("domain:write"), async (req, res, next) => {
+app.post("/api/domains/:domainId/dmarc", requireScope("dmarc:write"), async (req, res, next) => {
   try {
     const domain = await getById(tables.domains, { domain_id: clean(req.params.domainId) });
     if (!domain) return res.status(404).json({ error: "domain_not_found" });
@@ -1322,7 +1365,7 @@ app.post("/api/domains/:domainId/dmarc", requireScope("domain:write"), async (re
   } catch (error) { next(error); }
 });
 
-app.get("/api/ztna/applications", requireScope("identity:read"), async (req, res, next) => {
+app.get("/api/ztna/applications", requireScope("ztna:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const applications = tenantId ? await queryByTenant(tables.ztnaApplications, tenantId) : await scanTable(tables.ztnaApplications);
@@ -1332,7 +1375,7 @@ app.get("/api/ztna/applications", requireScope("identity:read"), async (req, res
   }
 });
 
-app.post("/api/api-shield/inventory/refresh", requireScope("policy:read"), async (req, res, next) => {
+app.post("/api/api-shield/inventory/refresh", requireScope("api_shield:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
@@ -1344,21 +1387,21 @@ app.post("/api/api-shield/inventory/refresh", requireScope("policy:read"), async
   } catch (error) { next(error); }
 });
 
-app.get("/api/api-shield/inventory", requireScope("policy:read"), async (req, res, next) => {
+app.get("/api/api-shield/inventory", requireScope("api_shield:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     res.json({ inventory: sortByDate(tenantId ? await queryByTenant(tables.apiInventory, tenantId) : await scanTable(tables.apiInventory)) });
   } catch (error) { next(error); }
 });
 
-app.get("/api/api-shield/schemas", requireScope("policy:read"), async (req, res, next) => {
+app.get("/api/api-shield/schemas", requireScope("api_shield:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     res.json({ schemas: sortByDate(tenantId ? await queryByTenant(tables.apiSchemas, tenantId) : await scanTable(tables.apiSchemas)) });
   } catch (error) { next(error); }
 });
 
-app.post("/api/api-shield/schemas", requireScope("policy:write"), async (req, res, next) => {
+app.post("/api/api-shield/schemas", requireScope("api_shield:write"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
     const name = clean(req.body?.name);
@@ -1374,7 +1417,7 @@ app.post("/api/api-shield/schemas", requireScope("policy:write"), async (req, re
   } catch (error) { next(error); }
 });
 
-app.post("/api/api-shield/schemas/:schemaId/observe", requireScope("policy:write"), async (req, res, next) => {
+app.post("/api/api-shield/schemas/:schemaId/observe", requireScope("api_shield:write"), async (req, res, next) => {
   try {
     const schema = await getById(tables.apiSchemas, { schema_id: clean(req.params.schemaId) });
     if (!schema) return res.status(404).json({ error: "api_schema_not_found" });
@@ -1388,7 +1431,7 @@ app.post("/api/api-shield/schemas/:schemaId/observe", requireScope("policy:write
   } catch (error) { next(error); }
 });
 
-app.post("/api/api-shield/schemas/:schemaId/enforcement-request", requireScope("policy:write"), async (req, res, next) => {
+app.post("/api/api-shield/schemas/:schemaId/enforcement-request", requireScope("api_shield:write"), async (req, res, next) => {
   try {
     const schema = await getById(tables.apiSchemas, { schema_id: clean(req.params.schemaId) });
     if (!schema) return res.status(404).json({ error: "api_schema_not_found" });
@@ -1404,7 +1447,7 @@ app.post("/api/api-shield/schemas/:schemaId/enforcement-request", requireScope("
   } catch (error) { next(error); }
 });
 
-app.post("/api/ztna/applications", requireScope("identity:write"), async (req, res, next) => {
+app.post("/api/ztna/applications", requireScope("ztna:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -1441,7 +1484,7 @@ app.post("/api/ztna/applications", requireScope("identity:write"), async (req, r
   }
 });
 
-app.post("/api/ztna/applications/:applicationId/verified-access-request", requireScope("identity:write"), async (req, res, next) => {
+app.post("/api/ztna/applications/:applicationId/verified-access-request", requireScope("ztna:write"), async (req, res, next) => {
   try {
     const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
     if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
@@ -1461,7 +1504,7 @@ app.post("/api/ztna/applications/:applicationId/verified-access-request", requir
   } catch (error) { next(error); }
 });
 
-app.post("/api/ztna/applications/:applicationId/verified-access-approve", requireScope("edge:approve"), async (req, res, next) => {
+app.post("/api/ztna/applications/:applicationId/verified-access-approve", requireScope("ztna:write"), async (req, res, next) => {
   try {
     const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
     if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
@@ -1478,7 +1521,7 @@ app.post("/api/ztna/applications/:applicationId/verified-access-approve", requir
   } catch (error) { next(error); }
 });
 
-app.post("/api/ztna/applications/:applicationId/verified-access-provision", requireScope("identity:write"), async (req, res, next) => {
+app.post("/api/ztna/applications/:applicationId/verified-access-provision", requireScope("ztna:write"), async (req, res, next) => {
   try {
     const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
     if (!application) return res.status(404).json({ error: "ztna_application_not_found" });
@@ -1529,7 +1572,7 @@ app.post("/api/ztna/applications/:applicationId/verified-access-provision", requ
   } catch (error) { next(error); }
 });
 
-app.patch("/api/ztna/applications/:applicationId/verified-access-refresh", requireScope("identity:read"), async (req, res, next) => {
+app.patch("/api/ztna/applications/:applicationId/verified-access-refresh", requireScope("ztna:read"), async (req, res, next) => {
   try {
     const application = await getById(tables.ztnaApplications, { application_id: clean(req.params.applicationId) });
     if (!application?.verified_access_endpoint_id) return res.status(404).json({ error: "verified_access_endpoint_not_found" });
@@ -1578,7 +1621,7 @@ app.post("/api/ai/analyze", requireScope("ai:read"), async (req, res, next) => {
   }
 });
 
-app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope("edge:write"), async (req, res, next) => {
+app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope("origin:write"), async (req, res, next) => {
   try {
     const deploymentId = clean(req.params.deploymentId);
     const deployment = await getById(tables.edgeDeployments, { deployment_id: deploymentId });
@@ -1592,7 +1635,7 @@ app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope(
   }
 });
 
-app.post("/api/policies", requireScope("policy:write"), async (req, res, next) => {
+app.post("/api/policies", requireScope("waf:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -1632,7 +1675,7 @@ app.post("/api/policies", requireScope("policy:write"), async (req, res, next) =
   }
 });
 
-app.get("/api/policies", requireScope("policy:read"), async (req, res, next) => {
+app.get("/api/policies", requireScope("waf:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     if (!tenantId) return res.json({ policies: sortByDate(await scanTable(tables.policies)) });
@@ -1649,7 +1692,7 @@ app.get("/api/policies", requireScope("policy:read"), async (req, res, next) => 
   }
 });
 
-app.post("/api/policies/:policyId/compile", requireScope("policy:write"), async (req, res, next) => {
+app.post("/api/policies/:policyId/compile", requireScope("waf:write"), async (req, res, next) => {
   try {
     const policyId = clean(req.params.policyId);
     if (!policyId) return res.status(400).json({ error: "policy_id_required" });
@@ -1695,7 +1738,7 @@ app.post("/api/policies/:policyId/compile", requireScope("policy:write"), async 
   }
 });
 
-app.get("/api/waf-change-sets", requireScope("policy:read"), async (req, res, next) => {
+app.get("/api/waf-change-sets", requireScope("waf:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const changeSets = tenantId ? await queryByTenant(tables.wafChangeSets, tenantId) : await scanTable(tables.wafChangeSets);
@@ -1705,7 +1748,7 @@ app.get("/api/waf-change-sets", requireScope("policy:read"), async (req, res, ne
   }
 });
 
-app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("edge:approve"), async (req, res, next) => {
+app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("waf:write"), async (req, res, next) => {
   try {
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
@@ -1739,7 +1782,7 @@ app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("edge:approve
   }
 });
 
-app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("waf:write"), async (req, res, next) => {
   try {
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
@@ -1759,7 +1802,7 @@ app.post("/api/waf-change-sets/:changeSetId/apply", requireScope("edge:write"), 
   }
 });
 
-app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("waf:write"), async (req, res, next) => {
   try {
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
@@ -1803,7 +1846,7 @@ app.post("/api/waf-change-sets/:changeSetId/start-monitoring", requireScope("edg
   }
 });
 
-app.post("/api/waf-change-sets/:changeSetId/rollback", requireScope("edge:write"), async (req, res, next) => {
+app.post("/api/waf-change-sets/:changeSetId/rollback", requireScope("waf:write"), async (req, res, next) => {
   try {
     const changeSet = await getById(tables.wafChangeSets, { change_set_id: clean(req.params.changeSetId) });
     if (!changeSet) return res.status(404).json({ error: "waf_change_set_not_found" });
@@ -1875,7 +1918,7 @@ app.get("/api/reports", requireScope("reports:read"), async (req, res, next) => 
   }
 });
 
-app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
+app.get("/api/users", requireScope("access:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const users = tenantId ? (await scanTable(tables.users)).filter((user) => userBelongsToTenant(user, tenantId)) : await scanTable(tables.users);
@@ -1885,19 +1928,84 @@ app.get("/api/users", requireScope("identity:read"), async (req, res, next) => {
   }
 });
 
-app.post("/api/users", requireScope("identity:write"), async (req, res, next) => {
+app.get("/api/access/profiles", requireScope("access:read"), (req, res, next) => {
+  try {
+    const tenantId = clean(req.query.tenant_id);
+    if (tenantId) tenantForActor(req.actor, tenantId);
+    res.json({
+      profiles: publicAccessProfiles(req.actor),
+      modules: permissionModules,
+      permissions: allowedScopes.filter((scope) => scope !== "profile:write")
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/users/:userId/access", requireScope("access:write"), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
+    const user = await getById(tables.users, { user_id: clean(req.params.userId) });
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    if (!tenantId || !userBelongsToTenant(user, tenantId)) return res.status(403).json({ error: "cross_tenant_access_denied" });
+    if (normalizeEmail(user.email) === normalizeEmail(req.actor?.email)) return res.status(400).json({ error: "self_access_change_not_allowed" });
+
+    const profileId = clean(body.access_profile);
+    const profile = accessProfile(profileId);
+    if (!profile || profile.scope !== "tenant") return res.status(400).json({ error: "tenant_access_profile_required" });
+    const requestedPermissions = normalizePermissions(body.permissions);
+    const permissions = requestedPermissions.length ? requestedPermissions : profile.permissions;
+    if (permissions.includes("*") || !permissions.length) return res.status(400).json({ error: "valid_permissions_required" });
+    if (!isPlatformActor(req.actor) && permissions.some((scope) => !hasScope(req.actor, scope, tenantId))) {
+      return res.status(403).json({ error: "privilege_escalation_denied" });
+    }
+
+    const now = new Date().toISOString();
+    const existingAssignments = Array.isArray(user.access_assignments) ? user.access_assignments.filter((assignment) => clean(assignment?.tenant_id) !== tenantId) : [];
+    const accessAssignments = [...existingAssignments, {
+      tenant_id: tenantId,
+      profile_id: profileId,
+      permissions,
+      assigned_at: now,
+      assigned_by: req.actor?.subject || ""
+    }];
+    const roles = Array.from(new Set(accessAssignments.map((assignment) => clean(assignment.profile_id)).filter(Boolean)));
+    const updatedUser = {
+      ...user,
+      tenant_ids: Array.from(new Set([...(user.tenant_ids || []), user.tenant_id, ...accessAssignments.map((assignment) => assignment.tenant_id)].filter(Boolean))),
+      roles,
+      scopes: Array.from(new Set(accessAssignments.flatMap((assignment) => assignment.permissions))),
+      access_assignments: accessAssignments,
+      updated_at: now
+    };
+    await synchronizeCognitoGroups(updatedUser.email, roles);
+    await dynamo.send(new PutCommand({ TableName: tables.users, Item: updatedUser }));
+    await audit("user.access_updated", tenantId, redactUser(updatedUser), req.actor);
+    res.json({ user: updatedUser });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/users", requireScope("access:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id) || (isPlatformActor(req.actor) ? "platform" : ""));
     const email = normalizeEmail(body.email);
     const displayName = clean(body.display_name);
-    const roles = normalizeList(body.roles).filter((role) => roleScopes[role] && (isPlatformActor(req.actor) || role !== "platform_owner"));
-    const scopes = Array.from(new Set([...roles.flatMap((role) => roleScopes[role] || []), ...normalizeList(body.scopes)]));
+    const requestedProfile = clean(body.access_profile) || normalizeList(body.roles)[0];
+    const profile = accessProfile(requestedProfile);
+    const roles = profile ? [requestedProfile] : [];
+    const requestedPermissions = normalizePermissions(body.permissions || body.scopes);
+    const scopes = requestedPermissions.length ? requestedPermissions : (profile?.permissions || []);
 
     if (!email) return res.status(400).json({ error: "valid_email_required" });
     if (!displayName) return res.status(400).json({ error: "display_name_required" });
-    if (!roles.length) return res.status(400).json({ error: "role_required" });
-    if (!isPlatformActor(req.actor) && scopes.some((scope) => scope === "*" || !hasScope(req.actor, scope))) {
+    if (!profile) return res.status(400).json({ error: "access_profile_required" });
+    if (profile.scope === "platform" && !isPlatformActor(req.actor)) return res.status(403).json({ error: "platform_profile_required" });
+    if (profile.scope === "tenant" && tenantId === "platform") return res.status(400).json({ error: "tenant_access_profile_required" });
+    if (!isPlatformActor(req.actor) && scopes.some((scope) => scope === "*" || !hasScope(req.actor, scope, tenantId))) {
       return res.status(403).json({ error: "privilege_escalation_denied" });
     }
 
@@ -1916,6 +2024,13 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
       status: clean(body.status) || "invited",
       roles,
       scopes: scopes.includes("*") ? ["*"] : scopes.filter((scope) => allowedScopes.includes(scope)),
+      access_assignments: [{
+        tenant_id: tenantId,
+        profile_id: requestedProfile,
+        permissions: scopes.includes("*") ? ["*"] : scopes.filter((scope) => allowedScopes.includes(scope)),
+        assigned_at: now,
+        assigned_by: req.actor?.subject || ""
+      }],
       idp_subject: clean(body.idp_subject),
       mfa_required: body.mfa_required !== false,
       created_at: now,
@@ -1962,6 +2077,7 @@ app.post("/api/users", requireScope("identity:write"), async (req, res, next) =>
 });
 
 function cognitoGroupForRole(role) {
+  const identityRole = accessProfile(role)?.identity_role || role;
   return {
     platform_owner: "platform_owners",
     tenant_admin: "tenant_admins",
@@ -1969,10 +2085,27 @@ function cognitoGroupForRole(role) {
     security_analyst: "security_analysts",
     billing_admin: "billing_admins",
     read_only: "read_only"
-  }[role] || "";
+  }[identityRole] || "";
 }
 
-app.get("/api/api-keys", requireScope("identity:read"), async (req, res, next) => {
+async function synchronizeCognitoGroups(email, roles) {
+  const expectedGroups = Array.from(new Set(roles.map(cognitoGroupForRole).filter(Boolean)));
+  const knownGroups = ["platform_owners", "tenant_admins", "security_admins", "security_analysts", "billing_admins", "read_only"];
+  await Promise.all(knownGroups.map((groupName) => cognito.send(new AdminRemoveUserFromGroupCommand({
+    UserPoolId: process.env.COGNITO_USER_POOL_ID,
+    Username: email,
+    GroupName: groupName
+  })).catch((error) => {
+    if (!["ResourceNotFoundException", "UserNotFoundException"].includes(error?.name)) throw error;
+  })));
+  await Promise.all(expectedGroups.map((groupName) => cognito.send(new AdminAddUserToGroupCommand({
+    UserPoolId: process.env.COGNITO_USER_POOL_ID,
+    Username: email,
+    GroupName: groupName
+  }))));
+}
+
+app.get("/api/api-keys", requireScope("api_keys:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const apiKeys = tenantId ? await queryByTenant(tables.apiKeys, tenantId) : await scanTable(tables.apiKeys);
@@ -1982,7 +2115,7 @@ app.get("/api/api-keys", requireScope("identity:read"), async (req, res, next) =
   }
 });
 
-app.post("/api/api-keys", requireScope("identity:write"), async (req, res, next) => {
+app.post("/api/api-keys", requireScope("api_keys:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -2025,7 +2158,7 @@ app.post("/api/api-keys", requireScope("identity:write"), async (req, res, next)
   }
 });
 
-app.patch("/api/api-keys/:keyId/revoke", requireScope("identity:write"), async (req, res, next) => {
+app.patch("/api/api-keys/:keyId/revoke", requireScope("api_keys:write"), async (req, res, next) => {
   try {
     const keyId = clean(req.params.keyId);
     if (!keyId) return res.status(400).json({ error: "key_id_required" });
@@ -2052,7 +2185,7 @@ app.patch("/api/api-keys/:keyId/revoke", requireScope("identity:write"), async (
   }
 });
 
-app.get("/api/idp-connections", requireScope("identity:read"), async (req, res, next) => {
+app.get("/api/idp-connections", requireScope("idp:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
     const connections = tenantId ? await queryByTenant(tables.idpConnections, tenantId) : await scanTable(tables.idpConnections);
@@ -2062,7 +2195,7 @@ app.get("/api/idp-connections", requireScope("identity:read"), async (req, res, 
   }
 });
 
-app.post("/api/idp-connections", requireScope("identity:write"), async (req, res, next) => {
+app.post("/api/idp-connections", requireScope("idp:write"), async (req, res, next) => {
   try {
     const body = req.body || {};
     const tenantId = tenantForActor(req.actor, clean(body.tenant_id));
@@ -2358,7 +2491,7 @@ async function authenticateCognitoToken(token) {
   if (!user || !["invited", "active"].includes(user.status)) return null;
 
   const externalProvider = externalIdentityProviderName(claims);
-  let permittedRoles = (user.roles || []).filter((role) => groupRoles.includes(role));
+  let permittedRoles = (user.roles || []).filter((role) => groupRoles.includes(accessProfile(role)?.identity_role || role));
   if (user.idp_connection_id) {
     const connection = await getById(tables.idpConnections, { idp_id: user.idp_connection_id });
     if (!connection || connection.status !== "active" || connection.provider_name !== externalProvider) return null;
@@ -2372,15 +2505,18 @@ async function authenticateCognitoToken(token) {
   const mfaRequired = user.mfa_required === true;
   const profile = mfaRequired ? await getById(tables.profiles, { profile_id: `profile_${clean(claims.sub)}` }) : null;
 
+  const tenantAccess = buildTenantAccess(user, permittedRoles);
   return {
     type: "cognito",
     subject: clean(claims.sub),
     username,
     display_name: user.display_name || clean(claims.name) || email,
     tenant_id: user.tenant_id,
-    tenant_ids: Array.from(new Set([...(user.tenant_ids || []), user.tenant_id].filter(Boolean))),
+    tenant_ids: tenantAccess.tenantIds,
     roles: permittedRoles,
-    scopes: Array.from(new Set(permittedRoles.flatMap((role) => roleScopes[role] || []))),
+    scopes: tenantAccess.scopes,
+    tenant_permissions: tenantAccess.permissions,
+    tenant_approval_ids: tenantAccess.approvalTenantIds,
     email,
     mfa_required: mfaRequired,
     mfa_enrolled: Boolean(profile?.mfa_enrolled_at)
@@ -2409,6 +2545,58 @@ function rolesFromCognitoGroups(groups) {
     read_only: "read_only"
   };
   return groups.map((group) => mappings[group]).filter(Boolean);
+}
+
+function accessProfile(profileId) {
+  return accessProfiles[clean(profileId)] || null;
+}
+
+function normalizePermissions(value) {
+  const permissions = normalizeList(value).filter((scope) => scope === "*" || allowedScopes.includes(scope));
+  return Array.from(new Set(permissions));
+}
+
+function publicAccessProfiles(actor) {
+  return Object.entries(accessProfiles)
+    .filter(([, profile]) => isPlatformActor(actor) || profile.scope === "tenant")
+    .map(([profile_id, profile]) => ({
+      profile_id,
+      label: profile.label,
+      scope: profile.scope,
+      permissions: profile.permissions.filter((permission) => permission !== "*")
+    }));
+}
+
+function buildTenantAccess(user, permittedRoles) {
+  const legacyTenantIds = Array.from(new Set([...(user.tenant_ids || []), user.tenant_id].filter(Boolean)));
+  const assignments = Array.isArray(user.access_assignments) ? user.access_assignments : [];
+  const permissionMap = {};
+  const approvalTenantIds = new Set();
+
+  for (const assignment of assignments) {
+    const tenantId = clean(assignment?.tenant_id);
+    const profileId = clean(assignment?.profile_id);
+    if (!tenantId || !permittedRoles.includes(profileId)) continue;
+    const profile = accessProfile(profileId);
+    const permissions = normalizePermissions(assignment?.permissions);
+    permissionMap[tenantId] = Array.from(new Set([...(permissionMap[tenantId] || []), ...(permissions.length ? permissions : profile?.permissions || [])]));
+    if (["tenant_admin", "security_admin"].includes(profileId)) approvalTenantIds.add(tenantId);
+  }
+
+  // Existing users predate access assignments. Their historical role remains
+  // effective for each assigned tenant until an administrator edits it.
+  for (const tenantId of legacyTenantIds) {
+    if (permissionMap[tenantId]?.length) continue;
+    permissionMap[tenantId] = Array.from(new Set([
+      ...permittedRoles.flatMap((role) => roleScopes[role] || []),
+      ...normalizePermissions(user.scopes)
+    ]));
+    if (permittedRoles.some((role) => ["tenant_admin", "security_admin"].includes(role))) approvalTenantIds.add(tenantId);
+  }
+
+  const tenantIds = Array.from(new Set([...legacyTenantIds, ...Object.keys(permissionMap)]));
+  const scopes = Array.from(new Set(Object.values(permissionMap).flat()));
+  return { tenantIds, permissions: permissionMap, scopes, approvalTenantIds: Array.from(approvalTenantIds) };
 }
 
 async function provisionExternalIdpUser(claims, email, username, groups) {
@@ -2455,12 +2643,16 @@ function requireScope(scope) {
       return res.status(428).json({ error: "mfa_enrollment_required" });
     }
     if (!hasScope(req.actor, scope)) return res.status(403).json({ error: "insufficient_scope", required_scope: scope });
+    // tenantForActor finalizes this check against the selected tenant. Keeping
+    // it on the request actor makes every existing tenant-scoped route enforce
+    // the same permission without trusting a client-side tenant selector.
+    req.actor.required_scope = scope;
     next();
   };
 }
 
-function hasScope(actor, scope) {
-  const scopes = actor?.scopes || [];
+function hasScope(actor, scope, tenantId = "") {
+  const scopes = tenantId ? actor?.tenant_permissions?.[tenantId] || [] : actor?.scopes || [];
   return scopes.includes("*") || scopes.includes(scope);
 }
 
@@ -2474,9 +2666,12 @@ function isPlatformActor(actor) {
 }
 
 function isTenantApprovalActor(actor, tenantId) {
+  const approvedTenantIds = Array.isArray(actor?.tenant_approval_ids)
+    ? actor.tenant_approval_ids
+    : (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)) ? actorTenantIds(actor) : [];
   return Boolean(
     actorTenantIds(actor).includes(clean(tenantId)) &&
-    (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
+    approvedTenantIds.includes(clean(tenantId))
   );
 }
 
@@ -2494,13 +2689,27 @@ function tenantForActor(actor, requestedTenantId) {
   if (tenantId && !tenantIds.includes(tenantId)) {
     throw httpError(403, "cross_tenant_access_denied");
   }
-  return tenantId || actor.tenant_id || tenantIds[0];
+  const selectedTenantId = tenantId || actor.tenant_id || tenantIds[0];
+  if (actor?.required_scope && !hasScope(actor, actor.required_scope, selectedTenantId)) {
+    throw httpError(403, "tenant_permission_denied");
+  }
+  return selectedTenantId;
 }
 
 function scopeItems(actor, items) {
   if (isPlatformActor(actor)) return items;
   const tenantIds = new Set(actorTenantIds(actor));
   return items.filter((item) => [...tenantIds].some((tenantId) => userBelongsToTenant(item, tenantId)));
+}
+
+function scopedItemsForPermission(actor, items, permission) {
+  if (isPlatformActor(actor)) return items;
+  return scopeItems(actor, items).filter((item) => hasScope(actor, permission, clean(item?.tenant_id)));
+}
+
+function scopedItemsForAnyPermission(actor, items, permissions) {
+  if (isPlatformActor(actor)) return items;
+  return scopeItems(actor, items).filter((item) => permissions.some((permission) => hasScope(actor, permission, clean(item?.tenant_id))));
 }
 
 function actorTenantIds(actor) {
@@ -4322,6 +4531,7 @@ function publicActor(actor) {
     email: actor.email || "",
     tenant_id: actor.tenant_id,
     tenant_ids: actorTenantIds(actor),
+    tenant_approval_ids: actor.tenant_approval_ids || [],
     roles: actor.roles,
     scopes: actor.scopes,
     mfa_required: Boolean(actor.mfa_required),
@@ -4363,4 +4573,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, buildTenantAccess, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

@@ -305,6 +305,7 @@ resource "aws_iam_role_policy" "task" {
           "cognito-idp:AdminAddUserToGroup",
           "cognito-idp:AdminCreateUser",
           "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminRemoveUserFromGroup",
           "cognito-idp:CreateIdentityProvider",
           "cognito-idp:DescribeUserPoolClient",
           "cognito-idp:UpdateUserPoolClient"

@@ -93,6 +93,19 @@ For MVP and pilot customers, the included `tenant_edge` module can be used to pr
 
 The current traffic cutover verifier accepts a direct CNAME. Apex domains require an ALIAS/ANAME-capable DNS provider or a managed Route 53 zone; that workflow remains a product extension rather than an unsafe implicit fallback.
 
+## Authorization Model
+
+FortressNet separates platform administration from customer-tenant administration:
+
+- `platform_owner` is a global platform role. It can select **All tenants** and manage customer accounts, but it cannot satisfy a tenant's independent-change approval requirement.
+- Customer users are assigned to one or more tenants through `access_assignments`. Each assignment stores a predefined access profile and its effective module permissions.
+- Predefined profiles include tenant administrator, security administrator, security analyst, domain and DNS administrator, identity administrator, billing administrator, and read-only access.
+- The access editor exposes a read/write check for each operational module: tenant management, domains, DNS & TLS, DMARC, origins, WAF, API Shield, users, external IdP, ZTNA, API keys, events, AI Analyst, reports, and billing.
+- API requests are evaluated again against the selected tenant. A permission granted for one tenant cannot authorize the same action in another tenant.
+- Edge, WAF, and Verified Access approvals require a separate authorized tenant administrator or security administrator. A global platform owner and the requester cannot approve the tenant's own change.
+
+Legacy user records without `access_assignments` remain functional until the first access edit. New customer onboarding and invitations persist a tenant-scoped assignment immediately.
+
 ## Cost Posture
 
 This scaffold is production-shaped, not free-tier-minimal. Main cost drivers are:

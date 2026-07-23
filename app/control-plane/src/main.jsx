@@ -297,7 +297,7 @@ function App() {
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed((current) => !current)} />
+      <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} isPlatformActor={platform?.is_platform_actor} collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed((current) => !current)} />
       <main className="main">
         <Topbar authenticated actor={platform?.actor} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
         <section className="content">
@@ -316,6 +316,7 @@ function App() {
               setRange={setRange}
               token={token}
               state={state}
+              platform={platform}
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
               onNavigate={setActive}
@@ -343,6 +344,7 @@ function App() {
               setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
+              onNavigate={setActive}
             />
           )}
           {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
@@ -439,7 +441,7 @@ function LoginScreen({ authConfig, status, onSignIn }) {
   );
 }
 
-function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId, setSelectedTenantId, collapsed, onCollapse }) {
+function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId, setSelectedTenantId, isPlatformActor, collapsed, onCollapse }) {
   const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
   const selectTenant = (tenantId) => {
     setSelectedTenantId(tenantId);
@@ -455,11 +457,12 @@ function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId
       <div className="tenant-label">Tenant</div>
       <button id="tenant-switcher" className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
         <Users size={16} />
-        <span>{selectedTenant?.name || "No tenant selected"}</span>
+        <span>{selectedTenant?.name || (isPlatformActor ? "All tenants" : "No tenant selected")}</span>
         <ChevronDown size={15} />
       </button>
       {tenantMenuOpen && (
         <div className="sidebar-tenant-menu" role="menu">
+          {isPlatformActor && <button role="menuitem" className={!selectedTenantId ? "selected" : ""} onClick={() => selectTenant("")}>All tenants</button>}
           {tenants.map((tenant) => <button key={tenant.tenant_id} role="menuitem" className={tenant.tenant_id === selectedTenantId ? "selected" : ""} onClick={() => selectTenant(tenant.tenant_id)}>{tenant.name}</button>)}
         </div>
       )}
@@ -681,7 +684,7 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
   );
 }
 
-function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
+function Overview({ range, setRange, token, state, platform, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
   const [events, setEvents] = useState([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState("");
@@ -720,11 +723,11 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
         <Panel className="traffic-panel" title="Edge Traffic" action={<div className="dashboard-panel-actions"><Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} /><button className="secondary compact" disabled={eventsLoading} onClick={loadEvents}><RefreshCw size={14} /> Refresh</button></div>}>
           <TrafficChart events={events} series={trafficSeries} loading={eventsLoading} error={eventsError} range={range} />
         </Panel>
-        <Panel title="Tenant Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-          <div className="tenant-registration-action"><button className="primary" disabled={!token} onClick={onCreateTenant}><Plus size={16} /> Register tenant</button></div>
+        <Panel title={selectedTenantId ? "Tenant context" : "Global account view"} action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} includeGlobal={platform?.is_platform_actor} />}>
+          <div className="tenant-registration-action"><strong>{selectedTenantId ? state.tenants.find((tenant) => tenant.tenant_id === selectedTenantId)?.name || "Tenant" : "All customer tenants"}</strong><p>{selectedTenantId ? `${visibleDomains.length} protected domain${visibleDomains.length === 1 ? "" : "s"} in this workspace.` : `${state.customers.length} customer account${state.customers.length === 1 ? "" : "s"} and ${state.tenants.length} tenant${state.tenants.length === 1 ? "" : "s"} in scope.`}</p><div className="button-pair"><button className="secondary compact" onClick={() => onNavigate("domains")}>Open domains</button>{platform?.is_platform_actor && <button className="primary compact" disabled={!token} onClick={onCreateTenant}><Plus size={15} /> Create tenant</button>}</div></div>
         </Panel>
-        <Panel title="Platform Readiness" count={state.tenants.length}>
-          <ReadinessList token={token} state={state} />
+        <Panel title="Operational coverage">
+          <OperationalCoverage state={state} selectedTenantId={selectedTenantId} />
         </Panel>
       </div>
       <div className="table-grid">
@@ -735,15 +738,16 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
           <DomainTable domains={visibleDomains} eventStatsByDomain={eventStatsByDomain} />
         </Panel>
       </div>
-      <Panel title="Onboarding">
-        <div className="setup-steps">
-          {["Create tenant", "Add protected domain", "Verify DNS ownership", "Attach security profile", "Activate edge CNAME"].map((step, index) => (
-            <div key={step} className={index === 0 ? "current" : ""}><span>{index + 1}</span>{step}</div>
-          ))}
-        </div>
-      </Panel>
     </div>
   );
+}
+
+function OperationalCoverage({ state, selectedTenantId }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const active = domains.filter((domain) => domain.status === "active").length;
+  const policies = filterByTenant(state.policies, selectedTenantId).length;
+  const pending = Math.max(domains.length - active, 0);
+  return <div className="settings-list compact"><div><CheckCircle2 size={18} /><span>Active protected domains</span><strong>{active}/{domains.length}</strong></div><div><Shield size={18} /><span>Security policies</span><strong>{policies}</strong></div><div><Activity size={18} /><span>Go-live actions pending</span><strong>{pending}</strong></div></div>;
 }
 
 function MetricCard({ metric }) {
@@ -1094,22 +1098,32 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   );
 }
 
-function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [detailDomainId, setDetailDomainId] = useState("");
+  useEffect(() => {
+    if (!domains.some((domain) => domain.domain_id === detailDomainId)) setDetailDomainId(domains[0]?.domain_id || "");
+  }, [domains, detailDomainId]);
+  const detailDomain = domains.find((domain) => domain.domain_id === detailDomainId);
+  const deployment = deployments.find((item) => item.domain_id === detailDomainId);
+  const certificate = filterByTenant(state.certificates, selectedTenantId).find((item) => item.domain_id === detailDomainId);
+  const policy = filterByTenant(state.policies, selectedTenantId).find((item) => item.domain_id === detailDomainId || item.target_scope === "tenant");
   return (
     <div className="screen">
       <div className="two-column">
-      <Panel title="Domain Onboarding" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-        <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
-      </Panel>
-      <Panel title="Domain Inventory">
+      <Panel title="Domains" action={<div className="panel-actions"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Add domain</button></div>}>
         <DomainTable domains={domains} token={token} onVerified={onCreated} setStatus={setStatus} />
+      </Panel>
+      <Panel title="Domain workspace">
+        {detailDomain ? <div className="domain-workspace"><label htmlFor="domain-workspace-select">Selected domain<select id="domain-workspace-select" value={detailDomainId} onChange={(event) => setDetailDomainId(event.target.value)}>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></label><div className="settings-list compact"><div><Globe2 size={18} /><span>Protection status</span><strong>{humanizeWorkflowStatus(detailDomain.status)}</strong></div><div><Shield size={18} /><span>WAF baseline</span><strong>{policy ? policy.status || "Configured" : "Pending"}</strong></div><div><LockKeyhole size={18} /><span>TLS certificate</span><strong>{certificate?.status || "Pending"}</strong></div><div><Activity size={18} /><span>Edge routing</span><strong>{deployment?.status || "Not requested"}</strong></div></div><div className="button-pair"><button className="secondary compact" onClick={() => document.getElementById("domain-workspace-select")?.focus()}>Change domain</button><button className="secondary compact" onClick={() => onNavigate("dns")}>Review DNS</button></div></div> : <EmptyState icon={Globe2} title="No domain in this tenant" body="Add the first protected hostname to start a guided, domain-centric go-live." />}
       </Panel>
       </div>
       <Panel title="Tenant Edge">
         <EdgeDeploymentTable token={token} domains={domains} deployments={deployments} canApproveTenantChanges={tenantApprovalEligible(platform, selectedTenantId)} actorSubject={platform?.actor?.subject || ""} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
+      {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}><section className="tenant-wizard domain-create-dialog" role="dialog" aria-modal="true" aria-labelledby="domain-create-title"><header className="tenant-wizard-header"><div><p>PROTECTED SITE</p><h2 id="domain-create-title">Add domain</h2></div><button className="icon-button bordered" type="button" title="Close domain dialog" onClick={() => setCreateOpen(false)}><X size={18} /></button></header><DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={() => { setCreateOpen(false); onCreated(); }} setStatus={setStatus} /></section></div>}
     </div>
   );
 }
@@ -1358,21 +1372,25 @@ function PoliciesScreen({ token, platform, state, selectedTenantId, setSelectedT
 
 function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
   const users = selectedTenantId ? filterByTenant(state.users, selectedTenantId) : state.users.filter((user) => user.tenant_id === "platform");
+  const [editor, setEditor] = useState(null);
+  const profiles = platform?.access_profiles || [];
+  const profileLabel = (profileId) => profiles.find((profile) => profile.profile_id === profileId)?.label || profileId || "Not assigned";
 
   return (
     <div className="screen split-detail">
-      <Panel title={selectedTenantId ? "Users and Roles" : "Platform Owners"} action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel title={selectedTenantId ? "Users and access" : "Platform access"} action={<div className="panel-actions"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="primary compact" disabled={!selectedTenantId} onClick={() => setEditor({ mode: "invite" })}><Plus size={15} /> Invite user</button></div>}>
         {users.length ? (
           <table className="data-table">
-            <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Scopes</th><th>MFA</th></tr></thead>
+            <thead><tr><th>User</th><th>Profile</th><th>Permissions</th><th>Status</th><th>MFA</th><th></th></tr></thead>
             <tbody>
               {users.map((user) => (
                 <tr key={user.user_id}>
                   <td><strong>{user.display_name}</strong><small>{user.email}</small></td>
+                  <td>{profileLabel(user.access_assignments?.find((assignment) => assignment.tenant_id === selectedTenantId)?.profile_id || user.roles?.[0])}</td>
+                  <td>{(user.access_assignments?.find((assignment) => assignment.tenant_id === selectedTenantId)?.permissions || user.scopes || []).filter((scope) => scope !== "profile:write").length} granted</td>
                   <td><span className="health pending">{user.status}</span></td>
-                  <td>{(user.roles || []).join(", ")}</td>
-                  <td>{(user.scopes || []).slice(0, 4).join(", ") || "none"}</td>
                   <td>{user.mfa_required ? "Required" : "Optional"}</td>
+                  <td><button className="secondary compact" disabled={!selectedTenantId} onClick={() => setEditor({ mode: "edit", user })}>Manage</button></td>
                 </tr>
               ))}
             </tbody>
@@ -1381,9 +1399,11 @@ function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTen
           <EmptyState icon={Users} title="No users configured" body="Create users with tenant-scoped roles and granular scopes." />
         )}
       </Panel>
-      <Panel title="Invite User">
-        <UserCreateForm token={token} platform={platform} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+      <Panel title="Access model">
+        <div className="access-model-copy"><strong>Profiles establish a secure baseline.</strong><p>Use the permission matrix to limit every tenant member to read or read/write access for each module. Tenant administrators cannot grant permissions they do not hold.</p></div>
+        <div className="profile-list">{profiles.filter((profile) => profile.scope === "tenant").map((profile) => <div key={profile.profile_id}><strong>{profile.label}</strong><small>{profile.permissions.filter((permission) => permission !== "profile:write").length} default permissions</small></div>)}</div>
       </Panel>
+      {editor && <AccessEditor token={token} platform={platform} tenantId={selectedTenantId} user={editor.user} onClose={() => setEditor(null)} onCompleted={() => { setEditor(null); onCreated(); }} setStatus={setStatus} />}
     </div>
   );
 }
@@ -1583,22 +1603,39 @@ function EventsScreen({ token, selectedTenantId, setStatus }) {
 
 function AiScreen({ token, selectedTenantId, setStatus }) {
   const [findings, setFindings] = useState([]);
-  const analyze = async () => {
+  const [loading, setLoading] = useState(false);
+  const load = async (silent = false) => {
+    if (!token || !selectedTenantId) return;
     try {
-      const data = await apiRequest("/api/ai/analyze", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId }) });
+      if (!silent) setLoading(true);
+      const data = await apiRequest(`/api/ai/findings?tenant_id=${encodeURIComponent(selectedTenantId)}`, token);
       setFindings(data.findings || []);
-      setStatus({ type: "success", message: `Read-only analysis completed for ${data.analyzed_events} events.` });
     } catch (error) {
       setStatus({ type: "error", message: error.message });
+    } finally {
+      if (!silent) setLoading(false);
     }
   };
+  useEffect(() => { load(true); }, [token, selectedTenantId]);
+  const analyze = async () => {
+    try {
+      setLoading(true);
+      const data = await apiRequest("/api/ai/analyze", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId }) });
+      setFindings(data.findings || []);
+      setStatus({ type: "success", message: `Evidence-based analysis completed for ${data.analyzed_events} observed events. No enforcement was changed.` });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+  const open = findings.filter((finding) => finding.status === "open").length;
+  const high = findings.filter((finding) => finding.severity === "high").length;
   return (
     <div className="screen ai-screen">
-      <Panel id="ai-analysis" title="AI Security Analyst" action={<button id="ai-analyze" className="secondary compact" disabled={!token || !selectedTenantId} onClick={analyze}><Sparkles size={15} /> Analyze</button>}>
-        {findings.length ? <table className="data-table"><thead><tr><th>Severity</th><th>Finding</th><th>Evidence</th><th>Recommendation</th></tr></thead><tbody>{findings.map((finding) => <tr key={finding.finding_id}><td><span className="health pending">{finding.severity}</span></td><td>{finding.summary}</td><td>{finding.evidence_count}</td><td>{finding.recommendation}</td></tr>)}</tbody></table> : <EmptyState icon={Sparkles} title="AI Analyst is ready" body="Findings appear only after analysis of real tenant WAF events." />}
-      </Panel>
-      <Panel title="Recommended Change Request">
-        <EmptyState icon={ClipboardList} title="No recommendations pending" body="The analyst will create reviewable recommendations without applying enforcement changes automatically." />
+      <div className="event-metric-grid"><EventMetric label="Open findings" value={open} detail="Persisted evidence" tone={open ? "risk" : "good"} /><EventMetric label="High severity" value={high} detail="Requires review" tone={high ? "risk" : "good"} /><EventMetric label="Observed evidence" value={findings.reduce((total, finding) => total + Number(finding.evidence_count || 0), 0)} detail="WAF events referenced" tone="neutral" /><EventMetric label="Enforcement changes" value="0" detail="Analysis is read-only" tone="good" /></div>
+      <Panel id="ai-analysis" title="Security Analyst" action={<div className="button-pair"><button className="secondary compact" disabled={!token || !selectedTenantId || loading} onClick={() => load()}><RefreshCw size={15} /> Refresh</button><button id="ai-analyze" className="primary compact" disabled={!token || !selectedTenantId || loading} onClick={analyze}><Sparkles size={15} /> {loading ? "Analyzing" : "Run analysis"}</button></div>}>
+        {findings.length ? <table className="data-table"><thead><tr><th>Severity</th><th>Finding</th><th>Evidence</th><th>Recommendation</th><th>Last analyzed</th></tr></thead><tbody>{findings.map((finding) => <tr key={finding.finding_id}><td><span className={`health ${finding.severity === "high" ? "unhealthy" : "pending"}`}>{finding.severity}</span></td><td>{finding.summary}</td><td>{finding.evidence_count} events</td><td>{finding.recommendation}</td><td>{finding.updated_at ? formatEventTime(finding.updated_at) : "-"}</td></tr>)}</tbody></table> : <EmptyState icon={Sparkles} title="No analyst findings" body="Run an analysis after edge traffic is recorded. FortressNet persists only evidence derived from the selected tenant's WAF events and never changes enforcement automatically." />}
       </Panel>
     </div>
   );
@@ -1606,15 +1643,24 @@ function AiScreen({ token, selectedTenantId, setStatus }) {
 
 function ReportsScreen({ token, selectedTenantId, setStatus }) {
   const [reports, setReports] = useState([]);
-  const load = () => loadOperationalData(`/api/reports${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token, "reports", setReports, setStatus);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    if (!token) return;
+    try {
+      setLoading(true);
+      const data = await apiRequest(`/api/reports${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token);
+      setReports(data.reports || []);
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, [token, selectedTenantId]);
   return (
     <div className="screen">
-      <Panel id="security-report" title="Security Report" action={<button id="reports-refresh" className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
-        <div className="report-grid">
-          {(reports.length ? reports : [{ report_id: "empty", source: "Waiting for tenant WAF logs", total_events: 0, blocked_events: 0, allowed_events: 0 }]).map((report) => (
-            <div className="report-card" key={report.report_id}><BarChart3 size={32} /><p>{report.source}</p><strong>{report.total_events} events</strong><small>{report.blocked_events} blocked · {report.allowed_events} allowed</small></div>
-          ))}
-        </div>
+      <Panel id="security-report" title="Security Report" action={<button id="reports-refresh" className="secondary compact" disabled={!token || loading} onClick={load}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh"}</button>}>
+        {reports.length ? <div className="report-grid">{reports.map((report) => <div className="report-card" key={report.report_id}><BarChart3 size={30} /><p>{selectedTenantId ? "Tenant security posture" : "Platform security posture"}</p><strong>{report.total_events} observed events</strong><small>{report.blocked_events} blocked · {report.allowed_events} allowed · {report.edge_deployments} protected edge{report.edge_deployments === 1 ? "" : "s"}</small><div className="report-rules"><strong>Top rules</strong>{report.top_rules?.length ? report.top_rules.slice(0, 3).map((rule) => <span key={rule.rule_id}>{formatRuleName(rule.rule_id)} <b>{rule.count}</b></span>) : <span>No rule matches recorded</span>}</div><small>Generated {formatEventTime(report.generated_at)}</small></div>)}</div> : <EmptyState icon={FileText} title="No report data available" body="Reports are generated from real WAF telemetry. Select a tenant or wait for protected requests to reach the edge." />}
       </Panel>
     </div>
   );
@@ -1862,38 +1908,57 @@ function TenantRegistrationWizard({ token, customers = [], users = [], setStatus
     {error && <div className="wizard-error" role="alert">{error}</div>}<footer className="tenant-wizard-footer">{step > 0 ? <button className="secondary" type="button" disabled={submitting} onClick={() => { setError(""); setStep((current) => current - 1); }}><ChevronLeft size={16} /> Back</button> : <span />}{step < 2 ? <button className="primary" type="button" onClick={next}>Continue <ChevronRight size={16} /></button> : <button className="primary" type="submit" disabled={submitting}>{submitting ? "Registering" : "Create account and tenant"} <CheckCircle2 size={16} /></button>}</footer></form></section></div>;
 }
 
-function UserCreateForm({ token, platform, tenants, selectedTenantId, onCreated, setStatus }) {
-  const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("tenant_admin");
+function AccessEditor({ token, platform, tenantId, user, onClose, onCompleted, setStatus }) {
+  const profiles = (platform?.access_profiles || []).filter((profile) => profile.scope === "tenant");
+  const assignment = user?.access_assignments?.find((item) => item.tenant_id === tenantId);
+  const [displayName, setDisplayName] = useState(user?.display_name || "");
+  const [email, setEmail] = useState(user?.email || "");
+  const [profileId, setProfileId] = useState(assignment?.profile_id || user?.roles?.[0] || "tenant_admin");
+  const [permissions, setPermissions] = useState(assignment?.permissions || []);
+  const [saving, setSaving] = useState(false);
+  const selectedProfile = profiles.find((profile) => profile.profile_id === profileId) || profiles[0];
+
+  useEffect(() => {
+    if (!user && selectedProfile) setPermissions(selectedProfile.permissions.filter((permission) => permission !== "profile:write"));
+  }, []);
 
   const submit = async (event) => {
     event.preventDefault();
-    await createResource("/api/users", token, {
-      tenant_id: selectedTenantId || "platform",
-      display_name: displayName,
-      email,
-      roles: [role],
-      scopes: []
-    }, "User created.", setStatus, () => {
-      setDisplayName("");
-      setEmail("");
-      onCreated();
-    });
+    try {
+      setSaving(true);
+      if (user) {
+        await apiRequest(`/api/users/${user.user_id}/access`, token, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tenant_id: tenantId, access_profile: profileId, permissions })
+        });
+        setStatus({ type: "success", message: "Tenant access updated." });
+      } else {
+        await apiRequest("/api/users", token, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tenant_id: tenantId, display_name: displayName, email, access_profile: profileId, permissions })
+        });
+        setStatus({ type: "success", message: "User invitation sent with the selected tenant access." });
+      }
+      onCompleted();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    } finally {
+      setSaving(false);
+    }
   };
 
-  if (!tenants.length) {
-    return <EmptyState icon={Users} title="Create a tenant first" body="Tenant users require a tenant context." />;
-  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}><section className="tenant-wizard access-editor" role="dialog" aria-modal="true" aria-labelledby="access-editor-title"><header className="tenant-wizard-header"><div><p>TENANT ACCESS</p><h2 id="access-editor-title">{user ? "Manage member access" : "Invite tenant member"}</h2></div><button className="icon-button bordered" type="button" title="Close access editor" disabled={saving} onClick={onClose}><X size={18} /></button></header><form onSubmit={submit}><div className="wizard-fields">{!user && <><label htmlFor="access-user-name">Full name<input id="access-user-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></label><label htmlFor="access-user-email">Work email<input id="access-user-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label></>}<label className="wizard-wide" htmlFor="access-profile">Access profile<select id="access-profile" value={profileId} onChange={(event) => { const nextProfile = profiles.find((profile) => profile.profile_id === event.target.value); setProfileId(event.target.value); if (nextProfile) setPermissions(nextProfile.permissions.filter((permission) => permission !== "profile:write")); }}>{profiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.label}</option>)}</select></label><div className="wizard-wide"><PermissionMatrix modules={platform?.permission_modules || []} permissions={permissions} setPermissions={setPermissions} /></div></div><footer className="tenant-wizard-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving || !profileId || (!user && (!displayName || !email))} type="submit">{saving ? "Saving" : user ? "Save access" : "Send invitation"}</button></footer></form></section></div>;
+}
 
-  return (
-    <form className="form-grid" onSubmit={submit}>
-      <label htmlFor="user-name">Display name<input id="user-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Jane Admin" /></label>
-      <label htmlFor="user-email">Email<input id="user-email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="jane@example.com" /></label>
-      <label htmlFor="user-role">Role<select id="user-role" value={role} onChange={(event) => setRole(event.target.value)}>{(platform?.roles || []).filter((item) => item !== "platform_owner").map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-      <button className="primary" disabled={!token || !selectedTenantId || !displayName || !email}><Plus size={16} /> Create user</button>
-    </form>
-  );
+function PermissionMatrix({ modules, permissions, setPermissions }) {
+  const toggle = (permission) => setPermissions((current) => current.includes(permission) ? current.filter((item) => item !== permission) : [...current, permission]);
+  return <div className="permission-matrix"><div className="permission-heading"><strong>Module permissions</strong><span>Select read-only or read/write access.</span></div>{modules.map((module) => {
+    const read = `${module.id}:read`;
+    const write = `${module.id}:write`;
+    return <div className="permission-row" key={module.id}><span>{module.label}</span><label><input type="checkbox" checked={permissions.includes(read)} onChange={() => toggle(read)} /> Read</label><label><input type="checkbox" checked={permissions.includes(write)} onChange={() => toggle(write)} /> Write</label></div>;
+  })}</div>;
 }
 
 function IdpCreateForm({ token, tenants, selectedTenantId, onCreated, setStatus }) {
@@ -2532,11 +2597,12 @@ function formatEventTime(value, { relative = false } = {}) {
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
 }
 
-function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId }) {
+function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId, includeGlobal = false }) {
   if (!tenants.length) return <span className="mode-readonly">No tenants</span>;
 
   return (
     <select className="compact-select" value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>
+      {includeGlobal && <option value="">All tenants</option>}
       {tenants.map((tenant) => <option key={tenant.tenant_id} value={tenant.tenant_id}>{tenant.name}</option>)}
     </select>
   );
@@ -2849,7 +2915,7 @@ function tenantApprovalEligible(platform, tenantId) {
     tenantId &&
     !platform?.is_platform_actor &&
     (actor?.tenant_id === tenantId || actor?.tenant_ids?.includes(tenantId)) &&
-    (actor?.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role))
+    actor?.tenant_approval_ids?.includes(tenantId)
   );
 }
 
