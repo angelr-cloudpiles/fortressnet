@@ -120,17 +120,11 @@ app.get("/healthz", (_req, res) => {
   res.type("text/plain").send("ok\n");
 });
 
-app.get("/api/platform", (_req, res) => {
+app.get("/api/auth/config", (_req, res) => {
   res.json({
-    environment: process.env.FORTRESSNET_ENV || "unknown",
-    auth_mode: "cognito_id_token_or_api_key_or_recovery_token",
-    cognito_user_pool_id: process.env.COGNITO_USER_POOL_ID || null,
     cognito_app_client_id: process.env.COGNITO_APP_CLIENT_ID || null,
     cognito_hosted_ui_url: process.env.COGNITO_HOSTED_UI_URL || null,
-    management_ready: Boolean(managementToken),
-    roles: Object.keys(roleScopes),
-    scopes: allowedScopes,
-    tables_ready: Object.fromEntries(Object.entries(tables).map(([key, value]) => [key, Boolean(value)]))
+    login_ready: Boolean(cognitoHostedUiOrigin && process.env.COGNITO_APP_CLIENT_ID)
   });
 });
 
@@ -157,6 +151,15 @@ app.post("/api/client-security/reports/:token", async (req, res) => {
 });
 
 app.use("/api", requireManagementAccess);
+
+app.get("/api/platform", (req, res) => {
+  res.json({
+    auth_mode: req.actor?.type || "authenticated",
+    roles: Object.keys(roleScopes),
+    scopes: allowedScopes,
+    is_platform_actor: isPlatformActor(req.actor)
+  });
+});
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {

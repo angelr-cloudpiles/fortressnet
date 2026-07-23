@@ -9,6 +9,8 @@ La consola esta disponible en cualquiera de estas URLs:
 
 Ambas URL son origenes OAuth registrados. Use una unica URL durante una sesion; al cerrar sesion, el navegador vuelve al mismo origen.
 
+La consola no presenta navegacion, inventario, metricas ni configuracion antes de autenticar una sesion. La unica respuesta publica de autenticacion contiene el dominio Hosted UI y el client ID necesarios para iniciar OAuth; la informacion de plataforma y las APIs de gestion requieren un token valido.
+
 ## Primer acceso por invitacion
 
 1. Abra la consola y seleccione **Sign in with Cognito**.
@@ -53,4 +55,4 @@ Un propietario de plataforma debe validar la identidad del usuario y reemitir la
 - `billing_admin`: consulta y administra aspectos de facturacion autorizados.
 - `read_only`: consulta recursos asignados sin cambios.
 
-Las API keys y el token de recuperacion son mecanismos separados del inicio de sesion humano. Las API keys se crean con scopes limitados, se muestran una sola vez y deben revocarse cuando dejan de usarse.
+Las API keys y el token de recuperacion son mecanismos separados del inicio de sesion humano. Las API keys se crean con scopes limitados, se muestran una sola vez y deben revocarse cuando dejan de usarse. El token de recuperacion no se presenta ni se ingresa desde la interfaz web: es un mecanismo break-glass conservado en Secrets Manager y sujeto a un procedimiento administrativo aprobado.

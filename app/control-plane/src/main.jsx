@@ -114,6 +114,7 @@ function App() {
   const [active, setActive] = useState("overview");
   const [range, setRange] = useState("24H");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [authConfig, setAuthConfig] = useState(null);
   const [platform, setPlatform] = useState(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || "");
   const [accessToken, setAccessToken] = useState(() => sessionStorage.getItem("fortressnet_access_token") || "");
@@ -130,20 +131,21 @@ function App() {
   );
 
   useEffect(() => {
-    fetch("/api/platform")
+    fetch("/api/auth/config")
       .then((response) => response.json())
-      .then(setPlatform)
-      .catch(() => setPlatform({ management_ready: false }));
+      .then(setAuthConfig)
+      .catch(() => setAuthConfig({ login_ready: false }));
   }, []);
 
   useEffect(() => {
     if (!token) return;
+    apiRequest("/api/platform", token).then(setPlatform).catch(() => setPlatform(null));
     loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
   }, [token]);
 
   useEffect(() => {
-    if (!platform || window.location.pathname !== "/auth/callback") return;
-    completeCognitoCallback(platform)
+    if (!authConfig || window.location.pathname !== "/auth/callback") return;
+    completeCognitoCallback(authConfig)
       .then((tokens) => {
         sessionStorage.setItem("fortressnet_auth_token", tokens.id_token);
         sessionStorage.setItem("fortressnet_access_token", tokens.access_token);
@@ -158,7 +160,7 @@ function App() {
         window.history.replaceState({}, "", "/");
         setStatus({ type: "error", message: error.message });
       });
-  }, [platform]);
+  }, [authConfig]);
 
   const persistToken = (value) => {
     const clean = value.trim();
@@ -179,6 +181,7 @@ function App() {
       setAuthMode("");
       setState(emptyState);
       setSelectedTenantId("");
+      setPlatform(null);
     }
   };
 
@@ -190,7 +193,7 @@ function App() {
     loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
   };
 
-  const signIn = () => startCognitoLogin(platform).catch((error) => setStatus({ type: "error", message: error.message }));
+  const signIn = () => startCognitoLogin(authConfig).catch((error) => setStatus({ type: "error", message: error.message }));
   const openTenantCreate = () => {
     setActive("overview");
     setTenantCreateRequest((current) => current + 1);
@@ -231,19 +234,23 @@ function App() {
     setAccessToken("");
     setState(emptyState);
     setSelectedTenantId("");
-    if (platform?.cognito_hosted_ui_url && platform?.cognito_app_client_id) {
-      const logoutUrl = new URL(`${platform.cognito_hosted_ui_url}/logout`);
-      logoutUrl.searchParams.set("client_id", platform.cognito_app_client_id);
+    if (authConfig?.cognito_hosted_ui_url && authConfig?.cognito_app_client_id) {
+      const logoutUrl = new URL(`${authConfig.cognito_hosted_ui_url}/logout`);
+      logoutUrl.searchParams.set("client_id", authConfig.cognito_app_client_id);
       logoutUrl.searchParams.set("logout_uri", `${window.location.origin}/logout`);
       window.location.assign(logoutUrl.toString());
     }
   };
 
+  if (!token) {
+    return <LoginScreen authConfig={authConfig} status={status} onSignIn={signIn} />;
+  }
+
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <Sidebar active={active} onNavigate={setActive} selectedTenant={selectedTenant} tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} collapsed={sidebarCollapsed} onCollapse={() => setSidebarCollapsed((current) => !current)} />
       <main className="main">
-        <Topbar authenticated={Boolean(token)} authMode={authMode} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
+        <Topbar authenticated authMode={authMode} onSignIn={signIn} onSignOut={signOut} onOpenProfile={() => setActive("profile")} onNavigate={setActive} onSearch={searchConsole} />
         <section className="content">
           <PageHeader active={active} pageTitle={pageTitle} onNavigate={setActive} onReload={reload} onCreateTenant={openTenantCreate} />
           {status.message && <StatusBanner status={status} />}
@@ -342,10 +349,29 @@ function App() {
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
-          {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} onTokenSave={persistToken} />}
+          {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
         </section>
       </main>
     </div>
+  );
+}
+
+function LoginScreen({ authConfig, status, onSignIn }) {
+  const ready = Boolean(authConfig?.login_ready);
+  return (
+    <main className="login-shell">
+      <section className="login-panel" aria-labelledby="login-title">
+        <div className="login-brand"><span className="login-mark"><Shield size={30} fill="currentColor" /></span><span>FortressNet</span></div>
+        <div className="login-copy">
+          <p className="login-eyebrow">SECURE CONSOLE</p>
+          <h1 id="login-title">Sign in to FortressNet</h1>
+          <p>Use your assigned organizational identity to access the console.</p>
+        </div>
+        <button className="primary login-submit" disabled={!ready} onClick={onSignIn}><LockKeyhole size={17} /> Sign in</button>
+        {status.message && <div className={`login-status ${status.type}`}>{status.message}</div>}
+        {!ready && <div className="login-status error">Authentication configuration is unavailable. Contact the platform administrator.</div>}
+      </section>
+    </main>
   );
 }
 
@@ -1137,30 +1163,14 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
   );
 }
 
-function SettingsScreen({ platform, token, authMode, onTokenSave }) {
-  const [draftToken, setDraftToken] = useState(authMode === "bootstrap" ? token : "");
-
+function SettingsScreen({ platform, token, authMode }) {
   return (
     <div className="screen settings-grid">
-      <Panel title="Management Access">
-        <div className="management-card">
-          <KeyRound size={22} />
-          <div>
-            <h3>Recovery access token</h3>
-            <p>Reserved for controlled platform recovery. Normal console access uses Cognito.</p>
-          </div>
-          <div className="token-input">
-            <label className="sr-only" htmlFor="management-token">Management token</label>
-            <input id="management-token" value={draftToken} type="password" autoComplete="off" placeholder="Paste bootstrap token" onChange={(event) => setDraftToken(event.target.value)} />
-            <button className="primary" onClick={() => onTokenSave(draftToken)}>Save</button>
-          </div>
-        </div>
-      </Panel>
       <Panel title="Platform Security">
         <div className="settings-list">
           <div><KeyRound size={18} /><span>KMS key</span><strong>Provisioned</strong></div>
-          <div><LockKeyhole size={18} /><span>Authentication</span><strong>{platform?.cognito_user_pool_id ? "Cognito ready" : "Pending"}</strong></div>
-          <div><Activity size={18} /><span>Management API</span><strong>{platform?.management_ready ? "Protected" : "Pending token"}</strong></div>
+          <div><LockKeyhole size={18} /><span>Authentication</span><strong>Session required</strong></div>
+          <div><Activity size={18} /><span>Management API</span><strong>{token ? "Protected" : "Unavailable"}</strong></div>
           <div><Globe2 size={18} /><span>DNS</span><strong>fortressnet.app active</strong></div>
         </div>
       </Panel>
