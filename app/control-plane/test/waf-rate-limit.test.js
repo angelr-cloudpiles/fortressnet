@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, compileWafRules, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, compileWafRules, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -80,4 +80,20 @@ test("builds API inventory from real WAF event shape and validates OpenAPI 3", (
   assert.equal(inventory[0].blocked_requests, 1);
   assert.deepEqual(validateOpenApiDocument({ openapi: "3.0.3", info: { title: "Orders", version: "1" }, paths: { "/v1/orders/{id}": { get: {} } } }).endpoints, [{ method: "GET", path_template: "/v1/orders/{id}" }]);
   assert.throws(() => validateOpenApiDocument({ openapi: "2.0", info: { title: "Old" }, paths: {} }), { message: "openapi_3_document_required" });
+});
+
+test("normalizes a tenant registration and excludes opportunity data from the public tenant", () => {
+  const registration = normalizeTenantRegistration({
+    company: { legal_name: "Example Legal Entity", country: "ES", website: "https://example.test" },
+    primary_contact: { full_name: "Primary Contact", email: "primary@example.test", phone: "+34 600 000 000" },
+    technical_contact: { full_name: "Technical Contact", email: "technical@example.test" },
+    commercial: { estimated_domains: 3, expected_traffic_tier: "1m_to_10m", use_case: "Protect public applications." },
+    opportunity_authorized: true
+  }, "Example Tenant", "business");
+  const tenant = { tenant_id: "tenant_example", name: "Example Tenant", plan: "business", status: "registered", registration };
+  assert.equal(registration.company.country, "ES");
+  assert.equal(registration.commercial.requested_plan, "business");
+  assert.equal(publicTenant(tenant).registration_status, "registered");
+  assert.equal("registration" in publicTenant(tenant), false);
+  assert.throws(() => normalizeTenantRegistration({}, "Example Tenant", "pilot"), { message: "legal_entity_name_required" });
 });

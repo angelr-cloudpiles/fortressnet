@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
 import { createRoot } from "react-dom/client";
 import {
@@ -8,6 +8,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
@@ -27,7 +28,8 @@ import {
   Shield,
   Sparkles,
   TerminalSquare,
-  Users
+  Users,
+  X
 } from "lucide-react";
 import "./styles.css";
 
@@ -89,6 +91,10 @@ const rateLimitCountryOptions = [
   ["AR", "Argentina"], ["AU", "Australia"], ["BE", "Belgium"], ["BR", "Brazil"], ["CA", "Canada"], ["CH", "Switzerland"], ["CL", "Chile"], ["CO", "Colombia"], ["DE", "Germany"], ["DK", "Denmark"], ["ES", "Spain"], ["FI", "Finland"], ["FR", "France"], ["GB", "United Kingdom"], ["HK", "Hong Kong"], ["IE", "Ireland"], ["IN", "India"], ["IT", "Italy"], ["JP", "Japan"], ["KR", "South Korea"], ["MX", "Mexico"], ["NL", "Netherlands"], ["NO", "Norway"], ["NZ", "New Zealand"], ["PE", "Peru"], ["PL", "Poland"], ["PT", "Portugal"], ["SE", "Sweden"], ["SG", "Singapore"], ["US", "United States"], ["ZA", "South Africa"]
 ];
 
+const tenantCountryOptions = [
+  ["AR", "Argentina"], ["AU", "Australia"], ["BR", "Brazil"], ["CA", "Canada"], ["CL", "Chile"], ["CO", "Colombia"], ["DE", "Germany"], ["ES", "Spain"], ["FR", "France"], ["GB", "United Kingdom"], ["IE", "Ireland"], ["IT", "Italy"], ["JP", "Japan"], ["MX", "Mexico"], ["NL", "Netherlands"], ["PE", "Peru"], ["PT", "Portugal"], ["SG", "Singapore"], ["US", "United States"], ["UY", "Uruguay"]
+];
+
 const emptyState = {
   tenants: [],
   domains: [],
@@ -121,7 +127,7 @@ function App() {
   const [authMode, setAuthMode] = useState(() => sessionStorage.getItem("fortressnet_auth_mode") || "");
   const [state, setState] = useState(emptyState);
   const [selectedTenantId, setSelectedTenantId] = useState("");
-  const [tenantCreateRequest, setTenantCreateRequest] = useState(0);
+  const [tenantWizardOpen, setTenantWizardOpen] = useState(false);
   const [status, setStatus] = useState({ type: "idle", message: "" });
   const pageTitle = navItems.find((item) => item.id === active)?.label ?? "Overview";
 
@@ -195,8 +201,7 @@ function App() {
 
   const signIn = () => startCognitoLogin(authConfig).catch((error) => setStatus({ type: "error", message: error.message }));
   const openTenantCreate = () => {
-    setActive("overview");
-    setTenantCreateRequest((current) => current + 1);
+    setTenantWizardOpen(true);
   };
   const searchConsole = (value) => {
     const query = value.trim().toLowerCase();
@@ -263,9 +268,7 @@ function App() {
               selectedTenantId={selectedTenantId}
               setSelectedTenantId={setSelectedTenantId}
               onNavigate={setActive}
-              onCreated={reload}
-              setStatus={setStatus}
-              tenantCreateRequest={tenantCreateRequest}
+              onCreateTenant={openTenantCreate}
             />
           )}
           {active === "onboarding" && (
@@ -352,6 +355,11 @@ function App() {
           {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
         </section>
       </main>
+      {tenantWizardOpen && <TenantRegistrationWizard token={token} setStatus={setStatus} onClose={() => setTenantWizardOpen(false)} onCreated={(tenant) => {
+        setSelectedTenantId(tenant.tenant_id);
+        setTenantWizardOpen(false);
+        loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+      }} />}
     </div>
   );
 }
@@ -487,7 +495,7 @@ function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant })
   );
 }
 
-function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreated, setStatus, tenantCreateRequest }) {
+function Overview({ range, setRange, token, state, selectedTenantId, setSelectedTenantId, onNavigate, onCreateTenant }) {
   const metrics = buildMetrics(state);
 
   return (
@@ -501,7 +509,7 @@ function Overview({ range, setRange, token, state, selectedTenantId, setSelected
           <EmptyChart />
         </Panel>
         <Panel title="Tenant Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
-          <TenantCreateForm token={token} onCreated={onCreated} setStatus={setStatus} focusRequest={tenantCreateRequest} />
+          <div className="tenant-registration-action"><button className="primary" disabled={!token} onClick={onCreateTenant}><Plus size={16} /> Register tenant</button></div>
         </Panel>
         <Panel title="Platform Readiness" count={state.tenants.length}>
           <ReadinessList token={token} state={state} />
@@ -1299,29 +1307,89 @@ function ProfileScreen({ token, accessToken, authMode, onMfaEnrolled, setStatus 
   );
 }
 
-function TenantCreateForm({ token, onCreated, setStatus, focusRequest }) {
-  const [name, setName] = useState("");
-  const [plan, setPlan] = useState("pilot");
-  const nameInputRef = useRef(null);
-
-  useEffect(() => {
-    if (focusRequest > 0) nameInputRef.current?.focus();
-  }, [focusRequest]);
-
+function TenantRegistrationWizard({ token, setStatus, onClose, onCreated }) {
+  const [step, setStep] = useState(0);
+  const [technicalSameAsPrimary, setTechnicalSameAsPrimary] = useState(true);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    name: "",
+    plan: "pilot",
+    company: { legal_name: "", country: "", tax_id: "", website: "", industry: "", address_line_1: "", city: "", postal_code: "" },
+    primary_contact: { full_name: "", email: "", job_title: "", phone: "" },
+    technical_contact: { full_name: "", email: "", job_title: "", phone: "" },
+    commercial: { estimated_domains: "1", expected_traffic_tier: "unknown", use_case: "" },
+    opportunity_authorized: false
+  });
+  const update = (section, field, value) => setForm((current) => ({ ...current, [section]: { ...current[section], [field]: value } }));
+  const updateTopLevel = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const validateStep = () => {
+    if (step === 0 && (!form.name.trim() || !form.company.legal_name.trim() || !form.company.country)) return "Complete the tenant, legal entity and country fields.";
+    if (step === 1 && (!form.primary_contact.full_name.trim() || !form.primary_contact.email.trim() || (!technicalSameAsPrimary && (!form.technical_contact.full_name.trim() || !form.technical_contact.email.trim())))) return "Add a primary and technical contact with valid email addresses.";
+    if (step === 2 && (!form.commercial.estimated_domains || !form.opportunity_authorized)) return "Confirm the expected scope and authorization before registering the tenant.";
+    return "";
+  };
+  const next = () => {
+    const validationError = validateStep();
+    if (validationError) return setError(validationError);
+    setError("");
+    setStep((current) => Math.min(current + 1, 2));
+  };
   const submit = async (event) => {
     event.preventDefault();
-    await createResource("/api/tenants", token, { name, plan }, "Tenant created.", setStatus, () => {
-      setName("");
-      onCreated();
-    });
+    const validationError = validateStep();
+    if (validationError) return setError(validationError);
+    const technicalContact = technicalSameAsPrimary ? { ...form.primary_contact } : form.technical_contact;
+    try {
+      setSubmitting(true);
+      const data = await apiRequest("/api/tenants", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, registration: { company: form.company, primary_contact: form.primary_contact, technical_contact: technicalContact, commercial: form.commercial, opportunity_authorized: form.opportunity_authorized } }) });
+      setStatus({ type: "success", message: "Tenant registration created." });
+      onCreated(data.tenant);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSubmitting(false);
+    }
   };
-
+  const steps = ["Organization", "Contacts", "Scope"];
   return (
-    <form className="form-grid" onSubmit={submit}>
-      <label htmlFor="tenant-name">Tenant name<input ref={nameInputRef} id="tenant-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Customer or business unit" /></label>
-      <label htmlFor="tenant-plan">Plan<select id="tenant-plan" value={plan} onChange={(event) => setPlan(event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
-      <button className="primary" disabled={!token || !name}><Plus size={16} /> Create tenant</button>
-    </form>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose(); }}>
+      <section className="tenant-wizard" role="dialog" aria-modal="true" aria-labelledby="tenant-wizard-title">
+        <header className="tenant-wizard-header"><div><p>NEW TENANT</p><h2 id="tenant-wizard-title">Tenant registration</h2></div><button className="icon-button bordered" type="button" title="Close tenant registration" disabled={submitting} onClick={onClose}><X size={18} /></button></header>
+        <div className="wizard-stepper" aria-label={`Step ${step + 1} of 3`}>{steps.map((label, index) => <div key={label} className={index === step ? "current" : index < step ? "complete" : ""}><span>{index + 1}</span>{label}</div>)}</div>
+        <form onSubmit={submit}>
+          {step === 0 && <div className="wizard-fields">
+            <label htmlFor="tenant-registration-name">Tenant name<input id="tenant-registration-name" value={form.name} onChange={(event) => updateTopLevel("name", event.target.value)} required /></label>
+            <label htmlFor="tenant-legal-name">Legal entity<input id="tenant-legal-name" value={form.company.legal_name} onChange={(event) => update("company", "legal_name", event.target.value)} required /></label>
+            <label htmlFor="tenant-country">Country<select id="tenant-country" value={form.company.country} onChange={(event) => update("company", "country", event.target.value)} required><option value="">Select country</option>{tenantCountryOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label htmlFor="tenant-tax-id">Tax ID<input id="tenant-tax-id" value={form.company.tax_id} onChange={(event) => update("company", "tax_id", event.target.value)} /></label>
+            <label htmlFor="tenant-website">Website<input id="tenant-website" type="url" inputMode="url" placeholder="https://" value={form.company.website} onChange={(event) => update("company", "website", event.target.value)} /></label>
+            <label htmlFor="tenant-industry">Industry<input id="tenant-industry" value={form.company.industry} onChange={(event) => update("company", "industry", event.target.value)} /></label>
+            <label htmlFor="tenant-address">Address<input id="tenant-address" value={form.company.address_line_1} onChange={(event) => update("company", "address_line_1", event.target.value)} /></label>
+            <label htmlFor="tenant-city">City<input id="tenant-city" value={form.company.city} onChange={(event) => update("company", "city", event.target.value)} /></label>
+            <label htmlFor="tenant-postal-code">Postal code<input id="tenant-postal-code" value={form.company.postal_code} onChange={(event) => update("company", "postal_code", event.target.value)} /></label>
+          </div>}
+          {step === 1 && <div className="wizard-fields">
+            <h3>Primary contact</h3>
+            <label htmlFor="tenant-primary-name">Full name<input id="tenant-primary-name" value={form.primary_contact.full_name} onChange={(event) => update("primary_contact", "full_name", event.target.value)} required /></label>
+            <label htmlFor="tenant-primary-email">Email<input id="tenant-primary-email" type="email" value={form.primary_contact.email} onChange={(event) => update("primary_contact", "email", event.target.value)} required /></label>
+            <label htmlFor="tenant-primary-title">Job title<input id="tenant-primary-title" value={form.primary_contact.job_title} onChange={(event) => update("primary_contact", "job_title", event.target.value)} /></label>
+            <label htmlFor="tenant-primary-phone">Phone<input id="tenant-primary-phone" type="tel" value={form.primary_contact.phone} onChange={(event) => update("primary_contact", "phone", event.target.value)} /></label>
+            <label className="check-row wizard-wide"><input type="checkbox" checked={technicalSameAsPrimary} onChange={(event) => setTechnicalSameAsPrimary(event.target.checked)} /> Technical contact is the primary contact</label>
+            {!technicalSameAsPrimary && <><h3 className="wizard-wide">Technical contact</h3><label htmlFor="tenant-technical-name">Full name<input id="tenant-technical-name" value={form.technical_contact.full_name} onChange={(event) => update("technical_contact", "full_name", event.target.value)} required /></label><label htmlFor="tenant-technical-email">Email<input id="tenant-technical-email" type="email" value={form.technical_contact.email} onChange={(event) => update("technical_contact", "email", event.target.value)} required /></label><label htmlFor="tenant-technical-title">Job title<input id="tenant-technical-title" value={form.technical_contact.job_title} onChange={(event) => update("technical_contact", "job_title", event.target.value)} /></label><label htmlFor="tenant-technical-phone">Phone<input id="tenant-technical-phone" type="tel" value={form.technical_contact.phone} onChange={(event) => update("technical_contact", "phone", event.target.value)} /></label></>}
+          </div>}
+          {step === 2 && <div className="wizard-fields">
+            <label htmlFor="tenant-plan">Requested plan<select id="tenant-plan" value={form.plan} onChange={(event) => updateTopLevel("plan", event.target.value)}><option value="pilot">Pilot</option><option value="business">Business</option><option value="enterprise">Enterprise</option></select></label>
+            <label htmlFor="tenant-estimated-domains">Expected protected domains<input id="tenant-estimated-domains" type="number" min="1" max="10000" value={form.commercial.estimated_domains} onChange={(event) => update("commercial", "estimated_domains", event.target.value)} required /></label>
+            <label htmlFor="tenant-traffic-tier">Expected monthly traffic<select id="tenant-traffic-tier" value={form.commercial.expected_traffic_tier} onChange={(event) => update("commercial", "expected_traffic_tier", event.target.value)}><option value="unknown">Unknown</option><option value="under_1m">Under 1M requests</option><option value="1m_to_10m">1M to 10M requests</option><option value="10m_to_100m">10M to 100M requests</option><option value="over_100m">Over 100M requests</option></select></label>
+            <label className="wizard-wide" htmlFor="tenant-use-case">Security use case<textarea id="tenant-use-case" rows="5" value={form.commercial.use_case} onChange={(event) => update("commercial", "use_case", event.target.value)} /></label>
+            <label className="check-row wizard-wide"><input type="checkbox" checked={form.opportunity_authorized} onChange={(event) => updateTopLevel("opportunity_authorized", event.target.checked)} /> I confirm this data is authorized for tenant registration and future opportunity records.</label>
+          </div>}
+          {error && <div className="wizard-error" role="alert">{error}</div>}
+          <footer className="tenant-wizard-footer">{step > 0 ? <button className="secondary" type="button" disabled={submitting} onClick={() => { setError(""); setStep((current) => current - 1); }}><ChevronLeft size={16} /> Back</button> : <span />}{step < 2 ? <button className="primary" type="button" onClick={next}>Continue <ChevronRight size={16} /></button> : <button className="primary" type="submit" disabled={submitting}>{submitting ? "Registering" : "Create tenant"} <CheckCircle2 size={16} /></button>}</footer>
+        </form>
+      </section>
+    </div>
   );
 }
 

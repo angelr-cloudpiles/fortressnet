@@ -593,6 +593,184 @@ kbd {
   gap: 16px;
 }
 
+.tenant-registration-action {
+  display: grid;
+  place-items: center;
+  min-height: 128px;
+  padding: 16px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow-y: auto;
+  background: rgba(7, 24, 42, 0.62);
+}
+
+.tenant-wizard {
+  width: min(100%, 860px);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 22px 56px rgba(16, 24, 40, 0.28);
+}
+
+.tenant-wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tenant-wizard-header p {
+  margin: 0 0 6px;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.1em;
+}
+
+.tenant-wizard-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.wizard-stepper {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.wizard-stepper div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wizard-stepper span {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  font-size: 11px;
+}
+
+.wizard-stepper .current,
+.wizard-stepper .complete {
+  color: var(--ink);
+}
+
+.wizard-stepper .current span {
+  color: #fff;
+  background: var(--blue);
+  border-color: var(--blue);
+}
+
+.wizard-stepper .complete span {
+  color: var(--green);
+  border-color: #a7e0c4;
+  background: var(--green-soft);
+}
+
+.wizard-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 24px;
+}
+
+.wizard-fields label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.wizard-fields input,
+.wizard-fields select,
+.wizard-fields textarea {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.wizard-fields textarea {
+  min-height: 120px;
+  height: auto;
+  padding: 10px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.wizard-fields h3,
+.wizard-wide {
+  grid-column: 1 / -1;
+}
+
+.wizard-fields h3 {
+  margin: 0 0 -2px;
+  font-size: 14px;
+}
+
+.wizard-fields .check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.45;
+}
+
+.wizard-fields .check-row input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+}
+
+.wizard-error {
+  margin: 0 24px 16px;
+  padding: 11px 12px;
+  color: var(--red);
+  background: var(--red-soft);
+  border: 1px solid #fecdd3;
+  border-radius: 5px;
+  font-size: 13px;
+}
+
+.tenant-wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px 22px;
+  border-top: 1px solid var(--line-soft);
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(150px, 1fr));
@@ -1671,6 +1849,10 @@ code {
   .report-grid {
     grid-template-columns: 1fr;
   }
+
+  .tenant-wizard {
+    max-height: calc(100vh - 32px);
+  }
 }
 
 @media (max-width: 760px) {
@@ -1747,6 +1929,37 @@ code {
   .setup-steps,
   .policy-editor {
     grid-template-columns: 1fr;
+  }
+
+  .modal-backdrop {
+    place-items: start center;
+    padding: 12px;
+  }
+
+  .tenant-wizard {
+    max-height: none;
+  }
+
+  .wizard-stepper,
+  .wizard-fields {
+    grid-template-columns: 1fr;
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .wizard-stepper div {
+    font-size: 11px;
+  }
+
+  .tenant-wizard-header,
+  .tenant-wizard-footer {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .wizard-error {
+    margin-left: 18px;
+    margin-right: 18px;
   }
 
   .traffic-panel {

@@ -11,6 +11,15 @@ This runbook defines the production workflow for connecting one tenant domain to
 - After changing the temporary password, the operator completes MFA from `Profile -> Multi-Factor Authentication`. This generates a `FortressNet` TOTP QR through the FortressNet console and verifies it with Cognito. The API accepts the signed Cognito ID token only after matching its email and groups to the tenant user record.
 - For OIDC or SAML, configure the tenant IdP before inviting users. The provider is created in Cognito, while client secrets are never stored in the FortressNet database.
 
+## Tenant Registration
+
+1. A platform owner starts **Create tenant** from the console. The registration wizard is the only normal UI path for tenant creation.
+2. Record the legal entity, country, website and optional business address; then provide the primary and technical contacts.
+3. Select the requested plan, expected domain count and traffic tier, capture the security use case, and confirm that the data is authorized for the customer registration.
+4. FortressNet stores the completed registration encrypted in the tenant record and creates the tenant entitlement. The operational console receives only the tenant ID, name, plan, status and registration state; contact and commercial details are not returned in tenant inventory APIs.
+
+The wizard does not create APN opportunities, Zoho leads, customer users, domains or edge resources. Those integrations and their explicit data-mapping/consent workflow are a later controlled phase.
+
 ## Preconditions
 
 - A platform operator creates the tenant and grants the tenant operator the required roles.

@@ -186,7 +186,7 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
     ]);
 
     res.json({
-      tenants: sortByDate(scopeItems(req.actor, tenants)),
+      tenants: sortByDate(scopeItems(req.actor, tenants)).map(publicTenant),
       domains: sortByDate(scopeItems(req.actor, domains)),
       policies: sortByDate(scopeItems(req.actor, policies)),
       entitlements: sortByDate(scopeItems(req.actor, entitlements)),
@@ -307,13 +307,15 @@ app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), asy
     if (!name) return res.status(400).json({ error: "tenant_name_required" });
     const plan = normalizePlan(body.plan);
     if (!plan) return res.status(400).json({ error: "supported_plan_required" });
+    const registration = normalizeTenantRegistration(body.registration, name, plan);
 
     const now = new Date().toISOString();
     const tenant = {
       tenant_id: `tenant_${slugify(name)}_${crypto.randomBytes(3).toString("hex")}`,
       name,
-      status: clean(body.status) || "active",
+      status: "registered",
       plan,
+      registration,
       created_at: now,
       updated_at: now
     };
@@ -324,8 +326,8 @@ app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), asy
         { Put: { TableName: tables.entitlements, Item: entitlement, ConditionExpression: "attribute_not_exists(customer_identifier)" } }
       ]
     }));
-    await audit("tenant.created", tenant.tenant_id, { tenant, entitlement }, req.actor);
-    res.status(201).json({ tenant, entitlement });
+    await audit("tenant.created", tenant.tenant_id, { tenant_id: tenant.tenant_id, plan, registration_version: registration.version, registration_status: registration.status, entitlement: publicEntitlement(entitlement) }, req.actor);
+    res.status(201).json({ tenant: publicTenant(tenant), entitlement: publicEntitlement(entitlement) });
   } catch (error) {
     next(error);
   }
@@ -333,7 +335,7 @@ app.post("/api/tenants", requirePlatformActor, requireScope("tenant:write"), asy
 
 app.get("/api/tenants", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    res.json({ tenants: sortByDate(scopeItems(req.actor, await scanTable(tables.tenants))) });
+    res.json({ tenants: sortByDate(scopeItems(req.actor, await scanTable(tables.tenants))).map(publicTenant) });
   } catch (error) {
     next(error);
   }
@@ -366,7 +368,7 @@ app.get("/api/billing/summary", requireScope("billing:read"), async (req, res, n
       observed_waf_requests: events.length,
       blocked_waf_requests: events.filter((event) => event.action === "BLOCK").length
     };
-    res.json({ tenant, entitlement: publicEntitlement(entitlement), usage, usage_period: currentUsagePeriod() });
+    res.json({ tenant: publicTenant(tenant), entitlement: publicEntitlement(entitlement), usage, usage_period: currentUsagePeriod() });
   } catch (error) {
     next(error);
   }
@@ -2415,6 +2417,78 @@ function normalizePlan(value) {
   return planCatalog[plan] ? plan : "";
 }
 
+function normalizeTenantRegistration(value, tenantName, plan) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!input) throw httpError(400, "tenant_registration_required");
+  const company = input.company || {};
+  const primaryContact = input.primary_contact || {};
+  const technicalContact = input.technical_contact || {};
+  const commercial = input.commercial || {};
+  const legalName = limitedText(company.legal_name, 160);
+  const country = clean(company.country).toUpperCase();
+  const website = clean(company.website);
+  const estimatedDomains = Number(commercial.estimated_domains);
+  const expectedTrafficTier = clean(commercial.expected_traffic_tier);
+  if (!legalName) throw httpError(400, "legal_entity_name_required");
+  if (!/^[A-Z]{2}$/.test(country)) throw httpError(400, "registration_country_invalid");
+  if (website && !isHttpsUrl(website)) throw httpError(400, "registration_website_must_be_https");
+  const primary = normalizeTenantContact(primaryContact, "primary_contact");
+  const technical = normalizeTenantContact(technicalContact, "technical_contact");
+  if (!Number.isSafeInteger(estimatedDomains) || estimatedDomains < 1 || estimatedDomains > 10000) throw httpError(400, "estimated_domains_invalid");
+  if (!new Set(["under_1m", "1m_to_10m", "10m_to_100m", "over_100m", "unknown"]).has(expectedTrafficTier)) throw httpError(400, "expected_traffic_tier_invalid");
+  if (input.opportunity_authorized !== true) throw httpError(400, "opportunity_data_authorization_required");
+  return {
+    version: 1,
+    status: "registered",
+    source: "fortressnet_console",
+    company: {
+      tenant_name: limitedText(tenantName, 160),
+      legal_name: legalName,
+      country,
+      tax_id: limitedText(company.tax_id, 80),
+      website,
+      industry: limitedText(company.industry, 100),
+      address_line_1: limitedText(company.address_line_1, 160),
+      city: limitedText(company.city, 100),
+      postal_code: limitedText(company.postal_code, 32)
+    },
+    primary_contact: primary,
+    technical_contact: technical,
+    commercial: {
+      requested_plan: plan,
+      estimated_domains: estimatedDomains,
+      expected_traffic_tier: expectedTrafficTier,
+      use_case: limitedText(commercial.use_case, 1000)
+    },
+    opportunity_authorized: true,
+    registered_at: new Date().toISOString()
+  };
+}
+
+function normalizeTenantContact(contact, prefix) {
+  const fullName = limitedText(contact.full_name, 160);
+  const email = normalizeEmail(contact.email);
+  const phone = limitedText(contact.phone, 40);
+  if (!fullName) throw httpError(400, `${prefix}_name_required`);
+  if (!email) throw httpError(400, `${prefix}_email_invalid`);
+  if (phone && !/^[+()0-9.\s-]{6,40}$/.test(phone)) throw httpError(400, `${prefix}_phone_invalid`);
+  return { full_name: fullName, email, job_title: limitedText(contact.job_title, 100), phone };
+}
+
+function limitedText(value, limit) {
+  return clean(value).slice(0, limit);
+}
+
+function publicTenant(tenant) {
+  if (!tenant) return null;
+  const { registration, ...publicFields } = tenant;
+  return {
+    ...publicFields,
+    registration_status: registration?.status || "not_registered",
+    registration_version: registration?.version || null
+  };
+}
+
 function createEntitlement(tenant, now) {
   const plan = normalizePlan(tenant.plan);
   const definition = planCatalog[plan];
@@ -3963,4 +4037,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, cloudFrontDistributionConfig, compileWafRules, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
