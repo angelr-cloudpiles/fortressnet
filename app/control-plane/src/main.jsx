@@ -624,6 +624,10 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
   const certificates = filterByTenant(state.certificates, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   const latestDomain = domains[0] || null;
+  const latestCertificate = certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id);
+  const verifyOwnership = () => {
+    if (latestDomain) verifyDomainDns(latestDomain.domain_id, token, setStatus, onCreated);
+  };
 
   return (
     <div className="screen">
@@ -645,8 +649,8 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
           </div>
         </Panel>
       </div>
-      <Panel title="DNS Instructions">
-        <DomainInstructions domain={latestDomain} certificate={certificates.find((certificate) => certificate.domain_id === latestDomain?.domain_id)} deployment={deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id)} />
+      <Panel title="DNS Instructions" action={latestDomain && <button className="primary compact" disabled={!token} onClick={verifyOwnership}><RefreshCw size={15} /> Check DNS</button>}>
+        <DomainInstructions domain={latestDomain} certificate={latestCertificate} deployment={deployments.find((deployment) => deployment.domain_id === latestDomain?.domain_id)} />
       </Panel>
     </div>
   );
@@ -1785,6 +1789,8 @@ function DomainInstructions({ domain, certificate, deployment }) {
       <div>
         <strong>Current step</strong>
         <span className="health pending">{domain.onboarding_step || domain.status}</span>
+        {domain.dns_last_checked_at && <small>Last DNS check: {new Date(domain.dns_last_checked_at).toLocaleString()}</small>}
+        {domain.dns_last_error && <small className="danger-text">{domain.dns_last_error}</small>}
       </div>
     </div>
   );
