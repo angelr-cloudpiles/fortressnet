@@ -708,6 +708,28 @@ function OnboardingScreen({ token, state, selectedTenantId, setSelectedTenantId,
     if (latestDomain) verifyDomainDns(latestDomain.domain_id, token, setStatus, onCreated);
   };
 
+  useEffect(() => {
+    if (!token || !latestCertificate?.certificate_arn || latestCertificate.status === "ISSUED") return undefined;
+    let cancelled = false;
+    const reconcile = async () => {
+      try {
+        const certificate = await reconcileCertificateStatus(latestCertificate.certificate_id, token);
+        if (!cancelled && certificate.status !== latestCertificate.status) {
+          setStatus({ type: "success", message: `Certificate status: ${certificate.status}.` });
+          onCreated();
+        }
+      } catch {
+        // A pending ACM record can be temporarily unavailable; the manual verification remains available.
+      }
+    };
+    reconcile();
+    const interval = window.setInterval(reconcile, 45000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [token, latestCertificate?.certificate_id, latestCertificate?.certificate_arn, latestCertificate?.status]);
+
   return (
     <div className="screen">
       <div className="dashboard-grid onboarding-grid">
@@ -2218,6 +2240,11 @@ async function refreshCertificate(certificateId, token, setStatus, onRefreshed) 
   } catch (error) {
     setStatus?.({ type: "error", message: error.message });
   }
+}
+
+async function reconcileCertificateStatus(certificateId, token) {
+  const data = await apiRequest(`/api/certificates/${certificateId}/status`, token);
+  return data.certificate;
 }
 
 async function originHealthCheck(originId, token, setStatus, onChanged) {

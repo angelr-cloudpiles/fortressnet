@@ -682,6 +682,22 @@ app.get("/api/certificates", requireScope("edge:read"), async (req, res, next) =
   }
 });
 
+app.get("/api/certificates/:certificateId/status", requireScope("edge:read"), async (req, res, next) => {
+  try {
+    const certificateId = clean(req.params.certificateId);
+    if (!certificateId) return res.status(400).json({ error: "certificate_id_required" });
+    const certificate = await getById(tables.certificates, { certificate_id: certificateId });
+    if (!certificate) return res.status(404).json({ error: "certificate_not_found" });
+    tenantForActor(req.actor, certificate.tenant_id);
+    if (!certificate.certificate_arn) return res.status(409).json({ error: "certificate_not_requested" });
+
+    const refreshed = await refreshCertificateRecord(certificate);
+    res.json({ certificate: refreshed });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.patch("/api/certificates/:certificateId/refresh", requireScope("edge:write"), async (req, res, next) => {
   try {
     const certificateId = clean(req.params.certificateId);
