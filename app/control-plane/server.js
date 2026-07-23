@@ -3454,19 +3454,30 @@ function clientSecurityResponseHeadersPolicyConfig(name, domainName, token) {
 }
 
 async function hardenCloudFrontDistribution(deployment, responseHeadersPolicyId) {
-  const response = await cloudfront.send(new GetDistributionConfigCommand({ Id: deployment.distribution_id }));
-  const config = response.DistributionConfig;
-  if (!config || !response.ETag) throw httpError(502, "cloudfront_distribution_config_unavailable");
-  config.DefaultCacheBehavior.ResponseHeadersPolicyId = responseHeadersPolicyId;
-  config.Origins.Items = (config.Origins.Items || []).map((origin) => ({
-    ...origin,
-    CustomOriginConfig: origin.CustomOriginConfig ? {
-      ...origin.CustomOriginConfig,
-      OriginProtocolPolicy: "https-only",
-      OriginSslProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
-    } : origin.CustomOriginConfig
-  }));
-  await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await cloudfront.send(new GetDistributionConfigCommand({ Id: deployment.distribution_id }));
+    const config = response.DistributionConfig;
+    if (!config || !response.ETag) throw httpError(502, "cloudfront_distribution_config_unavailable");
+    config.DefaultCacheBehavior.ResponseHeadersPolicyId = responseHeadersPolicyId;
+    config.Origins.Items = (config.Origins.Items || []).map((origin) => ({
+      ...origin,
+      CustomOriginConfig: origin.CustomOriginConfig ? {
+        ...origin.CustomOriginConfig,
+        OriginProtocolPolicy: "https-only",
+        OriginSslProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+      } : origin.CustomOriginConfig
+    }));
+    try {
+      await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
+      return;
+    } catch (error) {
+      if (error?.name !== "PreconditionFailed" || attempt === 2) {
+        if (error?.name === "PreconditionFailed") throw httpError(409, "cloudfront_configuration_conflict");
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
 }
 
 async function findResponseHeadersPolicy(name) {
@@ -3605,13 +3616,13 @@ function publicEdgeDeployment(deployment) {
   return safe;
 }
 
-async function checkOriginHealth(origin) {
+async function checkOriginHealth(origin, additionalHeaders = {}) {
   const target = normalizeOriginUrl(origin.origin_url);
   if (!target) throw httpError(400, "valid_https_origin_url_required");
   const address = await resolvePublicOriginAddress(target.hostname);
   const pathName = normalizeHealthPath(origin.health_path);
   const timeoutMs = Math.min(Math.max(Number(origin.timeout_seconds || 10) * 1000, 1000), 15000);
-  const result = await requestHealthCheck(target, address, pathName, timeoutMs, origin.host_header || target.hostname);
+  const result = await requestHealthCheck(target, address, pathName, timeoutMs, origin.host_header || target.hostname, additionalHeaders);
   return { ...result, address, checked_url: `${target.protocol}//${target.hostname}${pathName}` };
 }
 
@@ -3626,7 +3637,11 @@ async function checkProtectedEdge(domain) {
 async function recordOriginHealthCheck(origin, actor = null, source = "scheduled") {
   let health;
   try {
-    health = await checkOriginHealth(origin);
+    const deployment = await edgeDeploymentForDomain(origin.domain_id, origin.tenant_id);
+    const edgeHeaders = deployment?.origin_id === origin.origin_id && deployment.origin_header_name && deployment.origin_header_value
+      ? { [deployment.origin_header_name]: deployment.origin_header_value }
+      : {};
+    health = await checkOriginHealth(origin, edgeHeaders);
   } catch (error) {
     health = { healthy: false, status_code: 0, error: error.code || error.message || "health_check_failed" };
   }
@@ -3808,7 +3823,7 @@ async function resolvePublicOriginAddress(hostname) {
   return address;
 }
 
-function requestHealthCheck(target, address, pathName, timeoutMs, hostHeader) {
+function requestHealthCheck(target, address, pathName, timeoutMs, hostHeader, additionalHeaders = {}) {
   const client = target.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     const request = client.request({
@@ -3818,7 +3833,7 @@ function requestHealthCheck(target, address, pathName, timeoutMs, hostHeader) {
       port: target.port || (target.protocol === "https:" ? 443 : 80),
       path: pathName,
       method: "GET",
-      headers: { Host: hostHeader, "User-Agent": "FortressNet-Origin-Health/1.0" },
+      headers: { Host: hostHeader, "User-Agent": "FortressNet-Origin-Health/1.0", ...additionalHeaders },
       timeout: timeoutMs
     }, (response) => {
       response.resume();

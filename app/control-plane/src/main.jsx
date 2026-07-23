@@ -1362,7 +1362,7 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
         setStatus={setStatus}
       />
       <Panel title="Edge Hardening">
-        {deployments.length ? <div className="settings-list compact">{deployments.map((deployment) => <div key={deployment.deployment_id}><Shield size={18} /><span><strong>{deployment.domain_name}</strong><small>Browser headers and origin TLS are managed at the edge. Origin access: {humanizeWorkflowStatus(deployment.origin_access_status || "not_checked")}. Use a separate HTTPS origin hostname before running the bypass check.</small></span><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Copy origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-access-check`, "POST", token, setStatus, onCreated, "Direct origin access check completed.")}>Check origin lock</button><button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/security-refresh`, "POST", token, setStatus, onCreated, "CloudFront browser security controls and origin TLS have been refreshed.")}>Apply edge baseline</button></div></div>)}</div> : <EmptyState icon={Shield} title="No edge deployment yet" body="Provision the protected edge before applying browser hardening and sharing the origin verification header." />}
+        {deployments.length ? <div className="settings-list compact">{deployments.map((deployment) => <div key={deployment.deployment_id}><Shield size={18} /><span><strong>{deployment.domain_name}</strong><small>Browser headers and origin TLS are managed at the edge. The registered origin health check uses the protected verification header automatically. Origin access: {humanizeWorkflowStatus(deployment.origin_access_status || "not_checked")}.</small></span><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Copy origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-access-check`, "POST", token, setStatus, onCreated, "Direct origin access check completed.")}>Check origin lock</button><button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/security-refresh`, "POST", token, setStatus, onCreated, "CloudFront browser security controls and origin TLS have been refreshed.")}>Refresh edge controls</button></div></div>)}</div> : <EmptyState icon={Shield} title="No edge deployment yet" body="Provision the protected edge before applying browser hardening and sharing the origin verification header." />}
       </Panel>
       <div className="two-column">
         <Panel id="origins-inventory" title="Origins">
@@ -2937,6 +2937,9 @@ function friendlyWorkflowError(message) {
   }
   if (message === "replacement_origin_unhealthy") {
     return "FortressNet could not reach the replacement origin health path. Verify its DNS, TLS certificate, firewall rules and health path before requesting the CloudFront update.";
+  }
+  if (message === "cloudfront_configuration_conflict") {
+    return "CloudFront is processing another configuration update. Wait for the current deployment to finish, then refresh the edge controls again.";
   }
   return message;
 }
