@@ -1,0 +1,27 @@
+# Managed by FortressNet. The rendered file contains a tenant-specific secret
+# and must remain readable only by root and the Apache service account.
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+
+<Directory "/opt/bitnami/wordpress">
+  Options -Indexes +FollowSymLinks -MultiViews
+</Directory>
+
+<Location "/">
+  <RequireAny>
+    Require local
+    Require expr "%{HTTP:X-FortressNet-Origin-Verify} == '__FORTRESSNET_ORIGIN_HEADER_VALUE__'"
+  </RequireAny>
+</Location>
+
+<LocationMatch "^/(?:xmlrpc\.php|readme\.html|license\.txt)$">
+  Require all denied
+</LocationMatch>
+
+RewriteEngine On
+RewriteCond %{QUERY_STRING} (^|&)author=[0-9]+(?:&|$) [NC]
+RewriteRule ^ - [F,L]
+RewriteCond %{QUERY_STRING} (^|&)rest_route=/wp/v2/users(?:/|&|$) [NC]
+RewriteRule ^ - [F,L]
+RewriteRule ^wp-json/wp/v2/users(?:/|$) - [F,L,NC]

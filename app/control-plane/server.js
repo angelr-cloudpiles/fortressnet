@@ -3322,7 +3322,7 @@ function cloudFrontDistributionConfig(deployment, domain, origins, certificate, 
       HTTPPort: 80,
       HTTPSPort: Number(origin.port || 443),
       OriginProtocolPolicy: "https-only",
-      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+      OriginSslProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
     }
   }));
   const failoverEnabled = deployment.failover_enabled === true && originItems.length === 2;
@@ -3444,7 +3444,7 @@ async function hardenCloudFrontDistribution(deployment, responseHeadersPolicyId)
     CustomOriginConfig: origin.CustomOriginConfig ? {
       ...origin.CustomOriginConfig,
       OriginProtocolPolicy: "https-only",
-      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+      OriginSslProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
     } : origin.CustomOriginConfig
   }));
   await cloudfront.send(new UpdateDistributionCommand({ Id: deployment.distribution_id, IfMatch: response.ETag, DistributionConfig: config }));
@@ -3473,7 +3473,7 @@ async function updateCloudFrontOriginPool(deployment, pool, origins) {
       HTTPPort: 80,
       HTTPSPort: Number(origin.port || 443),
       OriginProtocolPolicy: "https-only",
-      OriginSSLProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
+      OriginSslProtocols: { Quantity: 1, Items: ["TLSv1.2"] }
     }
   }));
   const failoverEnabled = pool.failover_enabled === true && originItems.length === 2;
