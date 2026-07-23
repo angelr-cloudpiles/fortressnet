@@ -151,12 +151,13 @@ const emptyState = {
 };
 
 function App() {
+  const isLogoutReturn = window.location.pathname === "/logout";
   const [active, setActive] = useState("overview");
   const [range, setRange] = useState("24H");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [authConfig, setAuthConfig] = useState(null);
   const [platform, setPlatform] = useState(null);
-  const [token, setToken] = useState(() => sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || "");
+  const [token, setToken] = useState(() => isLogoutReturn ? "" : (sessionStorage.getItem("fortressnet_auth_token") || sessionStorage.getItem("fortressnet_admin_token") || ""));
   const [accessToken, setAccessToken] = useState(() => sessionStorage.getItem("fortressnet_access_token") || "");
   const [authMode, setAuthMode] = useState(() => sessionStorage.getItem("fortressnet_auth_mode") || "");
   const [state, setState] = useState(emptyState);
@@ -177,10 +178,31 @@ function App() {
       .catch(() => setAuthConfig({ login_ready: false }));
   }, []);
 
+  const clearSession = () => {
+    sessionStorage.removeItem("fortressnet_admin_token");
+    sessionStorage.removeItem("fortressnet_auth_token");
+    sessionStorage.removeItem("fortressnet_access_token");
+    sessionStorage.removeItem("fortressnet_auth_mode");
+    setAuthMode("");
+    setToken("");
+    setAccessToken("");
+    setState(emptyState);
+    setSelectedTenantId("");
+    setPlatform(null);
+    setTenantWizardOpen(false);
+    setStatus({ type: "idle", message: "" });
+  };
+
+  useEffect(() => {
+    if (!isLogoutReturn) return;
+    clearSession();
+    window.history.replaceState({}, "", "/");
+  }, []);
+
   useEffect(() => {
     if (!token) return;
     apiRequest("/api/platform", token).then(setPlatform).catch(() => setPlatform(null));
-    loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+    loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"), clearSession);
   }, [token]);
 
   useEffect(() => {
@@ -212,16 +234,9 @@ function App() {
       sessionStorage.setItem("fortressnet_auth_mode", "bootstrap");
       setAuthMode("bootstrap");
       setAccessToken("");
-      loadState(clean, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+      loadState(clean, setState, setStatus, setSelectedTenantId, () => setActive("profile"), clearSession);
     } else {
-      sessionStorage.removeItem("fortressnet_admin_token");
-      sessionStorage.removeItem("fortressnet_auth_token");
-      sessionStorage.removeItem("fortressnet_access_token");
-      sessionStorage.removeItem("fortressnet_auth_mode");
-      setAuthMode("");
-      setState(emptyState);
-      setSelectedTenantId("");
-      setPlatform(null);
+      clearSession();
     }
   };
 
@@ -231,7 +246,7 @@ function App() {
       return;
     }
     setStatus({ type: "idle", message: "Synchronizing console data..." });
-    await loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+    await loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"), clearSession);
   };
 
   const signIn = () => startCognitoLogin(authConfig).catch((error) => setStatus({ type: "error", message: error.message }));
@@ -265,20 +280,14 @@ function App() {
     setStatus({ type: "warning", message: "No tenant, domain, or policy matches that search." });
   };
   const signOut = () => {
-    sessionStorage.removeItem("fortressnet_admin_token");
-    sessionStorage.removeItem("fortressnet_auth_token");
-    sessionStorage.removeItem("fortressnet_access_token");
-    sessionStorage.removeItem("fortressnet_auth_mode");
-    setAuthMode("");
-    setToken("");
-    setAccessToken("");
-    setState(emptyState);
-    setSelectedTenantId("");
+    clearSession();
     if (authConfig?.cognito_hosted_ui_url && authConfig?.cognito_app_client_id) {
       const logoutUrl = new URL(`${authConfig.cognito_hosted_ui_url}/logout`);
       logoutUrl.searchParams.set("client_id", authConfig.cognito_app_client_id);
       logoutUrl.searchParams.set("logout_uri", `${window.location.origin}/logout`);
-      window.location.assign(logoutUrl.toString());
+      window.location.replace(logoutUrl.toString());
+    } else {
+      window.history.replaceState({}, "", "/");
     }
   };
 
@@ -405,7 +414,7 @@ function App() {
       {tenantWizardOpen && <TenantRegistrationWizard token={token} customers={state.customers} users={state.users} setStatus={setStatus} onClose={() => setTenantWizardOpen(false)} onCreated={(tenant) => {
         setSelectedTenantId(tenant.tenant_id);
         setTenantWizardOpen(false);
-        loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"));
+        loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"), clearSession);
       }} />}
     </div>
   );
@@ -2427,7 +2436,7 @@ function buildMetrics(state) {
   ];
 }
 
-async function loadState(token, setState, setStatus, setSelectedTenantId, onMfaRequired) {
+async function loadState(token, setState, setStatus, setSelectedTenantId, onMfaRequired, onUnauthenticated) {
   try {
     const data = await apiRequest("/api/management/state", token);
     setState({ ...emptyState, ...data });
@@ -2437,6 +2446,10 @@ async function loadState(token, setState, setStatus, setSelectedTenantId, onMfaR
     if (error.message === "mfa_enrollment_required") {
       onMfaRequired?.();
       setStatus({ type: "warning", message: "Configure and verify your FortressNet authenticator to unlock management access." });
+      return;
+    }
+    if (error.status === 401 || error.message === "management_access_required") {
+      onUnauthenticated?.();
       return;
     }
     setStatus({ type: "error", message: error.message });
@@ -2573,7 +2586,11 @@ async function apiRequest(path, token, options = {}) {
     }
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
