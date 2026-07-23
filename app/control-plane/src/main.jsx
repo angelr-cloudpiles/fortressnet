@@ -327,7 +327,6 @@ function App() {
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
               onNavigate={setActive}
@@ -339,21 +338,19 @@ function App() {
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
               onNavigate={setActive}
             />
           )}
-          {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
-          {active === "dmarc" && <DmarcScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} setStatus={setStatus} />}
+          {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} onCreated={reload} setStatus={setStatus} />}
+          {active === "dmarc" && <DmarcScreen token={token} state={state} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "origins" && (
             <OriginsScreen
               token={token}
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
             />
@@ -364,19 +361,17 @@ function App() {
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
             />
           )}
-          {active === "api-shield" && <ApiShieldScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} setStatus={setStatus} />}
+          {active === "api-shield" && <ApiShieldScreen token={token} state={state} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "access" && (
             <AccessScreen
               token={token}
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
             />
@@ -386,19 +381,17 @@ function App() {
               token={token}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
             />
           )}
-          {active === "ztna" && <ZtnaScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onCreated={reload} setStatus={setStatus} />}
+          {active === "ztna" && <ZtnaScreen token={token} state={state} selectedTenantId={selectedTenantId} onCreated={reload} setStatus={setStatus} />}
           {active === "api-keys" && (
             <ApiKeysScreen
               token={token}
               platform={platform}
               state={state}
               selectedTenantId={selectedTenantId}
-              setSelectedTenantId={setSelectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
             />
@@ -407,7 +400,7 @@ function App() {
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "dashboards" && <DashboardsScreen token={token} state={state} selectedTenantId={selectedTenantId} onNavigate={setActive} setStatus={setStatus} />}
-          {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} onChanged={reload} setStatus={setStatus} />}
+          {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
         </section>
@@ -904,7 +897,7 @@ function EmptyTable({ columns, message }) {
   );
 }
 
-function OnboardingScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
+function OnboardingScreen({ token, platform, state, selectedTenantId, onCreated, setStatus, onNavigate }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const origins = filterByTenant(state.origins, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
@@ -966,7 +959,7 @@ function OnboardingScreen({ token, platform, state, selectedTenantId, setSelecte
   return (
     <div className="screen">
       <div className="dashboard-grid onboarding-grid">
-        <Panel title="New Protected Site" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <Panel title="New Protected Site">
           <DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
         </Panel>
         <Panel title="Go-Live Assistant">
@@ -1152,7 +1145,7 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
   );
 }
 
-function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus, onNavigate }) {
+function DomainsScreen({ token, platform, state, selectedTenantId, onCreated, setStatus, onNavigate }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1167,7 +1160,7 @@ function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTe
   return (
     <div className="screen">
       <div className="two-column">
-      <Panel title="Domains" action={<div className="panel-actions"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Add domain</button></div>}>
+      <Panel title="Domains" action={<button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Add domain</button>}>
         <DomainTable domains={domains} token={token} onVerified={onCreated} setStatus={setStatus} />
       </Panel>
       <Panel title="Domain workspace">
@@ -1182,7 +1175,7 @@ function DomainsScreen({ token, platform, state, selectedTenantId, setSelectedTe
   );
 }
 
-function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function DnsScreen({ token, state, selectedTenantId, onCreated, setStatus }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
   const zones = filterByTenant(state.dns_zones, selectedTenantId);
   const [posture, setPosture] = useState(null);
@@ -1200,7 +1193,7 @@ function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
   };
   return (
     <div className="screen">
-      <Panel id="dns-management" title="DNS Management" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="dns-management" title="DNS Management">
         {domains.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Mode</th><th>DNSSEC</th><th>Action</th></tr></thead><tbody>{domains.map((domain) => {
           const zone = zones.find((item) => item.domain_id === domain.domain_id);
           return <tr key={domain.domain_id}><td>{domain.domain_name}</td><td>{zone?.mode || "External DNS"}</td><td>{zone?.dnssec_status || "Check posture"}</td><td><span className="button-pair">{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "external_guided")}>Guided</button>}{!zone && <button className="secondary compact" disabled={!token} onClick={() => createZone(domain.domain_id, "route53_delegated")}>Delegate Route 53</button>}<button className="secondary compact" disabled={!token} onClick={() => checkPosture(domain.domain_id)}>Posture</button></span></td></tr>;
@@ -1213,7 +1206,7 @@ function DnsScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
   );
 }
 
-function DmarcScreen({ token, state, selectedTenantId, setSelectedTenantId, setStatus }) {
+function DmarcScreen({ token, state, selectedTenantId, setStatus }) {
   const [configurations, setConfigurations] = useState([]);
   const [reports, setReports] = useState([]);
   const [domainId, setDomainId] = useState("");
@@ -1253,7 +1246,7 @@ function DmarcScreen({ token, state, selectedTenantId, setSelectedTenantId, setS
   return (
     <div className="screen">
       <div className="two-column">
-        <Panel title="DMARC Policy" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <Panel title="DMARC Policy">
           {domains.length ? <form className="form-grid" onSubmit={createConfiguration}>
             <label htmlFor="dmarc-domain">Verified domain<select id="dmarc-domain" value={domainId} onChange={(event) => setDomainId(event.target.value)}>{domains.map((domain) => <option key={domain.domain_id} value={domain.domain_id}>{domain.domain_name}</option>)}</select></label>
             <label htmlFor="dmarc-policy">Policy<select id="dmarc-policy" value={policy} onChange={(event) => setPolicy(event.target.value)}><option value="none">Monitor (p=none)</option><option value="quarantine">Quarantine</option><option value="reject">Reject</option></select></label>
@@ -1276,7 +1269,7 @@ function DmarcScreen({ token, state, selectedTenantId, setSelectedTenantId, setS
   );
 }
 
-function ApiShieldScreen({ token, state, selectedTenantId, setSelectedTenantId, setStatus }) {
+function ApiShieldScreen({ token, state, selectedTenantId, setStatus }) {
   const [inventory, setInventory] = useState([]);
   const [schemas, setSchemas] = useState([]);
   const [name, setName] = useState("");
@@ -1327,7 +1320,7 @@ function ApiShieldScreen({ token, state, selectedTenantId, setSelectedTenantId, 
   return (
     <div className="screen">
       <div className="two-column">
-        <Panel title="API Inventory" action={<span className="button-pair"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="secondary compact" disabled={!token || !hasTenant} onClick={refreshInventory}><RefreshCw size={15} /> Discover</button></span>}>
+        <Panel title="API Inventory" action={<button className="secondary compact" disabled={!token || !hasTenant} onClick={refreshInventory}><RefreshCw size={15} /> Discover</button>}>
           {inventory.length ? <table className="data-table"><thead><tr><th>Method</th><th>Path</th><th>Requests</th><th>Blocked</th><th>Classification</th></tr></thead><tbody>{inventory.map((endpoint) => <tr key={endpoint.endpoint_id}><td>{endpoint.method}</td><td><code>{endpoint.path_template}</code></td><td>{endpoint.observed_requests}</td><td>{endpoint.blocked_requests}</td><td>{endpoint.classification}</td></tr>)}</tbody></table> : <EmptyState icon={Activity} title="No observed API surface" body="Discovery reads real WAF events from a tenant edge; it does not invent endpoints." />}
         </Panel>
         <Panel title="OpenAPI Import">
@@ -1348,7 +1341,7 @@ function ApiShieldScreen({ token, state, selectedTenantId, setSelectedTenantId, 
   );
 }
 
-function OriginsScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
   const origins = filterByTenant(state.origins, selectedTenantId);
   const pools = filterByTenant(state.origin_pools, selectedTenantId);
   const certificates = filterByTenant(state.certificates, selectedTenantId);
@@ -1368,7 +1361,7 @@ function OriginsScreen({ token, platform, state, selectedTenantId, setSelectedTe
         setStatus={setStatus}
       />
       <div className="two-column">
-        <Panel id="origins-inventory" title="Origins" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <Panel id="origins-inventory" title="Origins">
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
         <Panel title="Add Origin">
@@ -1390,14 +1383,14 @@ function OriginsScreen({ token, platform, state, selectedTenantId, setSelectedTe
   );
 }
 
-function PoliciesScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function PoliciesScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
   const policies = filterByTenant(state.policies, selectedTenantId);
   const changeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
 
   return (
     <div className="screen">
       <div className="split-detail">
-        <Panel title="Policies" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+        <Panel title="Policies">
           {policies.length ? (
             <div className="policy-list">
               {policies.map((policy) => (
@@ -1424,7 +1417,7 @@ function PoliciesScreen({ token, platform, state, selectedTenantId, setSelectedT
   );
 }
 
-function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function AccessScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
   const users = selectedTenantId ? filterByTenant(state.users, selectedTenantId) : state.users.filter((user) => user.tenant_id === "platform");
   const [editor, setEditor] = useState(null);
   const profiles = platform?.access_profiles || [];
@@ -1432,7 +1425,7 @@ function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTen
 
   return (
     <div className="screen split-detail">
-      <Panel title={selectedTenantId ? "Users and access" : "Platform access"} action={<div className="panel-actions"><TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} /><button className="primary compact" disabled={!selectedTenantId} onClick={() => setEditor({ mode: "invite" })}><Plus size={15} /> Invite user</button></div>}>
+      <Panel title={selectedTenantId ? "Users and access" : "Platform access"} action={<button className="primary compact" disabled={!selectedTenantId} onClick={() => setEditor({ mode: "invite" })}><Plus size={15} /> Invite user</button>}>
         {users.length ? (
           <table className="data-table">
             <thead><tr><th>User</th><th>Profile</th><th>Permissions</th><th>Status</th><th>MFA</th><th></th></tr></thead>
@@ -1462,12 +1455,12 @@ function AccessScreen({ token, platform, state, selectedTenantId, setSelectedTen
   );
 }
 
-function IdpScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function IdpScreen({ token, state, selectedTenantId, onCreated, setStatus }) {
   const connections = filterByTenant(state.idp_connections, selectedTenantId);
 
   return (
     <div className="screen split-detail">
-      <Panel title="External Identity Providers" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel title="External Identity Providers">
         {connections.length ? (
           <table className="data-table">
             <thead><tr><th>Name</th><th>Protocol</th><th>Status</th><th>Issuer</th><th>Provisioning</th></tr></thead>
@@ -1494,7 +1487,7 @@ function IdpScreen({ token, state, selectedTenantId, setSelectedTenantId, onCrea
   );
 }
 
-function ZtnaScreen({ token, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function ZtnaScreen({ token, state, selectedTenantId, onCreated, setStatus }) {
   const applications = filterByTenant(state.ztna_applications, selectedTenantId);
   const connections = filterByTenant(state.idp_connections, selectedTenantId).filter((connection) => connection.status === "active");
   const [name, setName] = useState("");
@@ -1523,7 +1516,7 @@ function ZtnaScreen({ token, state, selectedTenantId, setSelectedTenantId, onCre
 
   return (
     <div className="screen">
-      <Panel id="ztna-applications" title="Private Applications" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="ztna-applications" title="Private Applications">
         {applications.length ? <table className="data-table"><thead><tr><th>Application</th><th>Protocol</th><th>Private target</th><th>Identity</th><th>Posture</th><th>Status</th></tr></thead><tbody>{applications.map((application) => <tr key={application.application_id}><td>{application.name}</td><td>{application.protocol.toUpperCase()}</td><td>{application.private_hostname}</td><td>{application.idp_connection_id ? "External IdP" : "Pending"}</td><td>{application.device_posture_required ? "Required" : "Optional"}</td><td><span className="health pending">{application.status}</span></td></tr>)}</tbody></table> : <EmptyState icon={LockKeyhole} title="No private applications" body="Register an application before creating its access endpoint." />}
       </Panel>
       <Panel title="Register Private Application">
@@ -1540,7 +1533,7 @@ function ZtnaScreen({ token, state, selectedTenantId, setSelectedTenantId, onCre
   );
 }
 
-function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTenantId, onCreated, setStatus }) {
+function ApiKeysScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
   const apiKeys = filterByTenant(state.api_keys, selectedTenantId);
   const [newKey, setNewKey] = useState("");
 
@@ -1551,7 +1544,7 @@ function ApiKeysScreen({ token, platform, state, selectedTenantId, setSelectedTe
 
   return (
     <div className="screen split-detail">
-      <Panel id="api-keys-inventory" title="API Keys" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="api-keys-inventory" title="API Keys">
         {newKey && (
           <div className="secret-once">
             <strong>Copy this key now. It will not be shown again.</strong>
@@ -1799,7 +1792,7 @@ function buildDashboardViews(state, telemetry, selectedTenantId) {
   ];
 }
 
-function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, onChanged, setStatus }) {
+function BillingScreen({ token, state, selectedTenantId, onChanged, setStatus }) {
   const [summary, setSummary] = useState(null);
   const [marketplace, setMarketplace] = useState(null);
   const [plan, setPlan] = useState("");
@@ -1839,7 +1832,7 @@ function BillingScreen({ token, state, selectedTenantId, setSelectedTenantId, on
 
   return (
     <div className="screen billing-grid">
-      <Panel id="billing-plan" title="Current Plan" action={<TenantSelector tenants={state.tenants} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} />}>
+      <Panel id="billing-plan" title="Current Plan">
         <div className="plan-box">
           {summary ? <><span>{summary.entitlement.plan_label} · {summary.entitlement.billing_status}</span><strong>{summary.entitlement.source}</strong><p>Limits are enforced by the control plane. Marketplace metering is enabled only after product fulfillment identifies the customer.</p></> : <><span>No tenant selected</span><p>Select a tenant to view its real entitlement and observed usage.</p></>}
         </div>
@@ -2728,17 +2721,6 @@ function formatEventTime(value, { relative = false } = {}) {
     return `${Math.floor(seconds / 86400)}d ago`;
   }
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
-}
-
-function TenantSelector({ tenants, selectedTenantId, setSelectedTenantId, includeGlobal = false }) {
-  if (!tenants.length) return <span className="mode-readonly">No tenants</span>;
-
-  return (
-    <select className="compact-select" value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>
-      {includeGlobal && <option value="">All tenants</option>}
-      {tenants.map((tenant) => <option key={tenant.tenant_id} value={tenant.tenant_id}>{tenant.name}</option>)}
-    </select>
-  );
 }
 
 function ReadinessList({ token, state }) {
