@@ -654,7 +654,7 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
       "api-keys": !apiKeys.length
         ? { title: "Create a least-privilege API key", detail: "Name the integration and select only the tenant scopes it needs. The secret is displayed once after creation, so store it in an approved secret manager.", action: { label: "Create API key", run: () => focusGuidedTarget("api-key-name") } }
         : { title: "Review automation access", detail: "API keys are tenant-scoped. Confirm their scopes and last-used time regularly, and rotate integrations that no longer need access.", action: { label: "Review API keys", run: () => focusGuidedTarget("api-keys-inventory") } },
-      events: { title: "Review observed security activity", detail: "Refresh the event stream to inspect real tenant WAF activity. Events are read-only here; policy changes stay in the approved policy workflow.", action: { label: "Refresh events", run: () => activateGuidedTarget("events-refresh") } },
+      events: { title: "Security event investigation", detail: "This is an operational view, not a pending task. Filter or refresh events only when investigating observed tenant WAF activity; policy changes stay in the approved workflow.", action: { label: "Open event stream", run: () => focusGuidedTarget("security-events") } },
       ai: { title: "Analyze without automatic enforcement", detail: "The AI analyst reads real tenant WAF events and returns recommendations. It never changes traffic behavior or applies a policy without the normal review flow.", action: { label: "Run analysis", run: () => activateGuidedTarget("ai-analyze") } },
       reports: { title: "Generate a current security view", detail: "Refresh this report after the edge has collected events. Empty results mean no observed data is available, not that synthetic activity was generated.", action: { label: "Refresh report", run: () => activateGuidedTarget("reports-refresh") } },
       billing: { title: "Confirm tenant limits and usage", detail: "Review the selected tenant's observed usage and entitlement before changing plan limits. Marketplace metering is enabled only after AWS fulfillment identifies the customer.", action: { label: "Review billing", run: () => focusGuidedTarget("billing-plan") } },
@@ -771,10 +771,12 @@ function Overview({ range, setRange, token, state, selectedTenantId, onNavigate 
 
 function OperationalCoverage({ state, selectedTenantId }) {
   const domains = filterByTenant(state.domains, selectedTenantId);
-  const active = domains.filter((domain) => domain.status === "active").length;
+  const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
+  const active = domains.filter((domain) => domain.status === "active" || deployments.some((deployment) => deployment.domain_id === domain.domain_id && ["active", "ready_for_cutover"].includes(deployment.status))).length;
   const policies = filterByTenant(state.policies, selectedTenantId).length;
+  const monitoring = filterByTenant(state.waf_change_sets, selectedTenantId).filter((changeSet) => changeSet.status === "applied" && changeSet.mode === "monitor").length;
   const pending = Math.max(domains.length - active, 0);
-  return <div className="settings-list compact"><div><CheckCircle2 size={18} /><span>Active protected domains</span><strong>{active}/{domains.length}</strong></div><div><Shield size={18} /><span>Security policies</span><strong>{policies}</strong></div><div><Activity size={18} /><span>Go-live actions pending</span><strong>{pending}</strong></div></div>;
+  return <div className="settings-list compact"><div><CheckCircle2 size={18} /><span>Live protected domains</span><strong>{active}/{domains.length}</strong></div><div><Shield size={18} /><span>Security policies</span><strong>{policies}</strong></div><div><Activity size={18} /><span>{monitoring ? "WAF observation windows" : "Go-live actions pending"}</span><strong>{monitoring || pending}</strong></div></div>;
 }
 
 function MetricCard({ metric, onNavigate }) {
@@ -851,7 +853,7 @@ function TrafficChart({ events, series, loading, error, range }) {
     <div className="chart-wrap">
       <div className="legend"><span className="legend-blue"></span>Total <span className="legend-green"></span>Allowed <span className="legend-red"></span>Blocked</div>
       <div className="traffic-summary"><span><strong>{events.length}</strong> requests</span><span className="allowed"><strong>{allowed}</strong> allowed</span><span className="blocked"><strong>{blocked}</strong> blocked or challenged</span></div>
-      <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="none">
+      <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="xMidYMid meet">
         {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <g key={fraction}><line x1={plot.left} x2={plot.right} y1={plot.bottom - fraction * plotHeight} y2={plot.bottom - fraction * plotHeight} /><text x="36" y={plot.bottom - fraction * plotHeight + 4} textAnchor="end">{Math.round(max * fraction)}</text></g>)}
         {series.map((bucket, index) => {
           const x = xFor(index) - barWidth / 2;
@@ -1348,6 +1350,7 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
   const certificates = filterByTenant(state.certificates, selectedTenantId);
   const domains = filterByTenant(state.domains, selectedTenantId);
   const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
+  const [createOpen, setCreateOpen] = useState(false);
 
   return (
     <div className="screen">
@@ -1365,24 +1368,18 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
         {deployments.length ? <div className="settings-list compact">{deployments.map((deployment) => <div key={deployment.deployment_id}><Shield size={18} /><span><strong>{deployment.domain_name}</strong><small>Browser headers and origin TLS are managed at the edge. The registered origin health check uses the protected verification header automatically. Origin access: {humanizeWorkflowStatus(deployment.origin_access_status || "not_checked")}.</small></span><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Copy origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-access-check`, "POST", token, setStatus, onCreated, "Direct origin access check completed.")}>Check origin lock</button><button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/security-refresh`, "POST", token, setStatus, onCreated, "CloudFront browser security controls and origin TLS have been refreshed.")}>Refresh edge controls</button></div></div>)}</div> : <EmptyState icon={Shield} title="No edge deployment yet" body="Provision the protected edge before applying browser hardening and sharing the origin verification header." />}
       </Panel>
       <div className="two-column">
-        <Panel id="origins-inventory" title="Origins">
+        <Panel id="origins-inventory" title="Origins" action={<button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Add origin</button>}>
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
-        <Panel title="Add Origin">
-          <OriginCreateForm token={token} tenants={state.tenants} domains={domains} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
-        </Panel>
-      </div>
-      <div className="two-column">
         <Panel title="Origin Pools">
           <OriginPoolTable pools={pools} origins={origins} />
         </Panel>
-        <Panel title="Failover Configuration">
-          <OriginPoolForm token={token} tenants={state.tenants} domains={domains} origins={origins} pools={pools} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
-        </Panel>
       </div>
+      <Panel title="Failover Configuration"><OriginPoolForm token={token} tenants={state.tenants} domains={domains} origins={origins} pools={pools} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} /></Panel>
       <Panel title="TLS Certificates">
         <CertificateTable certificates={certificates} token={token} onRefreshed={onCreated} setStatus={setStatus} />
       </Panel>
+      {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}><section className="tenant-wizard origin-create-dialog" role="dialog" aria-modal="true" aria-labelledby="origin-create-title"><header className="tenant-wizard-header"><div><p>ORIGIN</p><h2 id="origin-create-title">Add origin</h2></div><button className="icon-button bordered" type="button" title="Close origin dialog" onClick={() => setCreateOpen(false)}><X size={18} /></button></header><div className="dialog-form"><OriginCreateForm token={token} tenants={state.tenants} domains={domains} selectedTenantId={selectedTenantId} onCreated={() => { setCreateOpen(false); onCreated(); }} setStatus={setStatus} /></div></section></div>}
     </div>
   );
 }
@@ -1390,35 +1387,49 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
 function PoliciesScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
   const policies = filterByTenant(state.policies, selectedTenantId);
   const changeSets = filterByTenant(state.waf_change_sets, selectedTenantId);
+  const [selectedPolicyId, setSelectedPolicyId] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const selectedPolicy = policies.find((policy) => policy.policy_id === selectedPolicyId) || policies[0] || null;
+
+  useEffect(() => {
+    if (selectedPolicyId && policies.some((policy) => policy.policy_id === selectedPolicyId)) return;
+    setSelectedPolicyId(policies[0]?.policy_id || "");
+  }, [selectedPolicyId, policies]);
 
   return (
     <div className="screen">
       <div className="split-detail">
-        <Panel title="Policies">
+        <Panel title="Policies" action={<button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Create policy</button>}>
           {policies.length ? (
             <div className="policy-list">
               {policies.map((policy) => (
-                <div key={policy.policy_id} className="policy-item">
+                <button key={policy.policy_id} className={`policy-item ${selectedPolicy?.policy_id === policy.policy_id ? "selected" : ""}`} onClick={() => setSelectedPolicyId(policy.policy_id)}>
                   <Shield size={18} />
                   <span><strong>{policy.name}</strong><small>{policy.scope} · {policy.status}</small></span>
                   <em>{policy.mode}</em>
-                  <button className="secondary compact" onClick={() => compilePolicy(policy.policy_id, token, setStatus, onCreated)}>Compile</button>
-                </div>
+                </button>
               ))}
             </div>
           ) : (
             <EmptyState icon={Shield} title="No tenant policies yet" body="Create a tenant policy to scope WAF and rate-limit behavior." />
           )}
         </Panel>
-        <Panel title="Policy Detail" action={<span className="mode-readonly">AWS managed baseline</span>}>
-          <PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} />
+        <Panel title="Policy Detail" action={selectedPolicy ? <span className="mode-readonly">{selectedPolicy.application_profile === "wordpress_hardened" ? "WordPress hardened" : "AWS managed baseline"}</span> : null}>
+          {selectedPolicy ? <PolicyDetail policy={selectedPolicy} changeSets={changeSets} token={token} onCompiled={onCreated} onDeleted={() => setSelectedPolicyId("")} setStatus={setStatus} /> : <EmptyState icon={Shield} title="Select a policy" body="Choose a policy from the list to inspect its scope, protection profile and approval history." />}
         </Panel>
       </div>
       <Panel id="waf-change-sets" title="WAF Change Sets">
         <WafChangeSetTable changeSets={changeSets} domains={filterByTenant(state.domains, selectedTenantId)} token={token} canApproveTenantChanges={tenantApprovalEligible(platform, selectedTenantId)} actorSubject={platform?.actor?.subject || ""} onChanged={onCreated} setStatus={setStatus} />
       </Panel>
+      {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}><section className="tenant-wizard policy-create-dialog" role="dialog" aria-modal="true" aria-labelledby="policy-create-title"><header className="tenant-wizard-header"><div><p>SECURITY POLICY</p><h2 id="policy-create-title">Create policy</h2></div><button className="icon-button bordered" type="button" title="Close policy dialog" onClick={() => setCreateOpen(false)}><X size={18} /></button></header><PolicyCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={() => { setCreateOpen(false); onCreated(); }} setStatus={setStatus} /></section></div>}
     </div>
   );
+}
+
+function PolicyDetail({ policy, changeSets, token, onCompiled, onDeleted, setStatus }) {
+  const policyChangeSets = changeSets.filter((changeSet) => changeSet.policy_id === policy.policy_id).sort((left, right) => Date.parse(right.updated_at || right.created_at || 0) - Date.parse(left.updated_at || left.created_at || 0));
+  const hasActiveChangeSet = policyChangeSets.some((changeSet) => ["pending_approval", "approved", "applied"].includes(changeSet.status));
+  return <div className="policy-detail"><dl className="detail-list"><div><dt>Enforcement</dt><dd>{policy.mode === "block" ? "Block after observation" : "Monitor"}</dd></div><div><dt>Rate limit</dt><dd>{policy.rate_limit || 2000} per 5 minutes / IP</dd></div><div><dt>Scope</dt><dd>{policy.scope || "all domains"}</dd></div><div><dt>Managed protections</dt><dd>{(policy.managed_protections || []).join(", ") || "AWS baseline"}</dd></div></dl><div className="policy-detail-actions"><button className="primary compact" onClick={() => compilePolicy(policy.policy_id, token, setStatus, onCompiled)}>Compile change set</button><button className="danger compact" disabled={hasActiveChangeSet} title={hasActiveChangeSet ? "Policies with active approval or enforcement history are retained for auditability." : "Delete policy"} onClick={() => deleteResource(`/api/policies/${policy.policy_id}`, token, "Policy deleted.", setStatus, () => { onDeleted(); onCompiled(); })}>Delete policy</button></div><h3>Change history</h3>{policyChangeSets.length ? <div className="policy-change-history">{policyChangeSets.map((changeSet) => <div key={changeSet.change_set_id}><strong>{changeSet.mode}</strong><span>{changeSet.status}</span><small>{(changeSet.rules || []).length} rules · {formatEventTime(changeSet.updated_at || changeSet.created_at)}</small></div>)}</div> : <p className="detail-empty">No change set has been compiled for this policy.</p>}</div>;
 }
 
 function AccessScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
@@ -2461,7 +2472,7 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       <div><label htmlFor="policy-name">Policy name</label><input id="policy-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="OWASP managed defaults" /></div>
       <div><label htmlFor="policy-application-profile">Application profile</label><select id="policy-application-profile" value={applicationProfile} onChange={(event) => changeApplicationProfile(event.target.value)}><option value="generic">Generic web application</option><option value="wordpress_hardened">WordPress hardened</option></select></div>
       <div><label htmlFor="policy-mode">Mode</label><select id="policy-mode" value={mode} onChange={(event) => setMode(event.target.value)}><option value="monitor">Monitor first</option><option value="block">Block after observation</option></select></div>
-      <div><label htmlFor="policy-rate-limit">Requests per 5 minutes per IP</label><input id="policy-rate-limit" type="number" min="100" max="2000000" step="1" value={rateLimit} onChange={(event) => setRateLimit(event.target.value)} required /></div>
+      <div><label htmlFor="policy-rate-limit">Requests per 5 minutes per IP</label><input id="policy-rate-limit" type="number" min="10" max="2000000" step="1" value={rateLimit} onChange={(event) => setRateLimit(event.target.value)} required /></div>
       <div><label htmlFor="policy-rate-path">Path prefix</label><input id="policy-rate-path" value={rateLimitPath} onChange={(event) => setRateLimitPath(event.target.value)} placeholder="/login" /></div>
       <div className="policy-scope-picker"><label>HTTP methods</label><div className="scope-picker">{rateLimitMethodOptions.map((method) => <label key={method}><input type="checkbox" checked={rateLimitMethods.includes(method)} onChange={() => toggleMethod(method)} /> {method}</label>)}</div></div>
       <div><label htmlFor="policy-rate-countries">Countries</label><select id="policy-rate-countries" multiple value={rateLimitCountries} onChange={selectCountries}>{rateLimitCountryOptions.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></div>
@@ -2471,8 +2482,8 @@ function PolicyCreateForm({ token, tenants, selectedTenantId, onCreated, setStat
       <div><label htmlFor="policy-blocked-header-values">Blocked header values</label><input id="policy-blocked-header-values" value={blockedHeaderValues} onChange={(event) => setBlockedHeaderValues(event.target.value)} placeholder="invalid.example, unknown.example" /></div>
       <div><label htmlFor="policy-allowed-cidrs">Allowed source CIDRs</label><textarea id="policy-allowed-cidrs" value={allowedIpCidrs} onChange={(event) => setAllowedIpCidrs(event.target.value)} placeholder="203.0.113.0/24\n2001:db8::/32" /></div>
       <div><label htmlFor="policy-blocked-cidrs">Blocked source CIDRs</label><textarea id="policy-blocked-cidrs" value={blockedIpCidrs} onChange={(event) => setBlockedIpCidrs(event.target.value)} placeholder="198.51.100.0/24" /></div>
-      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nprofile: ${applicationProfile}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmanaged: ${managedProtections.length ? managedProtections.join(", ") : "baseline only"}\nWordPress profile: ${applicationProfile === "wordpress_hardened" ? "XML-RPC, user enumeration, directory index and scanner controls" : "not selected"}\nASNs: ${blockedAsns || "none"}\nsource lists: ${allowedIpCidrs || blockedIpCidrs ? "configured" : "none"}\napproval_required: true`}</pre>
-      <button className="primary" disabled={!token || !selectedTenantId || !name || Number(rateLimit) < 100 || Number(rateLimit) > 2000000}><Plus size={16} /> Create policy</button>
+      <pre>{`tenant_id: ${selectedTenantId || "pending"}\nprofile: ${applicationProfile}\nscope: all_domains\nenforcement: ${mode}\nrate_limit: ${rateLimit || "invalid"} per 5 minutes per IP\npath: ${rateLimitPath || "all paths"}\nmanaged: ${managedProtections.length ? managedProtections.join(", ") : "baseline only"}\nWordPress profile: ${applicationProfile === "wordpress_hardened" ? "XML-RPC, user enumeration, directory index, scanner controls and wp-login POST: 10 per 5 minutes per IP" : "not selected"}\nASNs: ${blockedAsns || "none"}\nsource lists: ${allowedIpCidrs || blockedIpCidrs ? "configured" : "none"}\napproval_required: true`}</pre>
+      <button className="primary" disabled={!token || !selectedTenantId || !name || Number(rateLimit) < 10 || Number(rateLimit) > 2000000}><Plus size={16} /> Create policy</button>
     </form>
   );
 }
@@ -2554,7 +2565,7 @@ function OriginTable({ origins, token = "", onChanged = null, setStatus = null }
             <td><small>{origin.origin_url}</small></td>
             <td><span className="health pending">{origin.status}</span></td>
             <td>{origin.health_path}</td>
-            <td><button className="secondary compact" disabled={!token} onClick={() => originHealthCheck(origin.origin_id, token, setStatus, onChanged)}>Check</button></td>
+            <td><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originHealthCheck(origin.origin_id, token, setStatus, onChanged)}>Check</button><button className="danger compact" disabled={!token} onClick={() => deleteResource(`/api/origins/${origin.origin_id}`, token, "Origin deleted.", setStatus, onChanged, `Delete origin ${origin.name}? This is only available when it is not used by an edge deployment or pool.`)}>Delete</button></div></td>
           </tr>
         ))}
       </tbody>
@@ -2972,6 +2983,17 @@ async function compilePolicy(policyId, token, setStatus, onCreated) {
     onCreated();
   } catch (error) {
     setStatus({ type: "error", message: error.message });
+  }
+}
+
+async function deleteResource(path, token, successMessage, setStatus, onChanged, confirmation = "Delete this resource?") {
+  if (!window.confirm(confirmation)) return;
+  try {
+    await apiRequest(path, token, { method: "DELETE" });
+    setStatus({ type: "success", message: successMessage });
+    onChanged?.();
+  } catch (error) {
+    setStatus({ type: "error", message: friendlyWorkflowError(error.message) });
   }
 }
 

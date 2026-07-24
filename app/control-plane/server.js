@@ -14,7 +14,7 @@ import { CloudFrontClient, CreateDistributionCommand, CreateResponseHeadersPolic
 import { CloudWatchLogsClient, CreateLogGroupCommand, FilterLogEventsCommand, PutRetentionPolicyCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminAddUserToGroupCommand, AdminCreateUserCommand, AdminDeleteUserCommand, AdminRemoveUserFromGroupCommand, AssociateSoftwareTokenCommand, CreateIdentityProviderCommand, CognitoIdentityProviderClient, DescribeUserPoolClientCommand, SetUserMFAPreferenceCommand, UpdateUserPoolClientCommand, VerifySoftwareTokenCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ChangeResourceRecordSetsCommand, CreateHostedZoneCommand, CreateKeySigningKeyCommand, EnableHostedZoneDNSSECCommand, GetDNSSECCommand, ListResourceRecordSetsCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { CreateVerifiedAccessEndpointCommand, CreateVerifiedAccessTrustProviderCommand, DescribeVerifiedAccessEndpointsCommand, EC2Client } from "@aws-sdk/client-ec2";
 import { BatchMeterUsageCommand, MarketplaceMeteringClient } from "@aws-sdk/client-marketplace-metering";
@@ -769,6 +769,25 @@ app.post("/api/origins", requireScope("origin:write"), async (req, res, next) =>
     await putUnique(tables.origins, origin, "origin_id");
     await audit("origin.created", tenantId, origin, req.actor);
     res.status(201).json({ origin });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/origins/:originId", requireScope("origin:write"), async (req, res, next) => {
+  try {
+    const origin = await getById(tables.origins, { origin_id: clean(req.params.originId) });
+    if (!origin) return res.status(404).json({ error: "origin_not_found" });
+    tenantForActor(req.actor, origin.tenant_id);
+    const [pools, deployments] = await Promise.all([
+      queryByTenant(tables.originPools, origin.tenant_id),
+      queryByTenant(tables.edgeDeployments, origin.tenant_id)
+    ]);
+    if (pools.some((pool) => (pool.origin_ids || []).includes(origin.origin_id))) return res.status(409).json({ error: "origin_referenced_by_pool" });
+    if (deployments.some((deployment) => deployment.origin_id === origin.origin_id || (deployment.origin_ids || []).includes(origin.origin_id))) return res.status(409).json({ error: "origin_referenced_by_edge" });
+    await dynamo.send(new DeleteCommand({ TableName: tables.origins, Key: { origin_id: origin.origin_id } }));
+    await audit("origin.deleted", origin.tenant_id, { origin_id: origin.origin_id, name: origin.name }, req.actor);
+    res.status(204).end();
   } catch (error) {
     next(error);
   }
@@ -1784,6 +1803,23 @@ app.post("/api/policies/:policyId/compile", requireScope("waf:write"), async (re
     }));
     await audit("policy.compiled", policy.tenant_id, changeSet, req.actor);
     res.status(201).json({ waf_change_set: changeSet });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/policies/:policyId", requireScope("waf:write"), async (req, res, next) => {
+  try {
+    const policy = await getById(tables.policies, { policy_id: clean(req.params.policyId) });
+    if (!policy) return res.status(404).json({ error: "policy_not_found" });
+    tenantForActor(req.actor, policy.tenant_id);
+    const changeSets = await queryByTenant(tables.wafChangeSets, policy.tenant_id);
+    if (changeSets.some((changeSet) => changeSet.policy_id === policy.policy_id && ["pending_approval", "approved", "applied"].includes(changeSet.status))) {
+      return res.status(409).json({ error: "policy_change_set_active" });
+    }
+    await dynamo.send(new DeleteCommand({ TableName: tables.policies, Key: { policy_id: policy.policy_id } }));
+    await audit("policy.deleted", policy.tenant_id, { policy_id: policy.policy_id, name: policy.name }, req.actor);
+    res.status(204).end();
   } catch (error) {
     next(error);
   }
@@ -3990,6 +4026,7 @@ function buildAiFindings(tenantId, events) {
   const now = new Date().toISOString();
   const day = now.slice(0, 10);
   const blocked = events.filter((event) => event.action === "BLOCK");
+  const observedMatches = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action");
   const findings = [];
   if (blocked.length >= 25) {
     findings.push(aiFinding(tenantId, day, "sustained_blocked_requests", "high", `${blocked.length} blocked WAF requests were observed in the last 24 hours.`, "Review the affected paths and approve a tenant rate-limit or managed-rule tuning change.", blocked.length, now));
@@ -3997,6 +4034,10 @@ function buildAiFindings(tenantId, events) {
   const byRule = blocked.reduce((counts, event) => ({ ...counts, [event.rule_id || "unknown"]: (counts[event.rule_id || "unknown"] || 0) + 1 }), {});
   for (const [ruleId, count] of Object.entries(byRule).filter(([, count]) => count >= 10).slice(0, 3)) {
     findings.push(aiFinding(tenantId, day, `rule_concentration_${hashSecret(ruleId).slice(0, 8)}`, "medium", `Rule ${ruleId} accounted for ${count} blocked requests.`, "Keep the rule in count mode only after an approved change set and review false positives.", count, now));
+  }
+  const observedByRule = observedMatches.reduce((counts, event) => ({ ...counts, [event.rule_id]: (counts[event.rule_id] || 0) + 1 }), {});
+  for (const [ruleId, count] of Object.entries(observedByRule).filter(([, count]) => count >= 1).slice(0, 3)) {
+    findings.push(aiFinding(tenantId, day, `monitor_match_${hashSecret(ruleId).slice(0, 8)}`, "medium", `Rule ${ruleId} matched ${count} request${count === 1 ? "" : "s"} while the WAF policy is observing.`, "Review the matched requests during the observation window, then apply the tenant-approved blocking policy if the traffic is unwanted.", count, now));
   }
   return findings;
 }
@@ -4252,15 +4293,24 @@ function wafMethodStatement(method) {
 async function collectSecurityEvents(deployments, limit, windowHours = 24) {
   const startTime = Date.now() - Math.min(Math.max(Number(windowHours) || 24, 1), 24 * 30) * 60 * 60 * 1000;
   const results = await Promise.all(deployments.filter((item) => item.log_group_name).map(async (deployment) => {
-    const response = await cloudwatchLogs.send(new FilterLogEventsCommand({
-      logGroupName: deployment.log_group_name,
-      startTime,
-      limit: Math.min(Math.max(limit, 1), 500)
-    })).catch((error) => {
-      if (["ResourceNotFoundException", "AccessDeniedException"].includes(error?.name)) return { events: [] };
-      throw error;
-    });
-    return (response.events || []).map((event) => normalizeWafLogEvent(event, deployment)).filter(Boolean);
+    const events = [];
+    let nextToken;
+    // CloudWatch returns at most one page unless its continuation token is used.
+    // Fetch a bounded history, then retain the newest records below.
+    do {
+      const response = await cloudwatchLogs.send(new FilterLogEventsCommand({
+        logGroupName: deployment.log_group_name,
+        startTime,
+        nextToken,
+        limit: 500
+      })).catch((error) => {
+        if (["ResourceNotFoundException", "AccessDeniedException"].includes(error?.name)) return { events: [] };
+        throw error;
+      });
+      events.push(...(response.events || []));
+      nextToken = response.nextToken;
+    } while (nextToken && events.length < 2500);
+    return events.map((event) => normalizeWafLogEvent(event, deployment)).filter(Boolean);
   }));
   return results.flat().sort((a, b) => b.timestamp - a.timestamp).slice(0, Math.min(Math.max(limit, 1), 500));
 }
@@ -4269,13 +4319,23 @@ function normalizeWafLogEvent(event, deployment) {
   const record = parseJson(event.message, null);
   if (!record) return null;
   const request = record.httpRequest || {};
+  const observedRules = [
+    ...(record.nonTerminatingMatchingRules || []),
+    ...((record.ruleGroupList || []).flatMap((group) => group.nonTerminatingMatchingRules || []))
+  ].map((rule) => rule.ruleId).filter(Boolean);
+  // In monitor mode AWS keeps Default_Action as the terminating rule and
+  // records the meaningful detections as non-terminating matches.
+  const ruleId = record.terminatingRuleId && record.terminatingRuleId !== "Default_Action"
+    ? record.terminatingRuleId
+    : observedRules[0] || record.terminatingRuleId || "";
   return {
     event_id: `evt_${hashSecret(`${deployment.deployment_id}:${event.eventId || event.timestamp}`)}`,
     tenant_id: deployment.tenant_id,
     domain_id: deployment.domain_id,
     timestamp: Number(event.timestamp || record.timestamp || 0),
     action: record.action || "UNKNOWN",
-    rule_id: record.terminatingRuleId || "",
+    rule_id: ruleId,
+    matched_rule_ids: observedRules,
     method: request.httpMethod || "",
     uri: request.uri || "",
     country: request.country || "",
@@ -4456,7 +4516,7 @@ function marketplaceProductCode() {
 
 function normalizeWafRateLimitConfig(body) {
   const limit = Number(body.rate_limit ?? 2000);
-  if (!Number.isSafeInteger(limit) || limit < 100 || limit > 2_000_000) throw httpError(400, "rate_limit_invalid");
+  if (!Number.isSafeInteger(limit) || limit < 10 || limit > 2_000_000) throw httpError(400, "rate_limit_invalid");
 
   const path = clean(body.rate_limit_path);
   if (path && (!path.startsWith("/") || path.startsWith("//") || path.length > 512 || /[?#\r\n]/.test(path))) {
@@ -4654,7 +4714,8 @@ function compileWafRules(policy) {
       { name: "FortressNetWordPressUsersRest", type: "uri_path_match", path: "/wp-json/wp/v2/users", positional_constraint: "STARTS_WITH", action },
       { name: "FortressNetWordPressUsersRoute", type: "query_string_match", value: "/wp/v2/users", positional_constraint: "CONTAINS", action },
       { name: "FortressNetWordPressAuthorEnum", type: "query_string_match", value: "author=", positional_constraint: "CONTAINS", action },
-      { name: "FortressNetWordPressLoginRate", type: "rate_based_rule", aggregate_key_type: "IP", limit: 100, evaluation_window_sec: 300, path: "/wp-login.php", methods: ["POST"], action },
+      // The WordPress profile has a dedicated credential-stuffing control, independent of the general site limit.
+      { name: "FortressNetWordPressLoginRate", type: "rate_based_rule", aggregate_key_type: "IP", limit: 10, evaluation_window_sec: 300, path: "/wp-login.php", methods: ["POST"], action },
       { name: "FortressNetScannerUserAgents", type: "header_match", header_name: "user-agent", values: ["sqlmap", "wpscan", "nikto"], positional_constraint: "CONTAINS", action }
     );
   }
@@ -4777,4 +4838,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, buildTenantAccess, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, buildTenantAccess, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

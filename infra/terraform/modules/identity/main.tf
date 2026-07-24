@@ -96,7 +96,7 @@ resource "aws_cognito_user_pool_ui_customization" "fortressnet" {
     .banner-customizable {
       min-height: 76px !important;
       padding: 22px 30px !important;
-      background: #07182a url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNjAiIGhlaWdodD0iNDQiIHZpZXdCb3g9IjAgMCAyNjAgNDQiPjxyZWN0IHdpZHRoPSI0NCIgaGVpZ2h0PSI0NCIgcng9IjgiIGZpbGw9IiMxNzY5ZTAiLz48cGF0aCBkPSJNMTMgMzFWMTNoMTh2NkgyMHY0aDl2NmgtOXYyeiIgZmlsbD0id2hpdGUiLz48dGV4dCB4PSI1OCIgeT0iMjkiIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjIyIiBmb250LXdlaWdodD0iNzAwIiBsZXR0ZXItc3BhY2luZz0iMS4yIiBmaWxsPSJ3aGl0ZSI+Rk9SVFJFU1NORVQ8L3RleHQ+PC9zdmc+") no-repeat 30px center !important;
+      background: #07182a url("https://app.fortressnet.app/brand/fortressnet-shield.png") no-repeat 30px center / 44px 44px !important;
       border-bottom: 1px solid rgba(184, 204, 229, .22) !important;
       color: #ffffff !important;
       font-weight: 760 !important;

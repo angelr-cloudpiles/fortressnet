@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -37,10 +37,26 @@ test("keeps the global rate limit unscoped when no conditions are selected", () 
 });
 
 test("rejects unsafe rate limit configuration", () => {
-  assert.throws(() => normalizeWafRateLimitConfig({ rate_limit: 99 }), { message: "rate_limit_invalid" });
+  assert.throws(() => normalizeWafRateLimitConfig({ rate_limit: 9 }), { message: "rate_limit_invalid" });
   assert.throws(() => normalizeWafRateLimitConfig({ rate_limit: 200, rate_limit_path: "login" }), { message: "rate_limit_path_invalid" });
   assert.throws(() => normalizeWafRateLimitConfig({ rate_limit: 200, rate_limit_methods: ["TRACE"] }), { message: "rate_limit_methods_invalid" });
   assert.throws(() => normalizeWafRateLimitConfig({ rate_limit: 200, rate_limit_countries: ["ZZ"] }), { message: "rate_limit_countries_invalid" });
+});
+
+test("uses a monitor match instead of Default_Action as the observed rule", () => {
+  const event = normalizeWafLogEvent({
+    eventId: "monitor-match",
+    timestamp: 1000,
+    message: JSON.stringify({
+      action: "ALLOW",
+      terminatingRuleId: "Default_Action",
+      nonTerminatingMatchingRules: [{ ruleId: "FortressNetScannerUserAgents-16", action: "COUNT" }],
+      httpRequest: { httpMethod: "GET", uri: "/", country: "ES", clientIp: "198.51.100.9" }
+    })
+  }, { deployment_id: "edge_test", tenant_id: "tenant_test", domain_id: "dom_test" });
+
+  assert.equal(event.rule_id, "FortressNetScannerUserAgents-16");
+  assert.deepEqual(event.matched_rule_ids, ["FortressNetScannerUserAgents-16"]);
 });
 
 test("compiles opt-in managed protections and advanced WAF statements", () => {
@@ -71,7 +87,7 @@ test("compiles a WordPress hardened profile with focused edge controls", () => {
   assert.equal(managedGroups.includes("AWSManagedRulesWordPressRuleSet"), true);
   assert.equal(managedGroups.includes("AWSManagedRulesPHPRuleSet"), true);
   assert.equal(rules.some((rule) => rule.name === "FortressNetWordPressXmlRpc" && rule.type === "uri_path_match"), true);
-  assert.equal(rules.some((rule) => rule.name === "FortressNetWordPressLoginRate" && rule.limit === 100), true);
+  assert.equal(rules.some((rule) => rule.name === "FortressNetWordPressLoginRate" && rule.limit === 10), true);
 
   const awsRules = toAwsWafRules(rules.filter((rule) => ["uri_path_match", "query_string_match", "header_match"].includes(rule.type)), "dom_wp");
   assert.equal(awsRules.some((rule) => rule.Statement.ByteMatchStatement?.FieldToMatch.UriPath !== undefined), true);

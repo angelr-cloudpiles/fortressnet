@@ -1063,6 +1063,7 @@ kbd {
 
 .chart-wrap {
   padding: 12px 18px 18px;
+  overflow-x: auto;
 }
 
 .legend {
@@ -1105,6 +1106,7 @@ kbd {
 
 .line-chart {
   width: 100%;
+  min-width: 720px;
   height: 292px;
 }
 
@@ -1882,14 +1884,77 @@ code {
 .policy-item {
   min-height: 58px;
   display: grid;
-  grid-template-columns: 22px 1fr auto auto;
+  width: 100%;
+  grid-template-columns: 22px 1fr auto;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+
+.policy-create-dialog {
+  width: min(100%, 1040px);
+}
+
+.origin-create-dialog { width: min(100%, 720px); }
+.dialog-form { padding: 22px 24px 26px; }
+
+.policy-create-dialog .policy-editor {
+  padding: 22px 24px 26px;
+}
+
+.policy-detail {
+  display: grid;
+  gap: 18px;
+  padding: 18px 20px 22px;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.detail-list div {
+  min-width: 0;
+  padding: 12px;
+  background: #f8fbff;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.detail-list dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.policy-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-start; }
+.danger.compact {
+  border-color: #fda29b;
+  background: #fff5f4;
+  color: #b42318;
+}
+.danger.compact:hover:not(:disabled) { background: #ffe4e1; }
+.policy-detail h3 { margin: 0; font-size: 14px; }
+.policy-change-history { display: grid; gap: 8px; }
+.policy-change-history > div { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; }
+.policy-change-history small { grid-column: 1 / -1; color: var(--muted); }
+.detail-empty { margin: 0; color: var(--muted); font-size: 13px; }
 
 .policy-list strong {
   display: block;
