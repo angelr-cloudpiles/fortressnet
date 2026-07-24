@@ -1791,7 +1791,9 @@ app.post("/api/policies", requireScope("waf:write"), async (req, res, next) => {
       mode,
       ...rateLimit,
       ...advanced,
-      approval_required: true,
+      // Tenant administrators own their WAF policy lifecycle. Platform-originated
+      // changes still require an approval from an administrator in that tenant.
+      approval_required: !isTenantApprovalActor(req.actor, tenantId),
       status: "draft",
       created_at: now,
       updated_at: now
@@ -1837,6 +1839,7 @@ app.post("/api/policies/:policyId/compile", requireScope("waf:write"), async (re
 
     const now = new Date().toISOString();
     const rules = compileWafRules(policy);
+    const tenantSelfApproved = isTenantApprovalActor(req.actor, policy.tenant_id);
     const changeSet = {
       change_set_id: `wcs_${crypto.randomUUID()}`,
       tenant_id: policy.tenant_id,
@@ -1844,13 +1847,20 @@ app.post("/api/policies/:policyId/compile", requireScope("waf:write"), async (re
       policy_version: crypto.createHash("sha256").update(JSON.stringify(policy)).digest("hex").slice(0, 12),
       target_scope: policy.scope || "all_domains",
       mode: policy.mode || "managed_defaults",
-      status: "pending_approval",
+      status: tenantSelfApproved ? "approved" : "pending_approval",
       provider: "aws_wafv2",
       rules,
-      summary: `${rules.length} AWS WAF rules compiled in approval mode`,
+      summary: tenantSelfApproved
+        ? `${rules.length} AWS WAF rules compiled and approved by the tenant administrator`
+        : `${rules.length} AWS WAF rules compiled and awaiting tenant approval`,
       created_by: req.actor?.subject || "bootstrap",
       created_at: now,
-      updated_at: now
+      updated_at: now,
+      approval_mode: tenantSelfApproved ? "tenant_self_approved" : "tenant_administrator_required",
+      ...(tenantSelfApproved ? {
+        approved_by: req.actor?.subject || "unknown",
+        approved_at: now
+      } : {})
     };
 
     await putUnique(tables.wafChangeSets, changeSet, "change_set_id");
@@ -1860,7 +1870,7 @@ app.post("/api/policies/:policyId/compile", requireScope("waf:write"), async (re
       UpdateExpression: "SET #status = :status, last_compiled_at = :compiled, updated_at = :updated",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
-        ":status": "compiled_pending_approval",
+        ":status": tenantSelfApproved ? "compiled_ready" : "compiled_pending_approval",
         ":compiled": now,
         ":updated": now
       }
@@ -1906,7 +1916,8 @@ app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("waf:write"),
     tenantForActor(req.actor, changeSet.tenant_id);
     requireTenantApprovalActor(req.actor, changeSet.tenant_id);
     if (changeSet.status !== "pending_approval") return res.status(409).json({ error: "waf_change_set_not_pending_approval" });
-    if (changeSet.created_by === req.actor?.subject) return res.status(409).json({ error: "separation_of_duties_required" });
+    const tenantSelfApproval = canSelfApproveTenantWafChange(req.actor, changeSet);
+    if (changeSet.created_by === req.actor?.subject && !tenantSelfApproval) return res.status(409).json({ error: "separation_of_duties_required" });
     const now = new Date().toISOString();
     const result = await dynamo.send(new UpdateCommand({
       TableName: tables.wafChangeSets,
@@ -1925,8 +1936,12 @@ app.post("/api/waf-change-sets/:changeSetId/approve", requireScope("waf:write"),
     approval.status = "approved";
     approval.approved_by = req.actor?.subject || "unknown";
     approval.approved_at = now;
+    approval.approval_mode = tenantSelfApproval ? "tenant_self_approved" : "tenant_administrator_approved";
     await putUnique(tables.approvals, approval, "approval_id");
-    await audit("waf_change_set.approved", changeSet.tenant_id, { change_set_id: changeSet.change_set_id }, req.actor);
+    await audit("waf_change_set.approved", changeSet.tenant_id, {
+      change_set_id: changeSet.change_set_id,
+      approval_mode: approval.approval_mode
+    }, req.actor);
     res.json({ waf_change_set: result.Attributes, approval });
   } catch (error) {
     next(error);
@@ -2856,6 +2871,14 @@ function isTenantApprovalActor(actor, tenantId) {
   return Boolean(
     actorTenantIds(actor).includes(clean(tenantId)) &&
     approvedTenantIds.includes(clean(tenantId))
+  );
+}
+
+function canSelfApproveTenantWafChange(actor, changeSet) {
+  return Boolean(
+    changeSet &&
+    changeSet.created_by === actor?.subject &&
+    isTenantApprovalActor(actor, changeSet.tenant_id)
   );
 }
 
@@ -5006,4 +5029,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, buildTenantAccess, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, buildTenantAccess, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

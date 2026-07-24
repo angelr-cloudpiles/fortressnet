@@ -1118,9 +1118,9 @@ function OnboardingGuidance({ token, selectedTenantId, domain, origin, certifica
         detail = "This WAF change must be approved by an active tenant administrator or security administrator in the selected tenant. A platform administrator can review the change but cannot approve it.";
         action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
       } else if (pendingWafChangeSet.created_by === actorSubject) {
-        title = "Invite an independent approver";
-        detail = "You compiled this WAF change, so a different active tenant administrator or security administrator must review and approve it before it can be applied.";
-        action = { label: "Open tenant access", icon: Users, run: () => onNavigate("access") };
+        title = "Approve your tenant WAF policy";
+        detail = "This is a tenant-scoped WAF policy. As an administrator of the selected tenant, you can approve the pending change and continue with its monitor or enforcement workflow.";
+        action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "Tenant WAF change set approved.") };
       } else {
         detail = "The WAF change set requires approval before it can be applied to this edge.";
         action = { label: "Approve WAF", icon: CheckCircle2, run: () => edgeAction(`/api/waf-change-sets/${pendingWafChangeSet.change_set_id}/approve`, "POST", token, setStatus, onCreated, "WAF change set approved.") };
@@ -2812,7 +2812,7 @@ function EdgeAction({ domain, deployment, token, canApproveTenantChanges, actorS
 function WafAction({ changeSet, changeSets, domainId, token, canApproveTenantChanges, actorSubject, onChanged, setStatus }) {
   if (changeSet.status === "pending_approval") {
     if (!canApproveTenantChanges) return <span className="mode-readonly">Tenant approval required</span>;
-    if (changeSet.created_by === actorSubject) return <span className="mode-readonly">Independent approval required</span>;
+    if (changeSet.created_by === actorSubject) return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "Tenant WAF change set approved.")}>Approve tenant policy</button>;
     return <button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/waf-change-sets/${changeSet.change_set_id}/approve`, "POST", token, setStatus, onChanged, "WAF change set approved.")}>Approve</button>;
   }
   if (changeSet.status === "approved" && changeSet.mode === "block") {

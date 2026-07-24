@@ -48,6 +48,10 @@ docs/
 The full Cloudflare-parity execution backlog is documented in
 [`docs/architecture/cloudflare-parity-action-plan.md`](docs/architecture/cloudflare-parity-action-plan.md).
 
+The regional high-availability, backup, restore-testing, and cross-region exit
+criteria are documented in
+[`docs/architecture/regional-resilience-plan.md`](docs/architecture/regional-resilience-plan.md).
+
 It covers the implementation plan for WAF, DDoS, SSL/TLS, API Shield, Client-side
 Security, DNS, DMARC Management, Load Balancing, AI analysis, and SASE/ZTNA.
 
@@ -102,7 +106,8 @@ FortressNet separates platform administration from customer-tenant administratio
 - Predefined profiles include tenant administrator, security administrator, security analyst, domain and DNS administrator, identity administrator, billing administrator, and read-only access.
 - The access editor exposes a read/write check for each operational module: tenant management, domains, DNS & TLS, DMARC, origins, WAF, API Shield, users, external IdP, ZTNA, API keys, events, AI Analyst, reports, and billing.
 - API requests are evaluated again against the selected tenant. A permission granted for one tenant cannot authorize the same action in another tenant.
-- Edge, WAF, and Verified Access approvals require a separate authorized tenant administrator or security administrator. A global platform owner and the requester cannot approve the tenant's own change.
+- Edge and Verified Access deployments require a separate authorized tenant administrator or security administrator. A global platform owner and the requester cannot approve the tenant's own infrastructure change.
+- Tenant-scoped WAF policy changes are owned by the tenant: a tenant administrator or security administrator can compile, approve and apply their own WAF change. Platform-originated WAF changes remain pending for tenant approval.
 
 Legacy user records without `access_assignments` remain functional until the first access edit. New customer onboarding and invitations persist a tenant-scoped assignment immediately.
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {
@@ -141,6 +141,13 @@ test("limits tenant approvals to administrators inside the tenant", () => {
   assert.equal(isTenantApprovalActor({ tenant_id: "platform", roles: ["platform_owner"], scopes: ["*"] }, "tenant_soportame"), false);
   assert.equal(isTenantApprovalActor({ tenant_id: "tenant_other", roles: ["tenant_admin"] }, "tenant_soportame"), false);
   assert.equal(isTenantApprovalActor({ tenant_id: "tenant_soportame", roles: ["security_analyst"] }, "tenant_soportame"), false);
+});
+
+test("allows a tenant administrator to approve their own tenant-scoped WAF change", () => {
+  const changeSet = { tenant_id: "tenant_soportame", created_by: "tenant-admin-subject" };
+  assert.equal(canSelfApproveTenantWafChange({ subject: "tenant-admin-subject", tenant_id: "tenant_soportame", roles: ["tenant_admin"] }, changeSet), true);
+  assert.equal(canSelfApproveTenantWafChange({ subject: "platform-owner", tenant_id: "platform", roles: ["platform_owner"], scopes: ["*"] }, { ...changeSet, created_by: "platform-owner" }), false);
+  assert.equal(canSelfApproveTenantWafChange({ subject: "tenant-analyst", tenant_id: "tenant_soportame", roles: ["security_analyst"] }, { ...changeSet, created_by: "tenant-analyst" }), false);
 });
 
 test("creates the AWS managed WAF baseline in monitor mode", () => {
