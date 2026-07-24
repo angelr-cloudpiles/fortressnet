@@ -90,17 +90,23 @@ resource "aws_cognito_user_pool_domain" "this" {
 resource "aws_cognito_user_pool_ui_customization" "fortressnet" {
   user_pool_id = aws_cognito_user_pool.this.id
   client_id    = aws_cognito_user_pool_client.web.id
+  image_file   = filebase64("${path.root}/../../../../app/control-plane/public/brand/fortressnet-cognito-brand.jpg")
 
   css = <<-CSS
     .background-customizable { background: #07182a !important; }
     .banner-customizable {
-      min-height: 76px !important;
-      padding: 22px 30px !important;
-      background: #07182a url("https://app.fortressnet.app/brand/fortressnet-shield.png") no-repeat 30px center / 44px 44px !important;
+      min-height: 86px !important;
+      padding: 17px 30px !important;
+      background: #07182a !important;
       border-bottom: 1px solid rgba(184, 204, 229, .22) !important;
-      color: #ffffff !important;
-      font-weight: 760 !important;
-      letter-spacing: .02em !important;
+      text-align: left !important;
+    }
+    .logo-customizable {
+      display: block !important;
+      width: 260px !important;
+      height: 51px !important;
+      max-width: 100% !important;
+      object-fit: contain !important;
     }
     .label-customizable { color: #344054 !important; font-weight: 650 !important; }
     .redirect-customizable { color: #344054 !important; font-weight: 650 !important; }
