@@ -242,10 +242,12 @@ button {
 .sidebar-tenant-menu {
   display: grid;
   gap: 3px;
-  max-height: 180px;
+  max-height: min(34vh, 260px);
   margin-top: 6px;
+  margin-bottom: 4px;
   padding: 5px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 5px;
