@@ -141,8 +141,8 @@ resource "aws_cognito_user_pool_client" "web" {
     "ALLOW_USER_SRP_AUTH"
   ]
 
-  access_token_validity  = 60
-  id_token_validity      = 60
+  access_token_validity  = 120
+  id_token_validity      = 120
   refresh_token_validity = 30
 
   token_validity_units {
