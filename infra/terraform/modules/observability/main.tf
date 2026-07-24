@@ -14,17 +14,17 @@ resource "aws_glue_catalog_table" "control_plane_audit_events" {
   table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    classification                 = "json"
-    "projection.enabled"          = "true"
-    "projection.year.type"        = "integer"
-    "projection.year.range"       = "2025,NOW"
-    "projection.month.type"       = "integer"
-    "projection.month.range"      = "1,12"
-    "projection.month.digits"     = "2"
-    "projection.day.type"         = "integer"
-    "projection.day.range"        = "1,31"
-    "projection.day.digits"       = "2"
-    "storage.location.template"   = "s3://${var.audit_logs_bucket_name}/control-plane/year=$${year}/month=$${month}/day=$${day}/"
+    classification              = "json"
+    "projection.enabled"        = "true"
+    "projection.year.type"      = "integer"
+    "projection.year.range"     = "2025,NOW"
+    "projection.month.type"     = "integer"
+    "projection.month.range"    = "1,12"
+    "projection.month.digits"   = "2"
+    "projection.day.type"       = "integer"
+    "projection.day.range"      = "1,31"
+    "projection.day.digits"     = "2"
+    "storage.location.template" = "s3://${var.audit_logs_bucket_name}/control-plane/year=$${year}/month=$${month}/day=$${day}/"
   }
 
   partition_keys {
@@ -81,7 +81,7 @@ resource "aws_glue_catalog_table" "waf_events" {
   table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    classification               = "json"
+    classification              = "json"
     "projection.enabled"        = "true"
     "projection.year.type"      = "integer"
     "projection.year.range"     = "2025,NOW"

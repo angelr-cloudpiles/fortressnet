@@ -274,6 +274,8 @@ resource "aws_iam_role_policy" "task" {
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_reports_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.client_security_events_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.marketplace_usage_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.control_assessments_table_name}",
+          "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.support_cases_table_name}",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.domains_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.security_policies_table_name}/index/*",
           "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.users_table_name}/index/*",
@@ -297,6 +299,8 @@ resource "aws_iam_role_policy" "task" {
           , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.dmarc_reports_table_name}/index/*"
           , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.client_security_events_table_name}/index/*"
           , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.marketplace_usage_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.control_assessments_table_name}/index/*"
+          , "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.support_cases_table_name}/index/*"
         ]
       },
       {
@@ -633,6 +637,14 @@ resource "aws_ecs_task_definition" "this" {
         {
           name  = "MARKETPLACE_USAGE_TABLE"
           value = var.marketplace_usage_table_name
+        },
+        {
+          name  = "CONTROL_ASSESSMENTS_TABLE"
+          value = var.control_assessments_table_name
+        },
+        {
+          name  = "SUPPORT_CASES_TABLE"
+          value = var.support_cases_table_name
         },
         {
           name  = "DNSSEC_KMS_KEY_ARN"

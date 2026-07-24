@@ -76,7 +76,9 @@ const tables = {
   dmarcConfigurations: process.env.DMARC_CONFIGURATIONS_TABLE,
   dmarcReports: process.env.DMARC_REPORTS_TABLE,
   clientSecurityEvents: process.env.CLIENT_SECURITY_EVENTS_TABLE,
-  marketplaceUsage: process.env.MARKETPLACE_USAGE_TABLE
+  marketplaceUsage: process.env.MARKETPLACE_USAGE_TABLE,
+  controlAssessments: process.env.CONTROL_ASSESSMENTS_TABLE,
+  supportCases: process.env.SUPPORT_CASES_TABLE
 };
 
 // Cognito groups establish an identity's broad trust boundary. Effective
@@ -97,6 +99,7 @@ const permissionModules = Object.freeze([
   { id: "events", label: "Security events" },
   { id: "ai", label: "AI Analyst" },
   { id: "reports", label: "Reports" },
+  { id: "support", label: "Technical assistance" },
   { id: "billing", label: "Billing" }
 ]);
 
@@ -106,11 +109,11 @@ const readOnlyPermissions = permissionModules.flatMap((module) => modulePermissi
 
 const accessProfiles = Object.freeze({
   platform_owner: { label: "Platform owner", scope: "platform", identity_role: "platform_owner", permissions: ["*"] },
-  platform_security_operator: { label: "Platform security operator", scope: "platform", identity_role: "platform_owner", permissions: ["tenant:read", "domain:read", "dns:read", "dmarc:read", "origin:read", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write"] },
+  platform_security_operator: { label: "Platform security operator", scope: "platform", identity_role: "platform_owner", permissions: ["tenant:read", "domain:read", "dns:read", "dmarc:read", "origin:read", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write", "support:read", "support:write"] },
   platform_billing_admin: { label: "Platform billing administrator", scope: "platform", identity_role: "platform_owner", permissions: ["tenant:read", "billing:read", "billing:write", "reports:read"] },
   platform_read_only: { label: "Platform viewer", scope: "platform", identity_role: "platform_owner", permissions: readOnlyPermissions },
   tenant_admin: { label: "Tenant administrator", scope: "tenant", identity_role: "tenant_admin", permissions: [...allTenantPermissions] },
-  security_admin: { label: "Security administrator", scope: "tenant", identity_role: "security_admin", permissions: ["tenant:read", "domain:read", "domain:write", "dns:read", "dns:write", "dmarc:read", "dmarc:write", "origin:read", "origin:write", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write"] },
+  security_admin: { label: "Security administrator", scope: "tenant", identity_role: "security_admin", permissions: ["tenant:read", "domain:read", "domain:write", "dns:read", "dns:write", "dmarc:read", "dmarc:write", "origin:read", "origin:write", "waf:read", "waf:write", "api_shield:read", "api_shield:write", "events:read", "ai:read", "reports:read", "reports:write", "support:read", "support:write"] },
   security_analyst: { label: "Security analyst", scope: "tenant", identity_role: "security_analyst", permissions: ["tenant:read", "domain:read", "dns:read", "dmarc:read", "origin:read", "waf:read", "api_shield:read", "events:read", "ai:read", "reports:read"] },
   domain_dns_admin: { label: "Domain and DNS administrator", scope: "tenant", identity_role: "tenant_admin", permissions: ["tenant:read", "domain:read", "domain:write", "dns:read", "dns:write", "dmarc:read", "dmarc:write", "origin:read", "origin:write", "reports:read"] },
   identity_admin: { label: "Identity administrator", scope: "tenant", identity_role: "tenant_admin", permissions: ["tenant:read", "access:read", "access:write", "idp:read", "idp:write", "ztna:read", "ztna:write", "api_keys:read", "api_keys:write", "reports:read"] },
@@ -204,7 +207,7 @@ app.get("/api/platform", (req, res) => {
 
 app.get("/api/management/state", requireScope("tenant:read"), async (req, res, next) => {
   try {
-    const [tenants, customers, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications, dmarcConfigurations] = await Promise.all([
+    const [tenants, customers, domains, policies, entitlements, users, apiKeys, idpConnections, profiles, origins, originPools, certificates, wafChangeSets, edgeDeployments, approvals, dnsZones, dnsRecords, aiFindings, ztnaApplications, dmarcConfigurations, controlAssessments, supportCases] = await Promise.all([
       scanTable(tables.tenants),
       scanTable(tables.customers),
       scanTable(tables.domains),
@@ -224,7 +227,9 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       scanTable(tables.dnsRecords),
       scanTable(tables.aiFindings),
       scanTable(tables.ztnaApplications),
-      scanTable(tables.dmarcConfigurations)
+      scanTable(tables.dmarcConfigurations),
+      scanTable(tables.controlAssessments),
+      scanTable(tables.supportCases)
     ]);
 
     res.json({
@@ -247,7 +252,9 @@ app.get("/api/management/state", requireScope("tenant:read"), async (req, res, n
       dns_records: sortByDate(scopedItemsForPermission(req.actor, dnsRecords, "dns:read")),
       ai_findings: sortByDate(scopedItemsForPermission(req.actor, aiFindings, "ai:read")),
       ztna_applications: sortByDate(scopedItemsForPermission(req.actor, ztnaApplications, "ztna:read")),
-      dmarc_configurations: sortByDate(scopedItemsForPermission(req.actor, dmarcConfigurations, "dmarc:read"))
+      dmarc_configurations: sortByDate(scopedItemsForPermission(req.actor, dmarcConfigurations, "dmarc:read")),
+      control_assessments: sortByDate(scopedItemsForPermission(req.actor, controlAssessments, "ai:read")),
+      support_cases: sortByDate(scopedItemsForPermission(req.actor, supportCases, "support:read"))
     });
   } catch (error) {
     next(error);
@@ -1620,24 +1627,81 @@ app.post("/api/ai/analyze", requireScope("ai:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
     if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
-    const deployments = await queryByTenant(tables.edgeDeployments, tenantId);
-    const events = await collectSecurityEvents(deployments, 500);
-    const findings = buildAiFindings(tenantId, events);
-    const persisted = [];
-    for (const finding of findings) {
-      try {
-        await putUnique(tables.aiFindings, finding, "finding_id");
-        persisted.push(finding);
-      } catch (error) {
-        if (error?.name !== "ConditionalCheckFailedException") throw error;
-      }
-    }
-    await audit("ai_analysis.completed", tenantId, { event_count: events.length, findings_created: persisted.length }, req.actor);
-    const currentFindings = await queryByTenant(tables.aiFindings, tenantId);
-    res.json({ mode: "read_only", analyzed_events: events.length, findings: sortByDate(currentFindings), findings_created: persisted.length });
+    const analysis = await runTenantControlAnalysis(tenantId, req.actor, "manual");
+    res.json({ mode: "read_only", analyzed_events: analysis.event_count, findings: analysis.findings, findings_created: analysis.findings_created, assessment: analysis.assessment });
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/api/control-assessments", requireScope("ai:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const assessments = tenantId ? await queryByTenant(tables.controlAssessments, tenantId) : await scanTable(tables.controlAssessments);
+    res.json({ assessments: sortByDate(assessments) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/support/cases", requireScope("support:read"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
+    const cases = tenantId ? await queryByTenant(tables.supportCases, tenantId) : await scanTable(tables.supportCases);
+    res.json({ cases: sortByDate(cases).map(publicSupportCase) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/support/cases", requireScope("support:write"), async (req, res, next) => {
+  try {
+    const tenantId = tenantForActor(req.actor, clean(req.body?.tenant_id));
+    const subject = clean(req.body?.subject);
+    const description = clean(req.body?.description);
+    const category = clean(req.body?.category) || "general";
+    const priority = clean(req.body?.priority) || "normal";
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!subject || subject.length > 140 || !description || description.length > 5000) return res.status(400).json({ error: "support_case_content_invalid" });
+    if (!new Set(["general", "access", "domain_dns", "origin", "waf", "billing", "incident"]).has(category)) return res.status(400).json({ error: "support_case_category_invalid" });
+    if (!new Set(["low", "normal", "high", "critical"]).has(priority)) return res.status(400).json({ error: "support_case_priority_invalid" });
+    const now = new Date().toISOString();
+    const supportCase = {
+      case_id: `sup_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      subject,
+      description,
+      category,
+      priority,
+      status: "open",
+      requester: publicActor(req.actor),
+      assignee: null,
+      updates: [{ update_id: `supupd_${crypto.randomUUID()}`, type: "opened", message: "Case created.", actor: publicActor(req.actor), created_at: now }],
+      notification_state: "unread",
+      created_at: now,
+      updated_at: now
+    };
+    await putUnique(tables.supportCases, supportCase, "case_id");
+    await audit("support_case.created", tenantId, { case_id: supportCase.case_id, category, priority }, req.actor);
+    res.status(201).json({ case: publicSupportCase(supportCase) });
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/support/cases/:caseId", requireScope("support:write"), async (req, res, next) => {
+  try {
+    const supportCase = await getById(tables.supportCases, { case_id: clean(req.params.caseId) });
+    if (!supportCase) return res.status(404).json({ error: "support_case_not_found" });
+    tenantForActor(req.actor, supportCase.tenant_id);
+    const nextStatus = clean(req.body?.status) || supportCase.status;
+    const message = clean(req.body?.message);
+    const assignee = clean(req.body?.assignee);
+    if (!new Set(["open", "in_progress", "waiting_customer", "resolved", "closed"]).has(nextStatus)) return res.status(400).json({ error: "support_case_status_invalid" });
+    if (message.length > 5000) return res.status(400).json({ error: "support_case_update_invalid" });
+    if (!message && nextStatus === supportCase.status && !assignee) return res.status(400).json({ error: "support_case_update_required" });
+    const now = new Date().toISOString();
+    const updates = [...(supportCase.updates || [])];
+    updates.push({ update_id: `supupd_${crypto.randomUUID()}`, type: nextStatus !== supportCase.status ? "status" : "comment", status: nextStatus, message: message || `Status updated to ${nextStatus}.`, actor: publicActor(req.actor), created_at: now });
+    const updated = { ...supportCase, status: nextStatus, assignee: assignee || supportCase.assignee || null, updates: updates.slice(-100), notification_state: "unread", updated_at: now, resolved_at: ["resolved", "closed"].includes(nextStatus) ? now : supportCase.resolved_at || null };
+    await dynamo.send(new PutCommand({ TableName: tables.supportCases, Item: updated }));
+    await audit("support_case.updated", supportCase.tenant_id, { case_id: supportCase.case_id, status: nextStatus }, req.actor);
+    res.json({ case: publicSupportCase(updated) });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/edge-deployments/:deploymentId/origin-verification", requireScope("origin:write"), async (req, res, next) => {
@@ -2010,9 +2074,25 @@ app.get("/api/client-security/reports", requireScope("events:read"), async (req,
 app.get("/api/reports", requireScope("reports:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
-    const deployments = tenantId ? await queryByTenant(tables.edgeDeployments, tenantId) : await scanTable(tables.edgeDeployments);
+    const [deployments, domains, policies, findings, assessments] = await Promise.all([
+      tenantId ? queryByTenant(tables.edgeDeployments, tenantId) : scanTable(tables.edgeDeployments),
+      tenantId ? queryByTenant(tables.domains, tenantId) : scanTable(tables.domains),
+      tenantId ? queryByTenant(tables.policies, tenantId) : scanTable(tables.policies),
+      tenantId ? queryByTenant(tables.aiFindings, tenantId) : scanTable(tables.aiFindings),
+      tenantId ? queryByTenant(tables.controlAssessments, tenantId) : scanTable(tables.controlAssessments)
+    ]);
     const events = await collectSecurityEvents(deployments, 500);
-    res.json({ reports: [buildSecurityReport(tenantId || "platform", events, deployments)] });
+    res.json({
+      reports: [buildSecurityReport(tenantId || "platform", events, deployments)],
+      coverage: {
+        domains: domains.length,
+        active_domains: domains.filter((domain) => domain.status === "active").length,
+        protected_edges: deployments.filter((deployment) => ["deployed", "active", "ready_for_cutover"].includes(deployment.status)).length,
+        policies: policies.length
+      },
+      findings: sortByDate(findings).slice(0, 12),
+      latest_assessment: sortByDate(assessments)[0] || null
+    });
   } catch (error) {
     next(error);
   }
@@ -2679,7 +2759,11 @@ function buildTenantAccess(user, permittedRoles) {
     if (!tenantId || !permittedRoles.includes(profileId)) continue;
     const profile = accessProfile(profileId);
     const permissions = normalizePermissions(assignment?.permissions);
-    permissionMap[tenantId] = Array.from(new Set([...(permissionMap[tenantId] || []), ...(permissions.length ? permissions : profile?.permissions || [])]));
+    // A profile is the secure baseline. Explicit tenant selections can narrow
+    // it, but newly introduced support scopes must be available to tenant
+    // administrators who already held that role before the module existed.
+    const inherited = profileId === "tenant_admin" ? profile?.permissions || [] : [];
+    permissionMap[tenantId] = Array.from(new Set([...(permissionMap[tenantId] || []), ...inherited, ...(permissions.length ? permissions : profile?.permissions || [])]));
     if (["tenant_admin", "security_admin"].includes(profileId)) approvalTenantIds.add(tenantId);
   }
 
@@ -3728,6 +3812,8 @@ function startOriginHealthScheduler() {
   setInterval(run, intervalMs).unref();
   setTimeout(() => runDmarcReportSweep().catch((error) => console.warn("dmarc_report_sweep_failed", error?.message || error)), 60_000).unref();
   setInterval(() => runDmarcReportSweep().catch((error) => console.warn("dmarc_report_sweep_failed", error?.message || error)), 10 * 60 * 1000).unref();
+  setTimeout(() => runHourlyControlSweep().catch((error) => console.warn("hourly_control_sweep_failed", error?.message || error)), 90_000).unref();
+  setInterval(() => runHourlyControlSweep().catch((error) => console.warn("hourly_control_sweep_failed", error?.message || error)), 60 * 60 * 1000).unref();
 }
 
 async function runOriginHealthSweep() {
@@ -3735,6 +3821,18 @@ async function runOriginHealthSweep() {
   const origins = await scanTable(tables.origins);
   for (const origin of origins) await recordOriginHealthCheck(origin, { type: "system", subject: "origin_health_scheduler" }, "scheduled");
   await archiveRecentWafEvents();
+}
+
+async function runHourlyControlSweep() {
+  if (!tables.controlAssessments || !await acquireOperationLock("hourly-control-assessment", 55 * 60)) return;
+  const tenants = await scanTable(tables.tenants);
+  for (const tenant of tenants) {
+    try {
+      await runTenantControlAnalysis(tenant.tenant_id, { type: "system", subject: "hourly_control_scheduler" }, "scheduled");
+    } catch (error) {
+      console.warn("tenant_control_analysis_failed", tenant.tenant_id, error?.message || error);
+    }
+  }
 }
 
 async function archiveRecentWafEvents() {
@@ -4040,6 +4138,73 @@ function buildAiFindings(tenantId, events) {
     findings.push(aiFinding(tenantId, day, `monitor_match_${hashSecret(ruleId).slice(0, 8)}`, "medium", `Rule ${ruleId} matched ${count} request${count === 1 ? "" : "s"} while the WAF policy is observing.`, "Review the matched requests during the observation window, then apply the tenant-approved blocking policy if the traffic is unwanted.", count, now));
   }
   return findings;
+}
+
+async function runTenantControlAnalysis(tenantId, actor, source = "manual") {
+  const [deployments, domains, policies] = await Promise.all([
+    queryByTenant(tables.edgeDeployments, tenantId),
+    queryByTenant(tables.domains, tenantId),
+    queryByTenant(tables.policies, tenantId)
+  ]);
+  const events = await collectSecurityEvents(deployments, 500, 24);
+  const findings = buildAiFindings(tenantId, events);
+  let findingsCreated = 0;
+  for (const finding of findings) {
+    try {
+      await putUnique(tables.aiFindings, finding, "finding_id");
+      findingsCreated += 1;
+    } catch (error) {
+      if (error?.name !== "ConditionalCheckFailedException") throw error;
+    }
+  }
+  const currentFindings = await queryByTenant(tables.aiFindings, tenantId);
+  const assessment = buildControlAssessment(tenantId, { domains, deployments, policies, events, findings: currentFindings, source });
+  if (tables.controlAssessments) await dynamo.send(new PutCommand({ TableName: tables.controlAssessments, Item: assessment }));
+  await audit("ai_analysis.completed", tenantId, { source, event_count: events.length, findings_created: findingsCreated, assessment_status: assessment.status }, actor);
+  return { event_count: events.length, findings: sortByDate(currentFindings), findings_created: findingsCreated, assessment };
+}
+
+function buildControlAssessment(tenantId, { domains, deployments, policies, events, findings, source }) {
+  const now = new Date().toISOString();
+  const activeDomains = domains.filter((domain) => domain.status === "active").length;
+  const unhealthyOrigins = domains.length && deployments.length === 0;
+  const blockingPolicies = policies.filter((policy) => policy.mode === "block").length;
+  const openFindings = findings.filter((finding) => finding.status === "open");
+  const highFindings = openFindings.filter((finding) => finding.severity === "high").length;
+  const matched = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action").length;
+  const recommendations = [];
+  if (!policies.length) recommendations.push({ severity: "high", module: "Policies", message: "No tenant WAF baseline is recorded. Create or restore the AWS Managed Security Baseline before routing traffic." });
+  if (domains.length && activeDomains < domains.length) recommendations.push({ severity: "medium", module: "Domains", message: `${domains.length - activeDomains} protected domain${domains.length - activeDomains === 1 ? " is" : "s are"} not active. Review the domain workspace or dashboard next step.` });
+  if (unhealthyOrigins) recommendations.push({ severity: "medium", module: "Origins", message: "A protected domain has no deployed edge. Validate the origin health and request the edge deployment." });
+  if (matched) recommendations.push({ severity: "medium", module: "Events", message: `${matched} managed-rule match${matched === 1 ? " was" : "es were"} observed in the last 24 hours. Review evidence before tuning or enforcing a policy.` });
+  if (!events.length && deployments.length) recommendations.push({ severity: "low", module: "Events", message: "No WAF telemetry was observed in the last 24 hours. Confirm traffic reaches the protected hostname before relying on analytics." });
+  if (!recommendations.length) recommendations.push({ severity: "info", module: "Controls", message: "No configuration drift or elevated evidence was found in the scheduled read-only control check." });
+  const status = highFindings || recommendations.some((item) => item.severity === "high") ? "attention_required" : recommendations.some((item) => item.severity === "medium") ? "review_recommended" : "healthy";
+  return {
+    assessment_id: `ctl_${tenantId}`,
+    tenant_id: tenantId,
+    status,
+    source,
+    checked_at: now,
+    analyzed_events: events.length,
+    active_domains: activeDomains,
+    protected_domains: domains.length,
+    edge_deployments: deployments.length,
+    blocking_policies: blockingPolicies,
+    open_findings: openFindings.length,
+    recommendations,
+    expires_at: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60),
+    created_at: now,
+    updated_at: now
+  };
+}
+
+function publicSupportCase(supportCase) {
+  if (!supportCase) return {};
+  return {
+    ...supportCase,
+    updates: (supportCase.updates || []).map((update) => ({ ...update, actor: publicActor(update.actor) }))
+  };
 }
 
 function aiFinding(tenantId, day, code, severity, summary, recommendation, evidenceCount, now) {
@@ -4733,7 +4898,10 @@ function defaultWafBaseline() {
     rate_limit_path: "",
     rate_limit_methods: [],
     rate_limit_countries: [],
-    managed_protections: ["ip_reputation", "anonymous_ip"],
+    // These are the AWS managed rule groups compiled for every tenant baseline.
+    // The list is descriptive as Common, KnownBadInputs and SQLi are mandatory
+    // controls in compileWafRules rather than optional toggles.
+    managed_protections: ["common_rule_set", "known_bad_inputs", "sqli", "ip_reputation", "anonymous_ip"],
     blocked_asns: [],
     blocked_header_name: "",
     blocked_header_values: [],

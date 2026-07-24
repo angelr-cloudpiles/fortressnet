@@ -175,6 +175,8 @@ module "control_plane" {
   dmarc_reports_table_name          = module.data_plane.dmarc_reports_table_name
   client_security_events_table_name = module.data_plane.client_security_events_table_name
   marketplace_usage_table_name      = module.data_plane.marketplace_usage_table_name
+  control_assessments_table_name    = module.data_plane.control_assessments_table_name
+  support_cases_table_name          = module.data_plane.support_cases_table_name
   dnssec_kms_key_arn                = module.data_plane.dnssec_kms_key_arn
   verified_access_instance_id       = aws_verifiedaccess_instance.sase.id
   dmarc_receiver_domain             = "reports.${var.domain_name}"

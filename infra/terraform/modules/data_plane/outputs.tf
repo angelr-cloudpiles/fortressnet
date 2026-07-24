@@ -150,6 +150,8 @@ output "dmarc_configurations_table_name" { value = aws_dynamodb_table.dmarc_conf
 output "dmarc_reports_table_name" { value = aws_dynamodb_table.dmarc_reports.name }
 output "client_security_events_table_name" { value = aws_dynamodb_table.client_security_events.name }
 output "marketplace_usage_table_name" { value = aws_dynamodb_table.marketplace_usage.name }
+output "control_assessments_table_name" { value = aws_dynamodb_table.control_assessments.name }
+output "support_cases_table_name" { value = aws_dynamodb_table.support_cases.name }
 output "dnssec_kms_key_arn" { value = aws_kms_key.dnssec.arn }
 
 output "audit_logs_bucket_name" {

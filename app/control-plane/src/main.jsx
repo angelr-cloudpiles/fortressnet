@@ -36,7 +36,6 @@ import "./styles.css";
 
 const navItems = [
   { id: "overview", label: "Overview", icon: Home },
-  { id: "onboarding", label: "Onboarding", icon: CheckCircle2 },
   { id: "domains", label: "Domains", icon: Globe2 },
   { id: "dns", label: "DNS & TLS", icon: Globe2 },
   { id: "dmarc", label: "DMARC", icon: FileText },
@@ -50,6 +49,7 @@ const navItems = [
   { id: "events", label: "Events", icon: ClipboardList },
   { id: "ai", label: "AI Analyst", icon: Sparkles, badge: "Beta" },
   { id: "reports", label: "Reports", icon: FileText },
+  { id: "support", label: "Assistance", icon: Bell },
   { id: "dashboards", label: "Dashboards", icon: BarChart3 },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "profile", label: "Profile", icon: Users },
@@ -148,6 +148,8 @@ const emptyState = {
   dns_zones: [],
   dns_records: [],
   ai_findings: [],
+  control_assessments: [],
+  support_cases: [],
   ztna_applications: []
 };
 
@@ -164,6 +166,7 @@ function App() {
   const [state, setState] = useState(emptyState);
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [tenantWizardOpen, setTenantWizardOpen] = useState(false);
+  const [goLiveOpen, setGoLiveOpen] = useState(false);
   const [status, setStatus] = useState({ type: "idle", message: "" });
   const pageTitle = navItems.find((item) => item.id === active)?.label ?? "Overview";
 
@@ -310,6 +313,7 @@ function App() {
             selectedTenantId={selectedTenantId}
             onNavigate={setActive}
             onCreateTenant={openTenantCreate}
+            onOpenGoLive={() => setGoLiveOpen(true)}
           />}
           {active === "overview" && (
             <Overview
@@ -321,17 +325,6 @@ function App() {
               onNavigate={setActive}
             />
           )}
-          {active === "onboarding" && (
-            <OnboardingScreen
-              token={token}
-              platform={platform}
-              state={state}
-              selectedTenantId={selectedTenantId}
-              onCreated={reload}
-              setStatus={setStatus}
-              onNavigate={setActive}
-            />
-          )}
           {active === "domains" && (
             <DomainsScreen
               token={token}
@@ -340,7 +333,6 @@ function App() {
               selectedTenantId={selectedTenantId}
               onCreated={reload}
               setStatus={setStatus}
-              onNavigate={setActive}
             />
           )}
           {active === "dns" && <DnsScreen token={token} state={state} selectedTenantId={selectedTenantId} onCreated={reload} setStatus={setStatus} />}
@@ -352,6 +344,7 @@ function App() {
               state={state}
               selectedTenantId={selectedTenantId}
               onCreated={reload}
+              onNavigate={setActive}
               setStatus={setStatus}
             />
           )}
@@ -373,6 +366,7 @@ function App() {
               state={state}
               selectedTenantId={selectedTenantId}
               onCreated={reload}
+              onNavigate={setActive}
               setStatus={setStatus}
             />
           )}
@@ -399,17 +393,21 @@ function App() {
           {active === "events" && <EventsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "ai" && <AiScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
           {active === "reports" && <ReportsScreen token={token} selectedTenantId={selectedTenantId} setStatus={setStatus} />}
+          {active === "support" && <SupportScreen token={token} platform={platform} state={state} selectedTenantId={selectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "dashboards" && <DashboardsScreen token={token} state={state} selectedTenantId={selectedTenantId} onNavigate={setActive} setStatus={setStatus} />}
           {active === "billing" && <BillingScreen token={token} state={state} selectedTenantId={selectedTenantId} onChanged={reload} setStatus={setStatus} />}
           {active === "profile" && <ProfileScreen token={token} accessToken={accessToken} authMode={authMode} onMfaEnrolled={reload} setStatus={setStatus} />}
           {active === "settings" && <SettingsScreen platform={platform} token={token} authMode={authMode} />}
+          {active !== "onboarding" && <ModuleControlAssessment token={token} active={active} state={state} selectedTenantId={selectedTenantId} onNavigate={setActive} />}
         </section>
       </main>
       {tenantWizardOpen && <TenantRegistrationWizard token={token} customers={state.customers} users={state.users} setStatus={setStatus} onClose={() => setTenantWizardOpen(false)} onCreated={(tenant) => {
         setSelectedTenantId(tenant.tenant_id);
         setTenantWizardOpen(false);
+        setGoLiveOpen(true);
         loadState(token, setState, setStatus, setSelectedTenantId, () => setActive("profile"), clearSession);
       }} />}
+      {goLiveOpen && <GoLiveAssistantModal token={token} platform={platform} state={state} selectedTenantId={selectedTenantId} onClose={() => setGoLiveOpen(false)} onCreated={reload} setStatus={setStatus} onNavigate={setActive} />}
     </div>
   );
 }
@@ -563,7 +561,6 @@ function PageHeader({ active, pageTitle, onNavigate, onReload, onCreateTenant })
           <button className="icon-button bordered" title="More actions" aria-label="More actions" aria-expanded={quickActionsOpen} aria-haspopup="menu" onClick={() => setQuickActionsOpen((current) => !current)}><MoreHorizontal size={18} /></button>
           {quickActionsOpen && (
             <div className="header-action-menu" role="menu">
-              <button role="menuitem" onClick={() => navigate("onboarding")}><CheckCircle2 size={16} /> Onboarding</button>
               <button role="menuitem" onClick={() => navigate("domains")}><Globe2 size={16} /> Domains</button>
               <button role="menuitem" onClick={() => navigate("policies")}><Shield size={16} /> Policies</button>
               <button role="menuitem" onClick={() => navigate("events")}><ClipboardList size={16} /> Security events</button>
@@ -587,7 +584,8 @@ function activateGuidedTarget(targetId) {
   window.setTimeout(() => document.getElementById(targetId)?.click(), 250);
 }
 
-function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCreateTenant }) {
+function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCreateTenant, onOpenGoLive }) {
+  if (active === "domains") return null;
   const domains = filterByTenant(state.domains, selectedTenantId);
   const origins = filterByTenant(state.origins, selectedTenantId);
   const policies = filterByTenant(state.policies, selectedTenantId);
@@ -616,25 +614,21 @@ function WorkflowAssistant({ active, state, selectedTenantId, onNavigate, onCrea
         : !selectedTenantId
         ? { title: "Choose a tenant context", detail: "Select the customer in the tenant switcher before reviewing its domains, security posture or billing data.", action: { label: "Select tenant", run: () => activateGuidedTarget("tenant-switcher") } }
         : !domains.length
-        ? { title: "Protect the first site", detail: "The selected tenant is ready. Add its public domain, origin URL and health path to begin the guided go-live process.", action: { label: "Start onboarding", run: () => onNavigate("onboarding") } }
+        ? { title: "Protect the first site", detail: "The selected tenant is ready. Open the protected-site assistant to add its public domain, origin URL and health path.", action: { label: "Open go-live assistant", run: onOpenGoLive } }
         : incompleteDomain
-        ? { title: "Continue the protected-site rollout", detail: `${incompleteDomain.domain_name} still has a go-live step pending. The onboarding assistant shows the exact record or approval required.`, action: { label: "Continue onboarding", run: () => onNavigate("onboarding") } }
+        ? { title: "Continue the protected-site rollout", detail: `${incompleteDomain.domain_name} still has a go-live step pending. Open the assistant to review the exact record or approval required.`, action: { label: "Open go-live assistant", run: onOpenGoLive } }
         : { title: "Review live protection", detail: "All selected domains are active. Review operational events and reports before making policy changes.", action: { label: "Open security events", run: () => onNavigate("events") } },
-      domains: !domains.length
-        ? { title: "Add a protected domain", detail: "Enter the public hostname, origin URL and health path. FortressNet will generate the ownership verification record after you submit the form.", action: { label: "Open guided onboarding", run: () => onNavigate("onboarding") } }
-        : incompleteDomain
-        ? { title: "Finish domain go-live", detail: `${incompleteDomain.domain_name} is not active yet. Continue in onboarding to see the current DNS, certificate, edge or traffic step.`, action: { label: "Continue onboarding", run: () => onNavigate("onboarding") } }
-        : { title: "Manage an active domain", detail: "The protected domain is live. Use DNS & TLS to review its DNS posture before changing routing or security policy.", action: { label: "Review DNS posture", run: () => onNavigate("dns") } },
+      domains: null,
       dns: !verifiedDomain
-        ? { title: "Verify ownership before DNS management", detail: "DNS posture and managed-zone workflows are enabled only after the protected domain ownership record has been verified.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        ? { title: "Verify ownership before DNS management", detail: "DNS posture and managed-zone workflows are enabled only after the protected domain ownership record has been verified.", action: { label: "Open go-live assistant", run: onOpenGoLive } }
         : !dnsZones.length
         ? { title: "Choose the DNS operating model", detail: "For each verified domain, choose Guided for external DNS instructions or Delegate Route 53 when FortressNet will manage the hosted zone. Neither option changes DNS until you confirm its workflow.", action: { label: "View DNS choices", run: () => focusGuidedTarget("dns-management") } }
         : { title: "Check DNS and TLS posture", detail: "Run a posture check for the selected domain to review DNSSEC, CAA and possible origin exposure using observed DNS data.", action: { label: "Open posture checks", run: () => focusGuidedTarget("dns-management") } },
       dmarc: !verifiedDomain
-        ? { title: "Verify a domain before email protection", detail: "DMARC records are generated only for domains whose ownership has been verified in the tenant context.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        ? { title: "Verify a domain before email protection", detail: "DMARC records are generated only for domains whose ownership has been verified in the tenant context.", action: { label: "Open go-live assistant", run: onOpenGoLive } }
         : { title: "Start in monitor mode", detail: "Generate a DMARC policy with p=none first, publish the resulting TXT record, then review aggregate reports before moving to quarantine or reject.", action: { label: "Configure DMARC", run: () => focusGuidedTarget("dmarc-policy") } },
       origins: !domains.length
-        ? { title: "Register the protected site first", detail: "Origins are linked to an existing tenant domain so their health checks and failover settings cannot cross tenant boundaries.", action: { label: "Open onboarding", run: () => onNavigate("onboarding") } }
+        ? { title: "Register the protected site first", detail: "Origins are linked to an existing tenant domain so their health checks and failover settings cannot cross tenant boundaries.", action: { label: "Open go-live assistant", run: onOpenGoLive } }
         : !origins.length
         ? { title: "Add a backup origin", detail: "The initial origin is created with domain onboarding. Add an additional healthy origin only when you need a separately managed failover target.", action: { label: "Add origin", run: () => focusGuidedTarget("origin-url") } }
         : { title: "Validate origin resilience", detail: "Review the health of each registered origin, then create a pool only when the failover order and targets are ready to be operated.", action: { label: "Review origin health", run: () => focusGuidedTarget("origins-inventory") } },
@@ -753,9 +747,6 @@ function Overview({ range, setRange, token, state, selectedTenantId, onNavigate 
         <Panel className="traffic-panel" title="Edge Traffic" action={<div className="dashboard-panel-actions"><Segmented value={range} setValue={setRange} options={["1H", "6H", "24H", "7D", "30D"]} /><button className="secondary compact" disabled={eventsLoading} onClick={loadEvents}><RefreshCw size={14} /> Refresh</button></div>} footer={<PanelLink label="Open security events" onClick={() => onNavigate("events")} />}>
           <TrafficChart events={events} series={trafficSeries} loading={eventsLoading} error={eventsError} range={range} />
         </Panel>
-        <Panel title="Operational coverage" footer={<PanelLink label="Open onboarding" onClick={() => onNavigate("onboarding")} />}>
-          <OperationalCoverage state={state} selectedTenantId={selectedTenantId} />
-        </Panel>
       </div>
       <div className="table-grid">
         <Panel title="Recent Security Events" footer={<PanelLink label="Open security events" onClick={() => onNavigate("events")} />}>
@@ -837,7 +828,7 @@ function TrafficChart({ events, series, loading, error, range }) {
   if (!events.length) return <EmptyState icon={Activity} title="No observed edge traffic" body={`No WAF events were recorded for this tenant in the selected ${range} window. This dashboard does not generate sample traffic.`} />;
 
   const max = Math.max(...series.map((bucket) => bucket.total), 1);
-  const plot = { left: 50, right: 700, top: 26, bottom: 232 };
+  const plot = { left: 64, right: 1136, top: 26, bottom: 232 };
   const plotWidth = plot.right - plot.left;
   const plotHeight = plot.bottom - plot.top;
   const barWidth = Math.max(8, Math.min(28, (plotWidth / Math.max(series.length, 1)) * 0.56));
@@ -853,8 +844,8 @@ function TrafficChart({ events, series, loading, error, range }) {
     <div className="chart-wrap">
       <div className="legend"><span className="legend-blue"></span>Total <span className="legend-green"></span>Allowed <span className="legend-red"></span>Blocked</div>
       <div className="traffic-summary"><span><strong>{events.length}</strong> requests</span><span className="allowed"><strong>{allowed}</strong> allowed</span><span className="blocked"><strong>{blocked}</strong> blocked or challenged</span></div>
-      <svg className="line-chart" viewBox="0 0 720 300" preserveAspectRatio="xMidYMid meet">
-        {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <g key={fraction}><line x1={plot.left} x2={plot.right} y1={plot.bottom - fraction * plotHeight} y2={plot.bottom - fraction * plotHeight} /><text x="36" y={plot.bottom - fraction * plotHeight + 4} textAnchor="end">{Math.round(max * fraction)}</text></g>)}
+      <svg className="line-chart" viewBox="0 0 1200 300" preserveAspectRatio="none">
+        {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <g key={fraction}><line x1={plot.left} x2={plot.right} y1={plot.bottom - fraction * plotHeight} y2={plot.bottom - fraction * plotHeight} /><text x="50" y={plot.bottom - fraction * plotHeight + 4} textAnchor="end">{Math.round(max * fraction)}</text></g>)}
         {series.map((bucket, index) => {
           const x = xFor(index) - barWidth / 2;
           const allowedHeight = Math.max(0, (bucket.allowed / max) * plotHeight);
@@ -995,6 +986,32 @@ function OnboardingScreen({ token, platform, state, selectedTenantId, onCreated,
       </Panel>
     </div>
   );
+}
+
+function GoLiveAssistantModal({ token, platform, state, selectedTenantId, onClose, onCreated, setStatus, onNavigate }) {
+  const domains = filterByTenant(state.domains, selectedTenantId);
+  const origins = filterByTenant(state.origins, selectedTenantId);
+  const certificates = filterByTenant(state.certificates, selectedTenantId);
+  const deployments = filterByTenant(state.edge_deployments, selectedTenantId);
+  const domain = domains[0] || null;
+  const origin = origins.find((item) => item.domain_id === domain?.domain_id) || null;
+  const certificate = certificates.find((item) => item.domain_id === domain?.domain_id) || null;
+  const deployment = deployments.find((item) => item.domain_id === domain?.domain_id) || null;
+  const tenantWafChanges = filterByTenant(state.waf_change_sets, selectedTenantId);
+  const pendingWafChangeSet = tenantWafChanges.find((item) => item.domain_id === domain?.domain_id && item.mode === "block" && item.status !== "applied");
+  const appliedWafChangeSet = tenantWafChanges.find((item) => item.domain_id === domain?.domain_id && item.mode === "block" && item.status === "applied");
+  const monitorWafChangeSet = tenantWafChanges.find((item) => item.domain_id === domain?.domain_id && item.mode === "monitor" && item.status === "applied");
+  const approvers = filterByTenant(state.users, selectedTenantId).filter((user) => (user.roles || []).some((role) => ["tenant_admin", "security_admin"].includes(role)));
+  const steps = [
+    ["Tenant", Boolean(selectedTenantId), "Selected"],
+    ["Ownership", verifiedDomainStatuses.has(domain?.status), humanizeWorkflowStatus(domain?.status, "Required")],
+    ["Origin", origin?.status === "healthy", humanizeWorkflowStatus(origin?.status, "Required")],
+    ["Certificate", certificate?.status === "ISSUED", humanizeWorkflowStatus(certificate?.status, "Required")],
+    ["Edge", ["ready_for_cutover", "active"].includes(deployment?.status), humanizeWorkflowStatus(deployment?.status, "Required")],
+    ["WAF", Boolean(appliedWafChangeSet), appliedWafChangeSet ? "Applied" : monitorWafChangeSet ? monitorObservationStatus(monitorWafChangeSet) : "Required"],
+    ["Traffic DNS", domain?.status === "active", domain?.status === "active" ? "Active" : "Pending"]
+  ];
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="tenant-wizard go-live-dialog" role="dialog" aria-modal="true" aria-labelledby="go-live-title"><header className="tenant-wizard-header"><div><p>PROTECTED SITE</p><h2 id="go-live-title">Go-live assistant</h2></div><button className="icon-button bordered" type="button" title="Close go-live assistant" onClick={onClose}><X size={18} /></button></header><div className="go-live-body"><div className="go-live-steps">{steps.map(([label, complete, value], index) => <div key={label} className={complete ? "complete" : steps.findIndex((step) => !step[1]) === index ? "current" : ""}><span>{complete ? <CheckCircle2 size={16} /> : index + 1}</span><strong>{label}</strong><small>{value}</small></div>)}</div><div className="go-live-content">{!domain ? <><h3>Register the first protected hostname</h3><p>Start with the public hostname and a dedicated HTTPS origin. The remaining configuration stays in its corresponding domain, DNS, origin and policy module.</p><DomainCreateForm token={token} tenants={state.tenants} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} /></> : <><OnboardingGuidance token={token} selectedTenantId={selectedTenantId} domain={domain} origin={origin} certificate={certificate} deployment={deployment} approvers={approvers} canApproveTenantChanges={tenantApprovalEligible(platform, selectedTenantId)} actorSubject={platform?.actor?.subject || ""} pendingWafChangeSet={pendingWafChangeSet} appliedWafChangeSet={appliedWafChangeSet} monitorWafChangeSet={monitorWafChangeSet} onCreated={onCreated} setStatus={setStatus} onNavigate={(target) => { onClose(); onNavigate(target); }} /><div className="go-live-instructions"><DomainInstructions domain={domain} certificate={certificate} deployment={deployment} /></div></>}</div></div><footer className="tenant-wizard-footer"><button className="secondary" type="button" onClick={onClose}>Finish later</button><button className="primary" type="button" onClick={() => { onClose(); onNavigate(domain ? "domains" : "overview"); }}>{domain ? "Open domain workspace" : "Back to overview"}</button></footer></section></div>;
 }
 
 function OnboardingGuidance({ token, selectedTenantId, domain, origin, certificate, deployment, approvers, canApproveTenantChanges, actorSubject, pendingWafChangeSet, appliedWafChangeSet, monitorWafChangeSet, onCreated, setStatus, onNavigate }) {
@@ -1364,10 +1381,11 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
         onChanged={onCreated}
         setStatus={setStatus}
       />
-      <Panel title="Edge Hardening">
+      <div className="origin-workspace-grid">
+      <Panel className="edge-hardening-card" title="Edge Hardening">
         {deployments.length ? <div className="settings-list compact">{deployments.map((deployment) => <div key={deployment.deployment_id}><Shield size={18} /><span><strong>{deployment.domain_name}</strong><small>Browser headers and origin TLS are managed at the edge. The registered origin health check uses the protected verification header automatically. Origin access: {humanizeWorkflowStatus(deployment.origin_access_status || "not_checked")}.</small></span><div className="button-pair"><button className="secondary compact" disabled={!token} onClick={() => originVerification(deployment.deployment_id, token, setStatus)}>Copy origin header</button><button className="secondary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/origin-access-check`, "POST", token, setStatus, onCreated, "Direct origin access check completed.")}>Check origin lock</button><button className="primary compact" disabled={!token} onClick={() => edgeAction(`/api/edge-deployments/${deployment.deployment_id}/security-refresh`, "POST", token, setStatus, onCreated, "CloudFront browser security controls and origin TLS have been refreshed.")}>Refresh edge controls</button></div></div>)}</div> : <EmptyState icon={Shield} title="No edge deployment yet" body="Provision the protected edge before applying browser hardening and sharing the origin verification header." />}
       </Panel>
-      <div className="two-column">
+      <div className="two-column origin-inventory-grid">
         <Panel id="origins-inventory" title="Origins" action={<button className="primary compact" disabled={!selectedTenantId} onClick={() => setCreateOpen(true)}><Plus size={15} /> Add origin</button>}>
           <OriginTable origins={origins} token={token} onChanged={onCreated} setStatus={setStatus} />
         </Panel>
@@ -1375,10 +1393,11 @@ function OriginsScreen({ token, platform, state, selectedTenantId, onCreated, se
           <OriginPoolTable pools={pools} origins={origins} />
         </Panel>
       </div>
-      <Panel title="Failover Configuration"><OriginPoolForm token={token} tenants={state.tenants} domains={domains} origins={origins} pools={pools} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} /></Panel>
-      <Panel title="TLS Certificates">
+      <Panel className="failover-card" title="Failover Configuration"><OriginPoolForm token={token} tenants={state.tenants} domains={domains} origins={origins} pools={pools} selectedTenantId={selectedTenantId} onCreated={onCreated} setStatus={setStatus} /></Panel>
+      <Panel className="certificates-card" title="TLS Certificates">
         <CertificateTable certificates={certificates} token={token} onRefreshed={onCreated} setStatus={setStatus} />
       </Panel>
+      </div>
       {createOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}><section className="tenant-wizard origin-create-dialog" role="dialog" aria-modal="true" aria-labelledby="origin-create-title"><header className="tenant-wizard-header"><div><p>ORIGIN</p><h2 id="origin-create-title">Add origin</h2></div><button className="icon-button bordered" type="button" title="Close origin dialog" onClick={() => setCreateOpen(false)}><X size={18} /></button></header><div className="dialog-form"><OriginCreateForm token={token} tenants={state.tenants} domains={domains} selectedTenantId={selectedTenantId} onCreated={() => { setCreateOpen(false); onCreated(); }} setStatus={setStatus} /></div></section></div>}
     </div>
   );
@@ -1432,7 +1451,7 @@ function PolicyDetail({ policy, changeSets, token, onCompiled, onDeleted, setSta
   return <div className="policy-detail"><dl className="detail-list"><div><dt>Enforcement</dt><dd>{policy.mode === "block" ? "Block after observation" : "Monitor"}</dd></div><div><dt>Rate limit</dt><dd>{policy.rate_limit || 2000} per 5 minutes / IP</dd></div><div><dt>Scope</dt><dd>{policy.scope || "all domains"}</dd></div><div><dt>Managed protections</dt><dd>{(policy.managed_protections || []).join(", ") || "AWS baseline"}</dd></div></dl><div className="policy-detail-actions"><button className="primary compact" onClick={() => compilePolicy(policy.policy_id, token, setStatus, onCompiled)}>Compile change set</button><button className="danger compact" disabled={hasActiveChangeSet} title={hasActiveChangeSet ? "Policies with active approval or enforcement history are retained for auditability." : "Delete policy"} onClick={() => deleteResource(`/api/policies/${policy.policy_id}`, token, "Policy deleted.", setStatus, () => { onDeleted(); onCompiled(); })}>Delete policy</button></div><h3>Change history</h3>{policyChangeSets.length ? <div className="policy-change-history">{policyChangeSets.map((changeSet) => <div key={changeSet.change_set_id}><strong>{changeSet.mode}</strong><span>{changeSet.status}</span><small>{(changeSet.rules || []).length} rules · {formatEventTime(changeSet.updated_at || changeSet.created_at)}</small></div>)}</div> : <p className="detail-empty">No change set has been compiled for this policy.</p>}</div>;
 }
 
-function AccessScreen({ token, platform, state, selectedTenantId, onCreated, setStatus }) {
+function AccessScreen({ token, platform, state, selectedTenantId, onCreated, onNavigate, setStatus }) {
   const users = selectedTenantId ? filterByTenant(state.users, selectedTenantId) : state.users.filter((user) => user.tenant_id === "platform");
   const [editor, setEditor] = useState(null);
   const profiles = platform?.access_profiles || [];
@@ -1464,6 +1483,7 @@ function AccessScreen({ token, platform, state, selectedTenantId, onCreated, set
       <Panel title="Access model">
         <div className="access-model-copy"><strong>Profiles establish a secure baseline.</strong><p>Use the permission matrix to limit every tenant member to read or read/write access for each module. Tenant administrators cannot grant permissions they do not hold.</p></div>
         <div className="profile-list">{profiles.filter((profile) => profile.scope === "tenant").map((profile) => <div key={profile.profile_id}><strong>{profile.label}</strong><small>{profile.permissions.filter((permission) => permission !== "profile:write").length} default permissions</small></div>)}</div>
+        <div className="access-support-link"><span>Need an access or permission change that is outside your current scope?</span><button className="secondary compact" onClick={() => onNavigate("support")}><Bell size={15} /> Request assistance</button></div>
       </Panel>
       {editor && <AccessEditor token={token} platform={platform} tenantId={selectedTenantId} user={editor.user} onClose={() => setEditor(null)} onCompleted={() => { setEditor(null); onCreated(); }} setStatus={setStatus} />}
     </div>
@@ -1704,14 +1724,14 @@ function AiScreen({ token, selectedTenantId, setStatus }) {
 }
 
 function ReportsScreen({ token, selectedTenantId, setStatus }) {
-  const [reports, setReports] = useState([]);
+  const [reportData, setReportData] = useState({ reports: [], coverage: null, findings: [], latest_assessment: null });
   const [loading, setLoading] = useState(false);
   const load = async () => {
     if (!token) return;
     try {
       setLoading(true);
       const data = await apiRequest(`/api/reports${selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : ""}`, token);
-      setReports(data.reports || []);
+      setReportData({ reports: data.reports || [], coverage: data.coverage || null, findings: data.findings || [], latest_assessment: data.latest_assessment || null });
     } catch (error) {
       setStatus({ type: "error", message: error.message });
     } finally {
@@ -1719,13 +1739,102 @@ function ReportsScreen({ token, selectedTenantId, setStatus }) {
     }
   };
   useEffect(() => { load(); }, [token, selectedTenantId]);
+  const report = reportData.reports[0];
+  const exportCsv = () => {
+    if (!report) return;
+    const rows = [
+      ["FortressNet security report", selectedTenantId || "platform"],
+      ["Generated", report.generated_at],
+      ["Observed events", report.total_events],
+      ["Blocked events", report.blocked_events],
+      ["Allowed events", report.allowed_events],
+      ["Protected edges", report.edge_deployments],
+      [],
+      ["Rule", "Matches"],
+      ...(report.top_rules || []).map((rule) => [formatRuleName(rule.rule_id), rule.count])
+    ];
+    const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `fortressnet-security-report-${selectedTenantId || "platform"}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <div className="screen">
-      <Panel id="security-report" title="Security Report" action={<button id="reports-refresh" className="secondary compact" disabled={!token || loading} onClick={load}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh"}</button>}>
-        {reports.length ? <div className="report-grid">{reports.map((report) => <div className="report-card" key={report.report_id}><BarChart3 size={30} /><p>{selectedTenantId ? "Tenant security posture" : "Platform security posture"}</p><strong>{report.total_events} observed events</strong><small>{report.blocked_events} blocked · {report.allowed_events} allowed · {report.edge_deployments} protected edge{report.edge_deployments === 1 ? "" : "s"}</small><div className="report-rules"><strong>Top rules</strong>{report.top_rules?.length ? report.top_rules.slice(0, 3).map((rule) => <span key={rule.rule_id}>{formatRuleName(rule.rule_id)} <b>{rule.count}</b></span>) : <span>No rule matches recorded</span>}</div><small>Generated {formatEventTime(report.generated_at)}</small></div>)}</div> : <EmptyState icon={FileText} title="No report data available" body="Reports are generated from real WAF telemetry. Select a tenant or wait for protected requests to reach the edge." />}
+      <Panel id="security-report" title="Security Report" action={<div className="button-pair"><button id="reports-refresh" className="secondary compact" disabled={!token || loading} onClick={load}><RefreshCw size={15} /> {loading ? "Refreshing" : "Refresh"}</button><button className="primary compact" disabled={!report} onClick={exportCsv}><FileText size={15} /> Export CSV</button></div>}>
+        {report ? <div className="security-report-layout"><div className="report-hero"><div><BarChart3 size={28} /><span>{selectedTenantId ? "Tenant security posture" : "Platform security posture"}</span></div><strong>{report.total_events}</strong><p>Observed requests in the current reporting window</p><small>Generated {formatEventTime(report.generated_at)}</small></div><div className="report-kpis"><div><span>Blocked or challenged</span><strong>{report.blocked_events}</strong></div><div><span>Allowed</span><strong>{report.allowed_events}</strong></div><div><span>Protected edges</span><strong>{report.edge_deployments}</strong></div><div><span>Active domains</span><strong>{reportData.coverage?.active_domains || 0}/{reportData.coverage?.domains || 0}</strong></div></div><div className="report-section"><h3>Most active controls</h3>{report.top_rules?.length ? <div className="report-rule-list">{report.top_rules.slice(0, 5).map((rule) => <div key={rule.rule_id}><span>{formatRuleName(rule.rule_id)}</span><strong>{rule.count}</strong></div>)}</div> : <p>No managed or custom rule matches were recorded.</p>}</div><div className="report-section"><h3>Assessment and recommendations</h3>{reportData.latest_assessment?.recommendations?.length ? <div className="report-recommendations">{reportData.latest_assessment.recommendations.slice(0, 4).map((recommendation, index) => <div key={`${recommendation.module}-${index}`}><span className={`health ${recommendation.severity === "high" ? "unhealthy" : recommendation.severity === "medium" ? "pending" : "active"}`}>{recommendation.severity}</span><strong>{recommendation.module}</strong><p>{recommendation.message}</p></div>)}</div> : <p>The hourly control assessment has not identified a pending recommendation for this scope.</p>}</div></div> : <EmptyState icon={FileText} title="No report data available" body="Reports are generated from real WAF telemetry. Select a tenant or wait for protected requests to reach the edge." />}
       </Panel>
     </div>
   );
+}
+
+function ModuleControlAssessment({ token, active, state, selectedTenantId, onNavigate }) {
+  const [assessment, setAssessment] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    if (!token) return;
+    try {
+      const query = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
+      const data = await apiRequest(`/api/control-assessments${query}`, token);
+      setAssessment((data.assessments || [])[0] || null);
+    } catch {
+      setAssessment(null);
+    }
+  };
+  useEffect(() => { load(); }, [token, selectedTenantId, active]);
+  const runNow = async () => {
+    if (!selectedTenantId) return;
+    try {
+      setLoading(true);
+      await apiRequest("/api/ai/analyze", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId }) });
+      await load();
+    } finally { setLoading(false); }
+  };
+  const recommendations = assessment?.recommendations || [];
+  return <Panel className="control-assessment" title="Hourly control assessment" action={<div className="button-pair">{selectedTenantId && <button className="secondary compact" disabled={loading} onClick={runNow}><Sparkles size={15} /> {loading ? "Analyzing" : "Run now"}</button>}<button className="primary compact" onClick={() => onNavigate("support")}><Bell size={15} /> Request help</button></div>} footer={<small className="assessment-footer">Evidence-only analysis runs hourly. It does not change enforcement or policy state.</small>}>
+    {assessment ? <div className="assessment-layout"><div className="assessment-status"><span className={`health ${assessment.status === "healthy" ? "active" : assessment.status === "attention_required" ? "unhealthy" : "pending"}`}>{assessment.status.replaceAll("_", " ")}</span><strong>{assessment.status === "healthy" ? "Current controls are healthy" : "Configuration review recommended"}</strong><small>Last checked {formatEventTime(assessment.checked_at || assessment.updated_at)}</small></div><div className="assessment-metrics"><span>{assessment.analyzed_events || 0}<small>observed events</small></span><span>{assessment.active_domains || 0}/{assessment.protected_domains || 0}<small>active domains</small></span><span>{assessment.blocking_policies || 0}<small>blocking policies</small></span></div><div className="assessment-recommendations">{recommendations.length ? recommendations.slice(0, 3).map((item, index) => <div key={`${item.module}-${index}`}><strong>{item.module}</strong><span>{item.message}</span></div>) : <div><strong>No action required</strong><span>Configuration and observed telemetry are within the current baseline.</span></div>}</div></div> : <div className="assessment-empty"><Sparkles size={19} /><span>{selectedTenantId ? "The first hourly assessment will run shortly. You can run a read-only assessment now." : "Select a tenant to review its configuration and telemetry recommendations."}</span></div>}
+  </Panel>;
+}
+
+function SupportScreen({ token, platform, state, selectedTenantId, onChanged, setStatus }) {
+  const [cases, setCases] = useState([]);
+  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [subject, setSubject] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("general");
+  const [priority, setPriority] = useState("normal");
+  const [message, setMessage] = useState("");
+  const [nextStatus, setNextStatus] = useState("");
+  const load = async () => {
+    if (!token) return;
+    try {
+      const query = selectedTenantId ? `?tenant_id=${encodeURIComponent(selectedTenantId)}` : "";
+      const data = await apiRequest(`/api/support/cases${query}`, token);
+      setCases(data.cases || []);
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  useEffect(() => { load(); }, [token, selectedTenantId]);
+  const selectedCase = cases.find((item) => item.case_id === selectedCaseId) || cases[0] || null;
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      const data = await apiRequest("/api/support/cases", token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenant_id: selectedTenantId, subject, description, category, priority }) });
+      setSubject(""); setDescription(""); setCategory("general"); setPriority("normal"); setSelectedCaseId(data.case.case_id);
+      await load(); onChanged(); setStatus({ type: "success", message: "Support case created. Updates will appear in this case timeline." });
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  const update = async (event) => {
+    event.preventDefault();
+    if (!selectedCase) return;
+    try {
+      await apiRequest(`/api/support/cases/${selectedCase.case_id}`, token, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: nextStatus || selectedCase.status, message }) });
+      setMessage(""); setNextStatus(""); await load(); onChanged(); setStatus({ type: "success", message: "Case update recorded and notification state refreshed." });
+    } catch (error) { setStatus({ type: "error", message: error.message }); }
+  };
+  const isPlatform = Boolean(platform?.is_platform_actor);
+  return <div className="screen support-screen"><div className="two-column"><Panel title={isPlatform && !selectedTenantId ? "Technical support manager" : "Request technical assistance"} action={<button className="secondary compact" onClick={load}><RefreshCw size={15} /> Refresh</button>}><form className="form-grid support-form" onSubmit={submit}><label>Subject<input value={subject} onChange={(event) => setSubject(event.target.value)} maxLength="140" required placeholder="Describe the operational need" /></label><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="general">General</option><option value="access">Access</option><option value="domain_dns">Domain and DNS</option><option value="origin">Origin and edge</option><option value="waf">WAF policy</option><option value="billing">Billing</option><option value="incident">Security incident</option></select></label><label>Priority<select value={priority} onChange={(event) => setPriority(event.target.value)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></select></label><label className="wizard-wide">Details<textarea rows="5" value={description} onChange={(event) => setDescription(event.target.value)} required placeholder="Include the affected domain, time and steps already taken." /></label><button className="primary" disabled={!selectedTenantId || !subject || !description}><Plus size={16} /> Open support case</button></form></Panel><Panel title="Case queue" count={cases.filter((item) => !["resolved", "closed"].includes(item.status)).length}>{cases.length ? <div className="support-case-list">{cases.map((item) => <button key={item.case_id} className={selectedCase?.case_id === item.case_id ? "selected" : ""} onClick={() => setSelectedCaseId(item.case_id)}><span className={`health ${item.priority === "critical" || item.priority === "high" ? "unhealthy" : "pending"}`}>{item.priority}</span><div><strong>{item.subject}</strong><small>{item.tenant_id} · {item.category} · {formatEventTime(item.updated_at, { relative: true })}</small></div><em>{item.status.replaceAll("_", " ")}</em></button>)}</div> : <EmptyState icon={Bell} title="No support cases" body="Open a request to track an operational, access or security need with a complete timeline." />}</Panel></div><Panel title="Case detail">{selectedCase ? <div className="support-detail"><div className="support-case-meta"><span className="health pending">{selectedCase.status.replaceAll("_", " ")}</span><strong>{selectedCase.subject}</strong><small>{selectedCase.description}</small></div><div className="support-timeline">{(selectedCase.updates || []).map((update) => <div key={update.update_id}><strong>{update.type === "opened" ? "Case opened" : update.status ? `Status: ${update.status.replaceAll("_", " ")}` : "Update"}</strong><span>{update.message}</span><small>{update.actor?.display_name || "Operator"} · {formatEventTime(update.created_at)}</small></div>)}</div><form className="support-update" onSubmit={update}><select value={nextStatus || selectedCase.status} onChange={(event) => setNextStatus(event.target.value)}><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting_customer">Waiting for customer</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Add an update for the case timeline" /><button className="primary compact" disabled={!message && (!nextStatus || nextStatus === selectedCase.status)}>Post update</button></form></div> : <EmptyState icon={ClipboardList} title="Select a case" body="Choose a request to review its full audit trail and add the next operational update." />}</Panel></div>;
 }
 
 function DashboardsScreen({ token, state, selectedTenantId, onNavigate, setStatus }) {
@@ -2786,7 +2895,7 @@ function overviewRangeHours(range) {
 }
 
 function buildTrafficSeries(events, rangeHours) {
-  const bucketCount = rangeHours <= 24 ? 12 : rangeHours <= 24 * 7 ? 14 : 15;
+  const bucketCount = rangeHours <= 24 ? 12 : rangeHours <= 24 * 7 ? 14 : 30;
   const end = Date.now();
   const start = end - rangeHours * 60 * 60 * 1000;
   const bucketDuration = (end - start) / bucketCount;
@@ -2830,7 +2939,7 @@ function buildMetrics(state, events = [], trafficSeries = [], domains = state.do
   const blocked = events.filter((event) => ["BLOCK", "CAPTCHA", "CHALLENGE"].includes(event.action)).length;
   const wafMatches = events.filter((event) => event.rule_id && event.rule_id !== "Default_Action").length;
   return [
-    { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue", route: "onboarding", linkLabel: "Manage tenants" },
+    { label: "Tenants", value: String(state.tenants.length), delta: "Management records", trend: "neutral", color: "blue", route: "overview", linkLabel: "Review tenants" },
     { label: "Protected Domains", value: String(domains.length), delta: "Configured in DynamoDB", trend: "neutral", color: "green", route: "domains", linkLabel: "Manage domains" },
     { label: "Policies", value: String(state.policies.length), delta: "Tenant-scoped drafts", trend: "neutral", color: "orange", route: "policies", linkLabel: "Open policies" },
     { label: "Protected Requests", value: String(requests), delta: requests ? "Observed WAF requests" : "No observed traffic", trend: requests ? "good" : "neutral", color: "blue", series: trafficSeries.map((bucket) => bucket.total), route: "events", linkLabel: "Open events" },

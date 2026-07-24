@@ -146,7 +146,7 @@ data "aws_iam_policy_document" "dmarc_intake_bucket" {
       type        = "Service"
       identifiers = ["ses.amazonaws.com"]
     }
-    actions = ["s3:PutObject"]
+    actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.this["dmarc_intake"].arn}/raw/*"]
     condition {
       test     = "StringEquals"
@@ -160,10 +160,10 @@ locals {
   bucket_suffix = lower(data.aws_caller_identity.current.account_id)
 
   buckets = {
-    audit_logs = "${var.name}-audit-logs-${local.bucket_suffix}"
-    edge_logs  = "${var.name}-edge-logs-${local.bucket_suffix}"
-    reports    = "${var.name}-reports-${local.bucket_suffix}"
-    ai_events  = "${var.name}-ai-events-${local.bucket_suffix}"
+    audit_logs   = "${var.name}-audit-logs-${local.bucket_suffix}"
+    edge_logs    = "${var.name}-edge-logs-${local.bucket_suffix}"
+    reports      = "${var.name}-reports-${local.bucket_suffix}"
+    ai_events    = "${var.name}-ai-events-${local.bucket_suffix}"
     dmarc_intake = "${var.name}-dmarc-intake-${local.bucket_suffix}"
   }
 
@@ -1503,4 +1503,72 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
       days_after_initiation = 7
     }
   }
+}
+
+# Immutable control snapshots make the hourly analyst outcome auditable without
+# granting the analysis process any ability to change tenant enforcement.
+resource "aws_dynamodb_table" "control_assessments" {
+  name         = "${var.name}-control-assessments"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "assessment_id"
+
+  attribute {
+    name = "assessment_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
+}
+
+# Support cases retain tenant-scoped requirement history while allowing platform
+# operators to manage the global queue through the tenant_id index.
+resource "aws_dynamodb_table" "support_cases" {
+  name         = "${var.name}-support-cases"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "case_id"
+
+  attribute {
+    name = "case_id"
+    type = "S"
+  }
+  attribute {
+    name = "tenant_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "tenant_id-index"
+    projection_type = "ALL"
+    key_schema {
+      attribute_name = "tenant_id"
+      key_type       = "HASH"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.platform.arn
+  }
+  point_in_time_recovery { enabled = true }
 }
