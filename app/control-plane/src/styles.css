@@ -3298,6 +3298,77 @@ code {
   overflow-wrap: anywhere;
 }
 
+.event-explanation {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.event-explanation-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--blue);
+}
+
+.event-explanation-heading > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.event-explanation-heading div {
+  display: grid;
+  gap: 3px;
+}
+
+.event-explanation-heading strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.event-explanation-heading span,
+.event-explanation-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.event-explanation-list {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+
+.event-explanation-list > div {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.event-explanation-list dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.event-explanation-list dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.event-explanation-note {
+  display: block;
+}
+
 .panel-actions {
   display: flex;
   align-items: center;

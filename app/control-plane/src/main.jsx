@@ -2845,8 +2845,71 @@ function EventDistribution({ countries }) {
   return <Panel title="Traffic geography"><div className="event-distribution">{entries.length ? entries.map(([country, count]) => <div key={country}><div><span>{country}</span><strong>{count}</strong></div><i><b style={{ width: `${Math.round((count / max) * 100)}%` }} /></i></div>) : <span className="mode-readonly">No country data available.</span>}</div></Panel>;
 }
 
+function eventRuleCause(ruleId) {
+  const normalized = String(ruleId || "").toLowerCase();
+  if (!ruleId || ruleId === "Default_Action") return "The request was handled by the default WAF action; no specific rule was identified.";
+  if (normalized.includes("sql") || normalized.includes("sqli")) return "The request contained a pattern consistent with SQL injection.";
+  if (normalized.includes("xss") || normalized.includes("crosssite")) return "The request contained a pattern consistent with cross-site scripting (XSS).";
+  if (normalized.includes("knownbadinput")) return "The request matched a known-malicious input pattern.";
+  if (normalized.includes("commonruleset")) return "The AWS managed baseline identified request characteristics associated with a common web attack pattern.";
+  if (normalized.includes("wordpress")) return "The request matched a WordPress exploit protection rule.";
+  if (normalized.includes("php")) return "The request matched a PHP exploit protection rule.";
+  if (normalized.includes("ipreputation") || normalized.includes("ip_reputation")) return "The source matched AWS threat-intelligence reputation data.";
+  if (normalized.includes("anonymousip") || normalized.includes("anonymous_ip")) return "The source was identified as an anonymizing service.";
+  if (normalized.includes("scanner") || normalized.includes("sqlmap") || normalized.includes("wpscan") || normalized.includes("nikto")) return "The request matched a known security scanner pattern.";
+  return `The request matched the ${formatRuleName(ruleId)} rule.`;
+}
+
+function eventExplanation(event) {
+  const action = String(event.action || "UNKNOWN").toUpperCase();
+  const uri = String(event.uri || "/");
+  const ruleId = event.rule_id || event.matched_rule_ids?.[0] || "Default_Action";
+  const cause = eventRuleCause(ruleId);
+  if (["BLOCK", "CAPTCHA", "CHALLENGE"].includes(action)) {
+    const actionTaken = action === "BLOCK"
+      ? "AWS WAF blocked the request at the edge; it was not forwarded to the origin."
+      : `AWS WAF issued a ${action.toLowerCase()} before allowing the request to reach the origin.`;
+    const recommendation = /wp-login\.php|xmlrpc\.php/i.test(uri)
+      ? "Keep this control enforced and review legitimate administrator or automation access before changing the rule."
+      : "Review the request evidence and matched rule. Change policy only after confirming whether the traffic is legitimate.";
+    return { cause, actionTaken, recommendation };
+  }
+  if (action === "COUNT") {
+    return {
+      cause,
+      actionTaken: "The request was counted for observation; this event did not block it.",
+      recommendation: "Review the observed match before promoting the rule from monitor to block."
+    };
+  }
+  if (action === "ALLOW") {
+    return {
+      cause: "No blocking rule terminated this request.",
+      actionTaken: "The request was allowed through the edge and forwarded according to the active policy.",
+      recommendation: "No intervention is required. Investigate only if the path, country, or traffic volume is unexpected."
+    };
+  }
+  return {
+    cause,
+    actionTaken: `The edge recorded the ${action.toLowerCase()} decision for this request.`,
+    recommendation: "Review the event evidence and policy state before taking action."
+  };
+}
+
+function EventExplanation({ event }) {
+  const explanation = eventExplanation(event);
+  return <section className="event-explanation" aria-label="Security interpretation">
+    <div className="event-explanation-heading"><Sparkles size={16} /><div><strong>Security interpretation</strong><span>Evidence-based explanation from the WAF decision and matched rule.</span></div></div>
+    <dl className="event-explanation-list">
+      <div><dt>Cause</dt><dd>{explanation.cause}</dd></div>
+      <div><dt>Action taken</dt><dd>{explanation.actionTaken}</dd></div>
+      <div><dt>Recommendation</dt><dd>{explanation.recommendation}</dd></div>
+    </dl>
+    <small className="event-explanation-note">This interpretation is read-only and does not change enforcement.</small>
+  </section>;
+}
+
 function EventInspector({ event }) {
-  return <Panel title="Event details">{event ? <div className="event-detail"><div className="event-detail-outcome"><EventActionBadge action={event.action} /><span>{formatEventTime(event.timestamp)}</span></div><dl><div><dt>Request</dt><dd><span className="method-chip">{event.method || "-"}</span><code>{event.uri || "/"}</code></dd></div><div><dt>Rule</dt><dd>{formatRuleName(event.rule_id)}</dd></div><div><dt>Country</dt><dd>{event.country || "Unknown"}</dd></div><div><dt>Client reference</dt><dd><code>{event.client_ip_hash || "Not captured"}</code></dd></div><div><dt>Event ID</dt><dd><code>{event.event_id}</code></dd></div></dl></div> : <EmptyState icon={ClipboardList} title="Select an event" body="Choose an event from the stream to inspect its protected request metadata." />}</Panel>;
+  return <Panel title="Event details">{event ? <div className="event-detail"><div className="event-detail-outcome"><EventActionBadge action={event.action} /><span>{formatEventTime(event.timestamp)}</span></div><dl><div><dt>Request</dt><dd><span className="method-chip">{event.method || "-"}</span><code>{event.uri || "/"}</code></dd></div><div><dt>Rule</dt><dd>{formatRuleName(event.rule_id || event.matched_rule_ids?.[0])}</dd></div><div><dt>Country</dt><dd>{event.country || "Unknown"}</dd></div><div><dt>Client reference</dt><dd><code>{event.client_ip_hash || "Not captured"}</code></dd></div><div><dt>Event ID</dt><dd><code>{event.event_id}</code></dd></div></dl><EventExplanation event={event} /></div> : <EmptyState icon={ClipboardList} title="Select an event" body="Choose an event from the stream to inspect its protected request metadata." />}</Panel>;
 }
 
 function summarizeSecurityEvents(events) {
