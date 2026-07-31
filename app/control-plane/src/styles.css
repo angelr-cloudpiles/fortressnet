@@ -209,6 +209,12 @@ button {
   object-fit: contain;
 }
 
+.tenant-context {
+  position: relative;
+  min-width: 0;
+  z-index: 2;
+}
+
 .tenant-label {
   margin-bottom: 9px;
   color: #b6c3d5;
@@ -242,11 +248,13 @@ button {
 .sidebar-tenant-menu {
   display: grid;
   gap: 3px;
-  max-height: min(34vh, 260px);
+  max-height: min(45vh, 340px);
+  min-height: 0;
   margin-top: 6px;
   margin-bottom: 4px;
   padding: 5px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -254,8 +262,9 @@ button {
 }
 
 .sidebar-tenant-menu button {
-  min-height: 31px;
-  padding: 0 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
   overflow: hidden;
   color: #eef4fd;
   background: transparent;
@@ -265,7 +274,8 @@ button {
   font-weight: 620;
   text-align: left;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-tenant-menu button:hover,

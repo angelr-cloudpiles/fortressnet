@@ -445,18 +445,20 @@ function Sidebar({ active, onNavigate, selectedTenant, tenants, selectedTenantId
         <img className="brand-mark" src="/brand/fortressnet-shield.png" alt="" />
         <span>FortressNet</span>
       </div>
-      <div className="tenant-label">Tenant</div>
-      <button id="tenant-switcher" className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
-        <Users size={16} />
-        <span>{selectedTenant?.name || (isPlatformActor ? "All tenants" : "No tenant selected")}</span>
-        <ChevronDown size={15} />
-      </button>
-      {tenantMenuOpen && (
-        <div className="sidebar-tenant-menu" role="menu">
-          {isPlatformActor && <button role="menuitem" className={!selectedTenantId ? "selected" : ""} onClick={() => selectTenant("")}>All tenants</button>}
-          {tenants.map((tenant) => <button key={tenant.tenant_id} role="menuitem" className={tenant.tenant_id === selectedTenantId ? "selected" : ""} onClick={() => selectTenant(tenant.tenant_id)}>{tenant.name}</button>)}
-        </div>
-      )}
+      <div className="tenant-context">
+        <div className="tenant-label">Tenant</div>
+        <button id="tenant-switcher" className="tenant-button" disabled={!tenants.length} onClick={() => setTenantMenuOpen((current) => !current)} aria-label="Select tenant" title="Select tenant" aria-expanded={tenantMenuOpen} aria-haspopup="menu">
+          <Users size={16} />
+          <span>{selectedTenant?.name || (isPlatformActor ? "All tenants" : "No tenant selected")}</span>
+          <ChevronDown size={15} />
+        </button>
+        {tenantMenuOpen && (
+          <div className="sidebar-tenant-menu" role="menu" aria-label="Available tenants">
+            {isPlatformActor && <button role="menuitem" className={!selectedTenantId ? "selected" : ""} onClick={() => selectTenant("")}>All tenants</button>}
+            {tenants.map((tenant) => <button key={tenant.tenant_id} role="menuitem" className={tenant.tenant_id === selectedTenantId ? "selected" : ""} onClick={() => selectTenant(tenant.tenant_id)}>{tenant.name}</button>)}
+          </div>
+        )}
+      </div>
       <nav className="nav">
         {navItems.map((item) => {
           const Icon = item.icon;
