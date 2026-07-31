@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApiInventory, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, isTenantApprovalActor, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+import { buildApiInventory, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, compileWafRules, defaultWafBaseline, flattenDmarcTxtRecords, isTenantApprovalActor, normalizeDmarcTxt, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument } from "../server.js";
+
+test("normalizes split DMARC TXT chunks without accepting a partial reporting address", () => {
+  const records = flattenDmarcTxtRecords([["v=DMARC1; p=none; rua=mailto:dmarc+token@reports.fortressnet.app; ", "adkim=r; aspf=r; pct=100"]]);
+  assert.equal(records[0], "v=DMARC1; p=none; rua=mailto:dmarc+token@reports.fortressnet.app; adkim=r; aspf=r; pct=100");
+  assert.notEqual(normalizeDmarcTxt("dmarc+token@reports.fortressnet.app"), records[0]);
+});
 
 test("compiles a rate limit scoped to path, methods, and countries", () => {
   const policy = {

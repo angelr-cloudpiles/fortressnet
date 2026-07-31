@@ -1391,6 +1391,46 @@ app.post("/api/domains/:domainId/dmarc", requireScope("dmarc:write"), async (req
   } catch (error) { next(error); }
 });
 
+app.post("/api/dmarc/configurations/:configurationId/verify", requireScope("dmarc:write"), async (req, res, next) => {
+  try {
+    const configurationId = clean(req.params.configurationId);
+    const configuration = await getById(tables.dmarcConfigurations, { configuration_id: configurationId });
+    if (!configuration) return res.status(404).json({ error: "dmarc_configuration_not_found" });
+    tenantForActor(req.actor, configuration.tenant_id);
+
+    const recordName = configuration.record_name || `_dmarc.${configuration.domain_name}`;
+    let records = [];
+    let lookupError = "";
+    try {
+      records = flattenDmarcTxtRecords(await dns.resolveTxt(recordName));
+    } catch (error) {
+      lookupError = error?.code || "dns_lookup_failed";
+    }
+
+    const expected = normalizeDmarcTxt(configuration.record_value);
+    const verified = !lookupError && records.some((record) => record === expected);
+    const status = verified ? "verified" : lookupError && lookupError !== "ENOTFOUND" ? "dns_lookup_failed" : records.length ? "record_mismatch" : "awaiting_external_dns";
+    const verificationError = verified ? "" : lookupError || (records.length ? "dmarc_record_mismatch" : "record_not_found");
+    const now = new Date().toISOString();
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tables.dmarcConfigurations,
+      Key: { configuration_id: configurationId },
+      UpdateExpression: "SET #status = :status, verification_checked_at = :checked, verification_error = :error, observed_record_count = :record_count, updated_at = :updated_at",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":status": status,
+        ":checked": now,
+        ":error": verificationError,
+        ":record_count": records.length,
+        ":updated_at": now
+      },
+      ReturnValues: "ALL_NEW"
+    }));
+    await audit("dmarc.configuration_verified", configuration.tenant_id, { configuration_id: configurationId, record_name: recordName, status, observed_record_count: records.length }, req.actor);
+    res.json({ configuration: result.Attributes, record_name: recordName, expected_record: configuration.record_value, observed_records: records, verified });
+  } catch (error) { next(error); }
+});
+
 app.get("/api/ztna/applications", requireScope("ztna:read"), async (req, res, next) => {
   try {
     const tenantId = tenantForActor(req.actor, clean(req.query.tenant_id));
@@ -4588,6 +4628,17 @@ function clean(value) {
   return String(value || "").trim();
 }
 
+function normalizeDmarcTxt(value) {
+  return clean(value).replace(/^"(.*)"$/, "$1").replace(/\s+/g, " ").trim();
+}
+
+function flattenDmarcTxtRecords(records) {
+  return (Array.isArray(records) ? records : [])
+    .map((record) => Array.isArray(record) ? record.join("") : record)
+    .map(normalizeDmarcTxt)
+    .filter(Boolean);
+}
+
 function normalizeEmail(value) {
   const email = clean(value).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "";
@@ -5029,4 +5080,4 @@ function normalizeProfileLocale(value) {
   return locale;
 }
 
-export { buildApiInventory, buildTenantAccess, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, hasScope, isTenantApprovalActor, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };
+export { buildApiInventory, buildTenantAccess, canSelfApproveTenantWafChange, clientSecurityResponseHeadersPolicyConfig, cloudFrontDistributionConfig, compileWafRules, defaultWafBaseline, flattenDmarcTxtRecords, hasScope, isTenantApprovalActor, normalizeDmarcTxt, normalizeOriginUrl, normalizeTenantRegistration, normalizeWafAdvancedConfig, normalizeWafLogEvent, normalizeWafRateLimitConfig, publicTenant, toAwsWafRules, validateOpenApiDocument };

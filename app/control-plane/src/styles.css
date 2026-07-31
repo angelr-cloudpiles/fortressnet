@@ -1551,7 +1551,16 @@ kbd {
 
 .health.healthy { color: var(--green); }
 .health.degraded { color: var(--orange); }
+.health.unhealthy { color: var(--red); }
 .health.pending { color: var(--muted); }
+
+.table-detail {
+  display: block;
+  max-width: 290px;
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.35;
+}
 
 .ai-recommendation {
   display: grid;

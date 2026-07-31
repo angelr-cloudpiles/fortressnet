@@ -1285,6 +1285,23 @@ function DmarcScreen({ token, state, selectedTenantId, setStatus }) {
       setStatus({ type: "error", message: error.message });
     }
   };
+  const verifyConfiguration = async (configuration) => {
+    try {
+      await apiRequest(`/api/dmarc/configurations/${configuration.configuration_id}/verify`, token, { method: "POST" });
+      setStatus({ type: "success", message: `DNS verification completed for ${configuration.domain_name}.` });
+      await load();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message });
+    }
+  };
+  const dmarcStatus = (configuration) => {
+    const status = configuration.status;
+    if (status === "verified") return { label: "Verified", className: "healthy", detail: `Checked ${formatEventTime(configuration.verification_checked_at || configuration.updated_at)}` };
+    if (status === "record_mismatch") return { label: "Record value does not match", className: "degraded", detail: "The TXT name exists, but it does not contain the generated DMARC policy." };
+    if (status === "dns_lookup_failed") return { label: "DNS lookup failed", className: "unhealthy", detail: configuration.verification_error || "Retry the DNS check." };
+    if (status === "published_pending_dns" || status === "publishing") return { label: "Publishing", className: "pending", detail: "Route 53 is publishing the TXT record." };
+    return { label: "Awaiting external DNS", className: "pending", detail: configuration.verification_error === "record_not_found" ? "TXT record was not found at the authoritative resolver." : "Publish the TXT record, then check DNS." };
+  };
   return (
     <div className="screen">
       <div className="two-column">
@@ -1302,7 +1319,7 @@ function DmarcScreen({ token, state, selectedTenantId, setStatus }) {
         </Panel>
       </div>
       <Panel title="Published Configurations" action={<button className="secondary compact" disabled={!token} onClick={load}><RefreshCw size={15} /> Refresh</button>}>
-        {configurations.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Policy</th><th>Record</th><th>Delivery</th><th>Status</th></tr></thead><tbody>{configurations.map((configuration) => <tr key={configuration.configuration_id}><td>{configuration.domain_name}</td><td>{configuration.policy} / {configuration.alignment}</td><td><code>{configuration.record_name}</code></td><td><code>{configuration.rua}</code></td><td><span className="health pending">{configuration.status}</span></td></tr>)}</tbody></table> : <EmptyTable columns={["Domain", "Policy", "Record", "Delivery", "Status"]} message="No DMARC policy has been created for this tenant." />}
+        {configurations.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Policy</th><th>Record</th><th>Delivery</th><th>Status</th><th>Action</th></tr></thead><tbody>{configurations.map((configuration) => { const status = dmarcStatus(configuration); return <tr key={configuration.configuration_id}><td>{configuration.domain_name}</td><td>{configuration.policy} / {configuration.alignment}</td><td><code>{configuration.record_name}</code></td><td><code>{configuration.rua}</code></td><td><span className={`health ${status.className}`}>{status.label}</span><small className="table-detail">{status.detail}</small></td><td><button className="secondary compact" disabled={!token} onClick={() => verifyConfiguration(configuration)}><RefreshCw size={15} /> Check DNS</button></td></tr>; })}</tbody></table> : <EmptyTable columns={["Domain", "Policy", "Record", "Delivery", "Status", "Action"]} message="No DMARC policy has been created for this tenant." />}
       </Panel>
       <Panel title="Aggregate Reports">
         {reports.length ? <table className="data-table"><thead><tr><th>Domain</th><th>Organization</th><th>Messages</th><th>Disposition</th><th>Received</th></tr></thead><tbody>{reports.map((report) => <tr key={report.report_id}><td>{report.policy_domain || "-"}</td><td>{report.organization || "-"}</td><td>{report.record_count ?? 0}</td><td>{(report.dispositions || []).join(", ") || "-"}</td><td>{report.received_at ? new Date(report.received_at).toLocaleString() : "-"}</td></tr>)}</tbody></table> : <EmptyTable columns={["Domain", "Organization", "Messages", "Disposition", "Received"]} message="Aggregate reports will appear only after a provider sends a valid DMARC report." />}
